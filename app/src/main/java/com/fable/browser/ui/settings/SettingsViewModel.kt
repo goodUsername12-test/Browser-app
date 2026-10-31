@@ -65,6 +65,8 @@ class SettingsViewModel @Inject constructor(
     fun setSearchEngine(v: SearchEngine) = edit { store.setSearchEngine(v) }
     fun setHomepage(v: String) = edit { store.setHomepage(v.trim()) }
     fun setRestoreTabs(v: Boolean) = edit { store.setRestoreTabs(v) }
+    fun setToolbarAtTop(v: Boolean) = edit { store.setToolbarAtTop(v) }
+    fun setHideToolbarOnScroll(v: Boolean) = edit { store.setHideToolbarOnScroll(v) }
 
     // ---------------------------------------------------- privacy & security
 

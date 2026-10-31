@@ -23,6 +23,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -80,6 +81,7 @@ class MainActivity : FragmentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 tabManager.activeTabId
                     .flatMapLatest { id -> tabManager.tab(id)?.isFullScreen ?: flowOf(false) }
+                    .combine(tabManager.manualFullScreen) { web, manual -> web || manual }
                     .distinctUntilChanged()
                     .collect { fullScreen -> applyFullScreen(fullScreen) }
             }
@@ -93,9 +95,24 @@ class MainActivity : FragmentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsetsCompat.Type.systemBars())
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            setCutoutMode(fullScreen = true)
         } else {
+            setCutoutMode(fullScreen = false)
             controller.show(WindowInsetsCompat.Type.systemBars())
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    /** Use the whole screen, including the camera notch area, while in full screen. */
+    private fun setCutoutMode(fullScreen: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+        val mode = if (fullScreen) {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        } else {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+        }
+        if (window.attributes.layoutInDisplayCutoutMode != mode) {
+            window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = mode }
         }
     }
 

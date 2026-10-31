@@ -139,6 +139,11 @@ class BrowserViewModel @Inject constructor(
     fun stop() = tabManager.stop()
     fun goBack(): Boolean = tabManager.goBack()
     fun exitFullScreen() = tabManager.exitFullScreen()
+    val manualFullScreen: StateFlow<Boolean> = tabManager.manualFullScreen
+    fun enterFullScreen() {
+        tabManager.enterFullScreen()
+        toast("Full screen. Swipe from the edge and go back to exit.")
+    }
     fun toggleKeepLoaded() = tabManager.toggleKeepLoaded()
     fun goForward() { tabManager.goForward() }
     fun load(url: String) = tabManager.loadInActive(url)

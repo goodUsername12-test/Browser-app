@@ -62,6 +62,10 @@ class TabManager @Inject constructor(
     private val _toolbarVisible = MutableStateFlow(true)
     val toolbarVisible: StateFlow<Boolean> = _toolbarVisible.asStateFlow()
 
+    /** Full screen chosen by the user from the toolbar (games, videos, reading). */
+    private val _manualFullScreen = MutableStateFlow(false)
+    val manualFullScreen: StateFlow<Boolean> = _manualFullScreen.asStateFlow()
+
     /** True when the biometric/PIN gate must be passed before private tabs render. */
     private val _incognitoLocked = MutableStateFlow(false)
     val incognitoLocked: StateFlow<Boolean> = _incognitoLocked.asStateFlow()
@@ -370,7 +374,19 @@ class TabManager @Inject constructor(
     fun stop() = activeTab?.session?.stop()
 
     fun exitFullScreen() {
-        activeTab?.session?.takeIf { it.isOpen }?.exitFullScreen()
+        _manualFullScreen.value = false
+        activeTab?.session?.takeIf { it.isOpen }?.let { session ->
+            session.exitFullScreen()
+            runCatching { session.panZoomController.setIsLongpressEnabled(true) }
+        }
+    }
+
+    fun enterFullScreen() {
+        _manualFullScreen.value = true
+        // Holding a finger on a game joystick must not open the link/image menu.
+        activeTab?.session?.takeIf { it.isOpen }?.let { session ->
+            runCatching { session.panZoomController.setIsLongpressEnabled(false) }
+        }
     }
 
     fun goBack(): Boolean {
@@ -568,6 +584,11 @@ class TabManager @Inject constructor(
         override fun onScroll(tab: BrowserTab, scrollY: Int) {
             val delta = scrollY - lastScrollY
             lastScrollY = scrollY
+            if (!settings.hideToolbarOnScroll) {
+                // Never resize the page during a gesture unless the user asked for it.
+                if (!_toolbarVisible.value) _toolbarVisible.value = true
+                return
+            }
             if (scrollY <= 0) {
                 _toolbarVisible.value = true
             } else if (delta > 12) {

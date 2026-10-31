@@ -12,6 +12,7 @@ ACT="$PKG/com.fable.browser.MainActivity"
 log() { echo "[hook] $*"; }
 post() { gh issue comment 2 --repo "$GITHUB_REPOSITORY" --body-file "$1" >/dev/null 2>&1 || log "could not post $1"; }
 
+{ echo "HOOK-START $VERSION emulator test started"; } > "$ART/start.md"; post "$ART/start.md"
 log "Building x86_64 debug APK for the emulator"
 if ! ./gradlew assembleDebug -Pfable.abis=x86_64 -q > "$ART/x86-build.log" 2>&1; then
   { echo "HOOK-RESULT $VERSION x86_64 build failed"; echo '```'; tail -n 60 "$ART/x86-build.log"; echo '```'; } > "$REPORT"
@@ -29,7 +30,7 @@ export PATH="$SDK/cmdline-tools/latest/bin:$SDK/emulator:$SDK/platform-tools:$PA
 IMG="system-images;android-34;google_apis;x86_64"
 log "Installing $IMG"
 yes | sdkmanager --licenses >/dev/null 2>&1 || true
-sdkmanager --install "$IMG" "emulator" "platform-tools" >/dev/null 2>&1 || log "sdkmanager returned an error"
+timeout 900 sdkmanager --install "$IMG" "emulator" "platform-tools" >/dev/null 2>&1 || log "sdkmanager returned an error"
 echo no | avdmanager create avd -n fable -k "$IMG" -d pixel_6 --force >/dev/null
 
 log "Stopping Gradle daemons to free memory"
@@ -46,9 +47,14 @@ adb shell settings put global window_animation_scale 0
 adb shell settings put global transition_animation_scale 0
 adb shell settings put global animator_duration_scale 0
 adb shell input keyevent 82 || true
-log "Boot completed: $(adb shell getprop sys.boot_completed | tr -d '\r')"
+BOOTED="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+log "Boot completed: $BOOTED"
+if [ "$BOOTED" != "1" ]; then
+  { echo "HOOK-RESULT $VERSION emulator did not boot"; echo '```'; tail -n 60 "$ART/emulator.log"; echo '```'; } > "$REPORT"
+  post "$REPORT"; exit 1
+fi
 
-adb install -r -g "$APK" > "$ART/install.log" 2>&1 || log "install failed: $(cat "$ART/install.log")"
+timeout 240 adb install -r -g "$APK" > "$ART/install.log" 2>&1 || log "install failed: $(cat "$ART/install.log")"
 adb logcat -c
 
 shot() {
@@ -65,12 +71,12 @@ STEPS=""
 step() { STEPS="$STEPS"$'\n'"- $1: process $( [ -n "$(alive)" ] && echo running || echo NOT RUNNING )"; }
 
 log "Cold start"
-adb shell am start -W -n "$ACT" > "$ART/start.txt" 2>&1
+timeout 90 adb shell am start -W -n "$ACT" > "$ART/start.txt" 2>&1
 sleep 20; step "cold start (new tab page)"; shot 1-start
 
 for url in https://example.com https://en.m.wikipedia.org/wiki/Firefox https://webglsamples.org/aquarium/aquarium.html; do
   log "Opening $url"
-  adb shell am start -W -a android.intent.action.VIEW -d "$url" -n "$ACT" >> "$ART/start.txt" 2>&1
+  timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "$url" -n "$ACT" >> "$ART/start.txt" 2>&1
   sleep 25
   name="$(echo "$url" | sed -E 's#https?://##; s#[^a-zA-Z0-9]+#-#g' | cut -c1-30)"
   step "open $url"; shot "2-$name"
@@ -78,9 +84,9 @@ done
 
 log "Opening and closing tabs, background/foreground"
 adb shell input keyevent KEYCODE_HOME; sleep 3
-adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 8; step "back from background"
+timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 8; step "back from background"
 adb shell am force-stop "$PKG"; sleep 2
-adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 20; step "restart after force-stop (session restore)"; shot 3-restore
+timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 20; step "restart after force-stop (session restore)"; shot 3-restore
 
 adb logcat -d -v brief > "$ART/logcat.txt" 2>/dev/null
 {

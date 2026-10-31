@@ -272,6 +272,8 @@ class SessionDelegateFactory @Inject constructor(
 
         override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
             tab.updateFullScreen(fullScreen)
+            // No link/image menu while a game or video is in full screen.
+            runCatching { session.panZoomController.setIsLongpressEnabled(!fullScreen) }
         }
 
         override fun onCloseRequest(session: GeckoSession) {

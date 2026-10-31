@@ -16,6 +16,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,10 +40,14 @@ import androidx.compose.ui.unit.dp
 fun BottomToolbar(
     canGoBack: Boolean,
     canGoForward: Boolean,
+    loading: Boolean,
     tabCount: Int,
     incognito: Boolean,
     onBack: () -> Unit,
     onForward: () -> Unit,
+    onReload: () -> Unit,
+    onStop: () -> Unit,
+    onFullScreen: () -> Unit,
     onTabs: () -> Unit,
     onToggleIncognito: () -> Unit,
     onPanic: () -> Unit,
@@ -59,6 +66,18 @@ fun BottomToolbar(
         }
         IconButton(onClick = onForward, enabled = canGoForward) {
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Forward")
+        }
+        if (loading) {
+            IconButton(onClick = onStop) {
+                Icon(Icons.Filled.Close, contentDescription = "Stop loading")
+            }
+        } else {
+            IconButton(onClick = onReload) {
+                Icon(Icons.Filled.Refresh, contentDescription = "Reload")
+            }
+        }
+        IconButton(onClick = onFullScreen) {
+            Icon(Icons.Filled.Fullscreen, contentDescription = "Full screen")
         }
         Box(
             modifier = Modifier

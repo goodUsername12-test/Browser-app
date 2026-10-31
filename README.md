@@ -96,6 +96,14 @@ and workflow files are never changed this way.
 
 Incognito tabs always keep the blocker and the fingerprint shield, whatever the profile.
 
+**Full screen and layout.** The ⛶ button in the toolbar puts any page (games, videos) in full
+screen: the address bar, status bar and the phone's navigation bar are hidden and the screen
+stays on. Swipe in from the edge and go back to leave. Pages that ask for full screen
+themselves get the same treatment. The address bar sits at the top by default; *Settings →
+General → Address bar at the top* moves it to the bottom. *Hide toolbar while scrolling* is off
+by default so the page never changes size in the middle of a touch gesture, which keeps
+two-finger game controls (move + camera) working normally.
+
 **Smart tab unloading.** Under *Background tabs* you choose how many recent tabs stay in
 RAM (*Recent tabs kept loaded*, 1 to 8, default 3) and the mode: *Smart* (default),
 *Only current tab* (lowest memory) or *Keep all loaded*. Unloaded tabs keep their saved

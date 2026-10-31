@@ -5,6 +5,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,8 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -69,7 +69,6 @@ fun BrowserScreen(
     val tab: BrowserTab? = remember(tabs, activeTabId) { tabs.firstOrNull { it.id == activeTabId } }
     val clipboard = LocalClipboardManager.current
     var menuOpen by rememberSaveable { mutableStateOf(false) }
-    var refreshing by remember { mutableStateOf(false) }
 
     val url = tab?.url?.collectAsStateWithLifecycle()?.value ?: "about:blank"
     val title = tab?.title?.collectAsStateWithLifecycle()?.value ?: ""
@@ -81,14 +80,14 @@ fun BrowserScreen(
     val blockedCount = tab?.blockedCount?.collectAsStateWithLifecycle()?.value ?: 0
     val desktopMode = tab?.isDesktopMode?.collectAsStateWithLifecycle()?.value ?: false
     val readerMode = tab?.isReaderMode?.collectAsStateWithLifecycle()?.value ?: false
-    val fullScreen = tab?.isFullScreen?.collectAsStateWithLifecycle()?.value ?: false
+    val webFullScreen = tab?.isFullScreen?.collectAsStateWithLifecycle()?.value ?: false
+    val manualFullScreen by viewModel.manualFullScreen.collectAsStateWithLifecycle()
+    val fullScreen = webFullScreen || manualFullScreen
     val interstitial = tab?.interstitial?.collectAsStateWithLifecycle()?.value
     val findMatch = tab?.findMatch?.collectAsStateWithLifecycle()?.value
     val keepLoaded = tab?.isPinned?.collectAsStateWithLifecycle()?.value ?: false
     val bookmarkFlow = remember(url) { viewModel.isBookmarked(url) }
     val bookmarked by bookmarkFlow.collectAsStateWithLifecycle(initialValue = false)
-
-    LaunchedEffect(loading) { if (!loading) refreshing = false }
 
     // Hardware / gesture back: close overlays, then walk page history, then exit.
     BackHandler(enabled = fullScreen || omniboxFocused || findQuery != null || canGoBack || interstitial != null) {
@@ -100,9 +99,97 @@ fun BrowserScreen(
         }
     }
 
+    val toolbarAtTop = settings.toolbarAtTop
+    val showToolbar = !fullScreen && (toolbarVisible || omniboxFocused || findQuery != null)
+    // The page only needs to keep clear of the status bar when no top toolbar covers it.
+    val pageInsets = when {
+        fullScreen -> Modifier
+        toolbarAtTop -> (if (showToolbar) Modifier else Modifier.statusBarsPadding())
+            .navigationBarsPadding()
+            .imePadding()
+        else -> Modifier.statusBarsPadding()
+            .then(if (showToolbar) Modifier else Modifier.navigationBarsPadding())
+    }
+
+    val toolbar: @Composable () -> Unit = {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .then(
+                    if (toolbarAtTop) Modifier.statusBarsPadding()
+                    else Modifier.navigationBarsPadding().imePadding()
+                )
+        ) {
+            if (!toolbarAtTop) PageProgress(progress = progress, loading = loading)
+            if (findQuery != null) {
+                FindBar(
+                    query = findQuery.orEmpty(),
+                    match = findMatch,
+                    onQueryChange = viewModel::onFindQuery,
+                    onNext = { viewModel.findNext(true) },
+                    onPrevious = { viewModel.findNext(false) },
+                    onClose = viewModel::closeFind
+                )
+            }
+            Omnibox(
+                url = url,
+                text = omniboxText,
+                focused = omniboxFocused,
+                isSecure = isSecure && !UrlUtils.isInsecure(url),
+                incognito = incognito,
+                blockedCount = blockedCount,
+                engineLabel = settings.searchEngine.label,
+                onTextChange = viewModel::onOmniboxChange,
+                onFocusChange = viewModel::onOmniboxFocus,
+                onSubmit = { viewModel.submit() },
+                onStartEditing = viewModel::startEditing,
+                onShieldClick = onOpenSettings
+            )
+            BottomToolbar(
+                canGoBack = canGoBack,
+                canGoForward = canGoForward,
+                loading = loading,
+                tabCount = tabs.count { it.isIncognito == incognito },
+                incognito = incognito,
+                onBack = { viewModel.goBack() },
+                onForward = viewModel::goForward,
+                onReload = { viewModel.reload() },
+                onStop = { viewModel.stop() },
+                onFullScreen = viewModel::enterFullScreen,
+                onTabs = {
+                    val currentId = tab?.id
+                    captureHandle.capture { bitmap ->
+                        if (currentId != null && bitmap != null) {
+                            viewModel.setThumbnail(currentId, bitmap)
+                        }
+                        onOpenTabs()
+                    }
+                },
+                onToggleIncognito = { viewModel.setIncognitoMode(!incognito) },
+                onPanic = viewModel::panicWipe,
+                onMenu = { menuOpen = true }
+            )
+            if (toolbarAtTop) PageProgress(progress = progress, loading = loading)
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(Modifier.fillMaxSize()) {
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (toolbarAtTop) {
+                AnimatedVisibility(
+                    visible = showToolbar,
+                    enter = expandVertically(expandFrom = Alignment.Top),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Top)
+                ) { toolbar() }
+            }
+
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .then(pageInsets)
+            ) {
                 when {
                     locked && incognito -> IncognitoLockScreen(
                         onUnlock = { viewModel.unlockIncognito() },
@@ -114,113 +201,57 @@ fun BrowserScreen(
                         onProceed = { viewModel.proceedOverHttp(it) },
                         onRetry = { viewModel.reload() },
                         onBack = { viewModel.goBack() },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .statusBarsPadding()
+                        modifier = Modifier.fillMaxSize()
                     )
 
-                    tab != null -> PullToRefreshBox(
-                        isRefreshing = refreshing && loading,
-                        onRefresh = {
-                            refreshing = true
-                            viewModel.reload()
-                        },
-                        state = rememberPullToRefreshState(),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
+                    tab != null -> {
+                        // The page view gets touch input directly, with no gesture
+                        // handlers around it, so multi-touch games work as in Chrome.
                         GeckoViewHost(
                             tab = tab,
                             captureHandle = captureHandle,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .then(if (fullScreen) Modifier else Modifier.statusBarsPadding())
+                            modifier = Modifier.fillMaxSize()
                         )
                         if (url == "about:blank" && !incognito && !loading && !fullScreen) {
                             NewTabPage(
                                 topSites = topSites,
                                 onSearch = { viewModel.startEditing() },
                                 onOpen = { viewModel.load(it) },
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .statusBarsPadding()
+                                modifier = Modifier.fillMaxSize()
                             )
                         }
                     }
                 }
             }
 
-            if (!fullScreen) {
+            if (!toolbarAtTop) {
                 AnimatedVisibility(
-                    visible = toolbarVisible || omniboxFocused || findQuery != null,
+                    visible = showToolbar,
                     enter = slideInVertically { it },
                     exit = slideOutVertically { it }
-                ) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceContainer)
-                            .navigationBarsPadding()
-                            .imePadding()
-                    ) {
-                        if (findQuery != null) {
-                            FindBar(
-                                query = findQuery.orEmpty(),
-                                match = findMatch,
-                                onQueryChange = viewModel::onFindQuery,
-                                onNext = { viewModel.findNext(true) },
-                                onPrevious = { viewModel.findNext(false) },
-                                onClose = viewModel::closeFind
-                            )
-                        }
-                        PageProgress(progress = progress, loading = loading)
-                        Omnibox(
-                            url = url,
-                            text = omniboxText,
-                            focused = omniboxFocused,
-                            isSecure = isSecure && !UrlUtils.isInsecure(url),
-                            incognito = incognito,
-                            blockedCount = blockedCount,
-                            engineLabel = settings.searchEngine.label,
-                            onTextChange = viewModel::onOmniboxChange,
-                            onFocusChange = viewModel::onOmniboxFocus,
-                            onSubmit = { viewModel.submit() },
-                            onStartEditing = viewModel::startEditing,
-                            onShieldClick = onOpenSettings
-                        )
-                        BottomToolbar(
-                            canGoBack = canGoBack,
-                            canGoForward = canGoForward,
-                            tabCount = tabs.count { it.isIncognito == incognito },
-                            incognito = incognito,
-                            onBack = { viewModel.goBack() },
-                            onForward = viewModel::goForward,
-                            onTabs = {
-                                val currentId = tab?.id
-                                captureHandle.capture { bitmap ->
-                                    if (currentId != null && bitmap != null) {
-                                        viewModel.setThumbnail(currentId, bitmap)
-                                    }
-                                    onOpenTabs()
-                                }
-                            },
-                            onToggleIncognito = { viewModel.setIncognitoMode(!incognito) },
-                            onPanic = viewModel::panicWipe,
-                            onMenu = { menuOpen = true }
-                        )
-                    }
-                }
+                ) { toolbar() }
             }
         }
 
-        // Omnibox suggestions float above the page, anchored to the toolbar.
+        // Omnibox suggestions float above the page, next to the address bar.
         if (omniboxFocused && suggestions.isNotEmpty()) {
             SuggestionList(
                 suggestions = suggestions,
                 onPick = { viewModel.submit(it) },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 132.dp)
-                    .padding(horizontal = 8.dp)
+                modifier = if (toolbarAtTop) {
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = 64.dp)
+                        .padding(horizontal = 8.dp)
+                } else {
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .padding(bottom = 132.dp)
+                        .padding(horizontal = 8.dp)
+                }
             )
         }
     }

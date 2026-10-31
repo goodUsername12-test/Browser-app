@@ -28,6 +28,11 @@ data class Settings(
     val searchEngine: SearchEngine = SearchEngine.GOOGLE,
     val homepage: String = "about:blank",
     val restoreTabs: Boolean = true,
+    /** Address bar at the top of the screen (true) or at the bottom (false). */
+    val toolbarAtTop: Boolean = true,
+    /** Slide the toolbar away while scrolling down. Off by default: resizing the page
+     *  in the middle of a touch gesture confuses games and canvas apps. */
+    val hideToolbarOnScroll: Boolean = false,
     // Privacy & security
     val adBlockEnabled: Boolean = true,
     val blockThirdPartyCookies: Boolean = true,
@@ -75,6 +80,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val SEARCH_ENGINE = stringPreferencesKey("search_engine")
         val HOMEPAGE = stringPreferencesKey("homepage")
         val RESTORE_TABS = booleanPreferencesKey("restore_tabs")
+        val TOOLBAR_TOP = booleanPreferencesKey("toolbar_top")
+        val HIDE_TOOLBAR_ON_SCROLL = booleanPreferencesKey("hide_toolbar_on_scroll")
         val AD_BLOCK = booleanPreferencesKey("ad_block")
         val THIRD_PARTY_COOKIES = booleanPreferencesKey("block_3p_cookies")
         val HTTPS_ONLY = booleanPreferencesKey("https_only")
@@ -109,6 +116,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             searchEngine = enum(p[Keys.SEARCH_ENGINE], SearchEngine.GOOGLE),
             homepage = p[Keys.HOMEPAGE] ?: "about:blank",
             restoreTabs = p[Keys.RESTORE_TABS] ?: true,
+            toolbarAtTop = p[Keys.TOOLBAR_TOP] ?: true,
+            hideToolbarOnScroll = p[Keys.HIDE_TOOLBAR_ON_SCROLL] ?: false,
             adBlockEnabled = p[Keys.AD_BLOCK] ?: true,
             blockThirdPartyCookies = p[Keys.THIRD_PARTY_COOKIES] ?: true,
             httpsOnly = p[Keys.HTTPS_ONLY] ?: true,
@@ -145,6 +154,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setSearchEngine(v: SearchEngine) = set(Keys.SEARCH_ENGINE, v.name)
     suspend fun setHomepage(v: String) = set(Keys.HOMEPAGE, v)
     suspend fun setRestoreTabs(v: Boolean) = set(Keys.RESTORE_TABS, v)
+    suspend fun setToolbarAtTop(v: Boolean) = set(Keys.TOOLBAR_TOP, v)
+    suspend fun setHideToolbarOnScroll(v: Boolean) = set(Keys.HIDE_TOOLBAR_ON_SCROLL, v)
     suspend fun setAdBlockEnabled(v: Boolean) = set(Keys.AD_BLOCK, v)
     suspend fun setBlockThirdPartyCookies(v: Boolean) = set(Keys.THIRD_PARTY_COOKIES, v)
     suspend fun setHttpsOnly(v: Boolean) = set(Keys.HTTPS_ONLY, v)

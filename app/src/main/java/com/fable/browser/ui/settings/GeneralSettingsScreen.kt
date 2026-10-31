@@ -87,5 +87,19 @@ fun GeneralSettingsScreen(
             onCheckedChange = viewModel::setRestoreTabs
         )
         ListDivider()
+        SwitchRow(
+            title = "Address bar at the top",
+            subtitle = "Turn off to move the address bar and buttons to the bottom of the screen.",
+            checked = settings.toolbarAtTop,
+            onCheckedChange = viewModel::setToolbarAtTop
+        )
+        ListDivider()
+        SwitchRow(
+            title = "Hide toolbar while scrolling",
+            subtitle = "Gives pages more room, but the page changes size while you scroll. Keep this off for games.",
+            checked = settings.hideToolbarOnScroll,
+            onCheckedChange = viewModel::setHideToolbarOnScroll
+        )
+        ListDivider()
     }
 }

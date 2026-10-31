@@ -1,34 +1,114 @@
 name: Build APK
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      FABLE_KEYSTORE_PASSWORD: ${{ secrets.FABLE_KEYSTORE_PASSWORD }}
+      FABLE_KEY_ALIAS: ${{ secrets.FABLE_KEY_ALIAS }}
+      FABLE_KEY_PASSWORD: ${{ secrets.FABLE_KEY_PASSWORD }}
 
     steps:
-      - name: Checkout project
-        uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v5
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Install Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Show build environment
+        run: |
+          java -version
+          ./gradlew --version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" || true
+          ls "$ANDROID_HOME/build-tools" || true
+
+      - name: Prepare optional private signing key
+        env:
+          FABLE_KEYSTORE_BASE64: ${{ secrets.FABLE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$FABLE_KEYSTORE_BASE64" ]; then
+            echo "$FABLE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/fable.jks"
+            echo "FABLE_KEYSTORE_FILE=$RUNNER_TEMP/fable.jks" >> "$GITHUB_ENV"
+            echo "Signing with the keystore from repository secrets."
+          else
+            echo "No keystore secret found. Using app/debug.keystore."
+          fi
 
       - name: Build debug APK
-        run: gradle assembleDebug
+        run: ./gradlew assembleDebug --stacktrace --warning-mode all
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v6
         with:
-          name: tap-the-cube-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: fable-browser-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Run unit tests
+        id: tests
+        continue-on-error: true
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Build optimized release APK
+        id: release
+        continue-on-error: true
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Upload release APK
+        if: steps.release.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: fable-browser-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+
+      - name: Write build summary
+        if: always()
+        run: |
+          {
+            echo "## Generated APK files"
+            find app/build/outputs/apk -type f -name "*.apk" 2>/dev/null | while read -r apk; do
+              echo "- \`$apk\` ($(du -h "$apk" | cut -f1))"
+            done
+            echo ""
+            echo "- Unit tests: ${{ steps.tests.outcome }}"
+            echo "- Release build: ${{ steps.release.outcome }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test and build reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

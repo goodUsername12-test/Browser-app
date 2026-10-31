@@ -1,5 +1,0 @@
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/game" android:layout_width="match_parent" android:layout_height="match_parent" android:background="#101014">
-    <TextView android:id="@+id/score" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="top|center_horizontal" android:layout_marginTop="32dp" android:text="Score: 0" android:textColor="#FFFFFF" android:textSize="28sp" android:textStyle="bold" />
-    <TextView android:id="@+id/hint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="bottom|center_horizontal" android:layout_marginBottom="48dp" android:text="Tap the cube!" android:textColor="#BDB8C8" android:textSize="18sp" />
-    <Button android:id="@+id/cube" android:layout_width="110dp" android:layout_height="110dp" android:layout_gravity="center" android:backgroundTint="#6750A4" android:text="TAP" android:textColor="#FFFFFF" android:textSize="20sp" android:textStyle="bold" />
-</FrameLayout>

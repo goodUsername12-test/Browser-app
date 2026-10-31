@@ -1,0 +1,27 @@
+/* Injected only when reader mode is active (see fingerprint_shield.js). */
+html[data-fable-reader] body {
+  background: #faf9f7;
+  color: #1a1a19;
+  margin: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-fable-reader] body {
+    background: #14140f;
+    color: #eceae4;
+  }
+  html[data-fable-reader] a {
+    color: #b9d977;
+  }
+}
+
+html[data-fable-reader] #fable-reader p {
+  margin: 0 0 1.25em;
+}
+
+html[data-fable-reader] #fable-reader blockquote {
+  margin: 1.5em 0;
+  padding-left: 1em;
+  border-left: 2px solid currentColor;
+  opacity: 0.85;
+}

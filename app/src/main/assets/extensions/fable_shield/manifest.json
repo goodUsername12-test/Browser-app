@@ -1,0 +1,31 @@
+{
+  "manifest_version": 2,
+  "name": "Fable Shield",
+  "version": "1.0.0",
+  "description": "Network-layer ad/tracker blocking, fingerprint spoofing and optional incognito proxying for Fable Browser.",
+  "applications": {
+    "gecko": {
+      "id": "fable-shield@fable.browser"
+    }
+  },
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "proxy",
+    "nativeMessaging",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["blocker.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["fingerprint_shield.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "web_accessible_resources": ["reader.css"]
+}

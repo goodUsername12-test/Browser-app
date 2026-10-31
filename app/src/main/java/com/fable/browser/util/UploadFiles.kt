@@ -21,7 +21,7 @@ object UploadFiles {
     private val UNSAFE_NAME_CHARS = Regex("""[\\/:*?"<>|\u0000-\u001f]""")
 
     /**
-     * Turns the page's accept="..." list (".pdf", "image/*", "PNG", ...) into
+     * Turns the page's accept list (".pdf", "image/png", "PNG", ...) into
      * MIME types Android's picker understands. Unknown entries are ignored;
      * nothing usable means "any file".
      */

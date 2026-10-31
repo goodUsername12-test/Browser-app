@@ -90,7 +90,12 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a")
+            // Phones get the 64-bit ARM APK. CI can pass -Pfable.abis=x86_64 to build an
+            // extra APK for the Android emulator used by the automatic start-up test.
+            val abis = (project.findProperty("fable.abis") as String?)
+                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                ?: listOf("arm64-v8a")
+            include(*abis.toTypedArray())
             isUniversalApk = false
         }
     }

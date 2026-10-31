@@ -16,6 +16,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.fable.browser.engine.TabManager
+import com.fable.browser.ui.CrashReportDialog
 import com.fable.browser.ui.FableApp
 import com.fable.browser.util.ActivityBridge
 import dagger.hilt.android.AndroidEntryPoint
@@ -67,7 +68,10 @@ class MainActivity : FragmentActivity() {
         observeFullScreen()
 
         // FableApp owns the theme so that entering incognito repaints everything.
-        setContent { FableApp() }
+        setContent {
+            FableApp()
+            CrashReportDialog()
+        }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)

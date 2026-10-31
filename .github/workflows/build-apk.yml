@@ -20,7 +20,7 @@ jobs:
   build:
     name: Build and test
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 100
     defaults:
       run:
         shell: bash
@@ -96,6 +96,24 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: warn
 
+      - name: Emulator start-up test (ci/hook.sh)
+        id: hook
+        if: steps.debug.outcome == 'success' && github.event_name != 'pull_request' && hashFiles('ci/hook.sh') != ''
+        continue-on-error: true
+        timeout-minutes: 40
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/hook.sh 2>&1 | tee "$RUNNER_TEMP/hook.log"
+
+      - name: Upload emulator test files
+        if: always() && steps.hook.outcome != 'skipped'
+        uses: actions/upload-artifact@v6
+        with:
+          name: emulator-test
+          path: ${{ runner.temp }}/hook-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Write build summary
         if: always()
         run: |
@@ -130,7 +148,7 @@ jobs:
           VERSION="$(cat .fable-version 2>/dev/null || echo unknown)"
           OUT="$RUNNER_TEMP/report.md"
           {
-            echo "CI-RESULT $VERSION run ${{ github.run_id }} commit ${GITHUB_SHA::7} debug=${{ steps.debug.outcome }} tests=${{ steps.tests.outcome }} release=${{ steps.release.outcome }}"
+            echo "CI-RESULT $VERSION run ${{ github.run_id }} commit ${GITHUB_SHA::7} debug=${{ steps.debug.outcome }} tests=${{ steps.tests.outcome }} release=${{ steps.release.outcome }} emulator=${{ steps.hook.outcome }}"
             echo ""
             find app/build/outputs/apk -type f -name "*.apk" 2>/dev/null | while read -r apk; do
               echo "APK $(basename "$apk") $(stat -c %s "$apk") bytes"

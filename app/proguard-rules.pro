@@ -54,3 +54,7 @@
 # GeckoView's repackaged ExoPlayer (used for HLS video) is reached from native code.
 -keep class org.mozilla.thirdparty.** { *; }
 -dontwarn org.mozilla.thirdparty.**
+
+# GeckoView reads its start-up preferences (geckoview-config.yaml) with SnakeYAML,
+# which works through reflection. Keep it intact so release builds can parse it.
+-keep class org.yaml.snakeyaml.** { *; }

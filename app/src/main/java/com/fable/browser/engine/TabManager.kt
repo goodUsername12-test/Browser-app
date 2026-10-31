@@ -63,6 +63,9 @@ class TabManager @Inject constructor(
     val toolbarVisible: StateFlow<Boolean> = _toolbarVisible.asStateFlow()
 
     /** Full screen chosen by the user from the toolbar (games, videos, reading). */
+    private var lastKilledTabId: String? = null
+    private var lastKilledAt = 0L
+
     private val _manualFullScreen = MutableStateFlow(false)
     val manualFullScreen: StateFlow<Boolean> = _manualFullScreen.asStateFlow()
 
@@ -80,7 +83,10 @@ class TabManager @Inject constructor(
     private var lastScrollY = 0
 
     private companion object {
+        const val TRIM_RUNNING_LOW = 10
         const val TRIM_RUNNING_CRITICAL = 15
+        /** A page killed for memory twice within this window is not reloaded again automatically. */
+        const val KILL_LOOP_WINDOW_MS = 60_000L
         const val TRIM_UI_HIDDEN = 20
     }
 
@@ -170,6 +176,22 @@ class TabManager @Inject constructor(
      * incognito lock is enabled, arm the gate so returning to the app requires
      * biometrics before any private tab is shown again.
      */
+    /**
+     * Called from MainActivity.onPause: stop the page's painting and
+     * requestAnimationFrame loop before Android tears down the drawing surface.
+     * Doing this early (instead of only in onStop) keeps the renderer idle while
+     * the surface goes away, which avoids the false "not responding" dialog.
+     */
+    fun onAppPaused() {
+        runCatching { activeTab?.session?.takeIf { it.isOpen }?.setActive(false) }
+    }
+
+    fun onAppResumed() {
+        val tab = activeTab ?: return
+        if (tab.isEvicted) return
+        runCatching { tab.session.takeIf { it.isOpen }?.setActive(true) }
+    }
+
     fun onAppBackgrounded() {
         persist()
         activeTab?.session?.takeIf { it.isOpen }?.setActive(false)
@@ -246,11 +268,15 @@ class TabManager @Inject constructor(
         val previous = activeTab
         if (previous != null && previous.id != tab.id && previous.session.isOpen) {
             previous.session.setActive(false)
+            setPriority(previous, high = false)
         }
         tab.touch()
         _activeTabId.value = tab.id
         _isIncognitoMode.value = tab.isIncognito
-        if (tab.session.isOpen) tab.session.setActive(true)
+        if (tab.session.isOpen) {
+            tab.session.setActive(true)
+            setPriority(tab, high = true)
+        }
     }
 
     fun selectTab(id: String) {
@@ -376,16 +402,28 @@ class TabManager @Inject constructor(
     fun exitFullScreen() {
         _manualFullScreen.value = false
         activeTab?.session?.takeIf { it.isOpen }?.let { session ->
-            session.exitFullScreen()
-            runCatching { session.panZoomController.setIsLongpressEnabled(true) }
+            runCatching { session.exitFullScreen() }
         }
     }
 
     fun enterFullScreen() {
+        if (_manualFullScreen.value) return
         _manualFullScreen.value = true
-        // Holding a finger on a game joystick must not open the link/image menu.
-        activeTab?.session?.takeIf { it.isOpen }?.let { session ->
-            runCatching { session.panZoomController.setIsLongpressEnabled(false) }
+        // Holding a finger on a game joystick must not open the link/image menu:
+        // that is handled in onContextMenu below. (v5 used a test-only GeckoView
+        // call here, which crashed the app on some devices.)
+        onGameModeStarted()
+    }
+
+    /**
+     * Game mode: when a page goes full screen, free as much memory as possible
+     * for it (unload background tabs that are not playing media) so big WebGL /
+     * WebAssembly games do not run the content process out of memory.
+     */
+    private fun onGameModeStarted() {
+        if (!settings.gameMode) return
+        scope.launch(Dispatchers.Main) {
+            runCatching { evictBackgroundTabs() }
         }
     }
 
@@ -467,8 +505,15 @@ class TabManager @Inject constructor(
     }
 
     fun onTrimMemory(level: Int) {
+        if (level == TRIM_UI_HIDDEN) return
+        // While a game is in full screen, free memory as soon as Android says it is low.
+        val gaming = settings.gameMode && (_manualFullScreen.value || activeTab?.isFullScreen?.value == true)
+        if (gaming && level >= TRIM_RUNNING_LOW) {
+            evictBackgroundTabs()
+            return
+        }
         if (settings.tabUnloadMode == TabUnloadMode.KEEP_ALL) return
-        if (level >= TRIM_RUNNING_CRITICAL && level != TRIM_UI_HIDDEN) evictBackgroundTabs()
+        if (level >= TRIM_RUNNING_LOW) evictBackgroundTabs()
     }
 
     private fun enforceTabBudget() {
@@ -524,7 +569,24 @@ class TabManager @Inject constructor(
         tab.replaceSession(session)
         delegateFactory.attach(tab, scope, { settings }, callbacks)
         session.setActive(tab.id == _activeTabId.value)
+        setPriority(tab, high = tab.id == _activeTabId.value)
         return session
+    }
+
+    /**
+     * The visible tab (and tabs playing media) get high process priority so
+     * Android keeps their content process alive under memory pressure. This is
+     * what stops big games from being killed right before they finish loading.
+     */
+    private fun setPriority(tab: BrowserTab, high: Boolean) {
+        val session = tab.session
+        if (!session.isOpen) return
+        val hint = if (high || tab.isMediaPlaying) {
+            GeckoSession.PRIORITY_HIGH
+        } else {
+            GeckoSession.PRIORITY_DEFAULT
+        }
+        runCatching { session.setPriorityHint(hint) }
     }
 
     // -------------------------------------------------- incognito auto-wipe
@@ -566,18 +628,47 @@ class TabManager @Inject constructor(
 
         override fun onSessionLost(tab: BrowserTab, crashed: Boolean) {
             if (tab.isEvicted) return
+            val active = tab.id == _activeTabId.value
             tab.markUnloaded()
-            if (!crashed && tab.id == _activeTabId.value) resumeIfEvicted(tab)
+            if (!active) return
+            // Free memory for the page that just died before bringing it back.
+            runCatching { evictBackgroundTabs() }
+            if (crashed) return
+            val now = android.os.SystemClock.elapsedRealtime()
+            val looping = tab.id == lastKilledTabId && now - lastKilledAt < KILL_LOOP_WINDOW_MS
+            lastKilledTabId = tab.id
+            lastKilledAt = now
+            if (looping) {
+                // Do not reload forever: show a message with a Reload button instead.
+                tab.updateInterstitial(
+                    Interstitial.Network(
+                        tab.url.value,
+                        "Android stopped this page because it needed more memory than was free. " +
+                            "Close other apps and tap Retry."
+                    )
+                )
+            } else {
+                resumeIfEvicted(tab)
+            }
+        }
+
+        override fun onFullScreenChanged(tab: BrowserTab, fullScreen: Boolean) {
+            if (fullScreen && tab.id == _activeTabId.value) onGameModeStarted()
         }
 
         override fun onMediaStateChanged(tab: BrowserTab, playing: Boolean) {
             tab.isMediaPlaying = playing
+            setPriority(tab, high = tab.id == _activeTabId.value)
             if (!playing) scope.launch(Dispatchers.Main) { enforceTabBudget() }
         }
 
         override fun onCloseRequested(tab: BrowserTab) = closeTab(tab.id)
 
         override fun onContextMenu(target: ContextMenuTarget) {
+            // No link/image menu while a game or video is in full screen: holding a
+            // finger on a virtual joystick must never pop a menu over the game.
+            val owner = tab(target.tabId)
+            if (_manualFullScreen.value || owner?.isFullScreen?.value == true) return
             _contextMenu.value = target
         }
 

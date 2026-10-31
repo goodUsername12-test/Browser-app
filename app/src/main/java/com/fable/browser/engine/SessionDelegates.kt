@@ -45,6 +45,9 @@ interface TabCallbacks {
     fun onSessionLost(tab: BrowserTab, crashed: Boolean)
 
     fun onMediaStateChanged(tab: BrowserTab, playing: Boolean)
+
+    /** The page entered or left HTML5 full screen (games, videos). */
+    fun onFullScreenChanged(tab: BrowserTab, fullScreen: Boolean)
 }
 
 /**
@@ -272,8 +275,7 @@ class SessionDelegateFactory @Inject constructor(
 
         override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
             tab.updateFullScreen(fullScreen)
-            // No link/image menu while a game or video is in full screen.
-            runCatching { session.panZoomController.setIsLongpressEnabled(!fullScreen) }
+            callbacks.onFullScreenChanged(tab, fullScreen)
         }
 
         override fun onCloseRequest(session: GeckoSession) {

@@ -74,5 +74,65 @@ fun PerformanceSettingsScreen(
                 onValueChange = viewModel::setKeepLoadedTabs
             )
         }
+        ListDivider()
+
+        SectionHeader("Gaming")
+        SwitchRow(
+            title = "Game mode in full screen",
+            subtitle = "Gives the game all free memory and top priority so it does not crash while loading",
+            checked = settings.gameMode,
+            onCheckedChange = viewModel::setGameMode
+        )
+        SwitchRow(
+            title = "Highest screen refresh rate",
+            subtitle = "Uses 90/120 Hz when your screen supports it for smoother games and scrolling",
+            checked = settings.highRefreshRate,
+            onCheckedChange = viewModel::setHighRefreshRate
+        )
+        SwitchRow(
+            title = "Vibration for games",
+            subtitle = "Lets pages use navigator.vibrate() for haptic feedback",
+            checked = settings.vibrationApi,
+            onCheckedChange = viewModel::setVibrationApi
+        )
+        ListDivider()
+
+        SectionHeader("Optional web features (restart the app after changing)")
+        SwitchRow(
+            title = "WebGPU (experimental)",
+            subtitle = "Next-generation 3D. Not finished on Android: some games may fail or crash with it on",
+            checked = settings.featureWebGpu,
+            onCheckedChange = viewModel::setFeatureWebGpu
+        )
+        SwitchRow(
+            title = "Draft WebGL extensions",
+            subtitle = "Extra 3D extensions that are still being standardised",
+            checked = settings.featureWebGlDraft,
+            onCheckedChange = viewModel::setFeatureWebGlDraft
+        )
+        SwitchRow(
+            title = "Experimental WebAssembly",
+            subtitle = "Relaxed SIMD and other new WebAssembly features used by some game engines",
+            checked = settings.featureWasmExperimental,
+            onCheckedChange = viewModel::setFeatureWasmExperimental
+        )
+        SwitchRow(
+            title = "Battery Status API",
+            subtitle = "Lets sites read your battery level. Can be used to track you",
+            checked = settings.featureBatteryApi,
+            onCheckedChange = viewModel::setFeatureBatteryApi
+        )
+        SwitchRow(
+            title = "Network Information API",
+            subtitle = "Lets sites see your connection type. Can be used to track you",
+            checked = settings.featureNetworkInfo,
+            onCheckedChange = viewModel::setFeatureNetworkInfo
+        )
+        SwitchRow(
+            title = "Speech recognition API",
+            subtitle = "Turns on the API. The engine has no built-in speech service on Android, so many sites still cannot hear you",
+            checked = settings.featureSpeechRecognition,
+            onCheckedChange = viewModel::setFeatureSpeechRecognition
+        )
     }
 }

@@ -15,6 +15,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.fable.browser.data.prefs.SettingsStore
 import com.fable.browser.engine.TabManager
 import com.fable.browser.ui.CrashReportDialog
 import com.fable.browser.ui.FableApp
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -33,6 +35,7 @@ class MainActivity : FragmentActivity() {
 
     @Inject lateinit var tabManager: TabManager
     @Inject lateinit var activityBridge: ActivityBridge
+    @Inject lateinit var settingsStore: SettingsStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -67,6 +70,7 @@ class MainActivity : FragmentActivity() {
         }
 
         observeFullScreen()
+        observeRefreshRate()
 
         // FableApp owns the theme so that entering incognito repaints everything.
         setContent {
@@ -88,7 +92,48 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    /** Run the screen at its highest refresh rate (90/120 Hz panels) for smooth games. */
+    private fun observeRefreshRate() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                settingsStore.settings
+                    .map { it.highRefreshRate }
+                    .distinctUntilChanged()
+                    .collect { high -> runCatching { applyRefreshRate(high) } }
+            }
+        }
+    }
+
+    private fun applyRefreshRate(high: Boolean) {
+        @Suppress("DEPRECATION")
+        val display = (
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) this.display else windowManager.defaultDisplay
+            ) ?: return
+        val current = display.mode
+        val modeId = if (high) {
+            display.supportedModes
+                .filter {
+                    it.physicalWidth == current.physicalWidth &&
+                        it.physicalHeight == current.physicalHeight
+                }
+                .maxByOrNull { it.refreshRate }
+                ?.modeId ?: 0
+        } else {
+            0
+        }
+        val attrs = window.attributes
+        if (attrs.preferredDisplayModeId != modeId) {
+            attrs.preferredDisplayModeId = modeId
+            window.attributes = attrs
+        }
+    }
+
     private fun applyFullScreen(fullScreen: Boolean) {
+        // Never let a window/inset quirk on some phones take the app down.
+        runCatching { applyFullScreenUnsafe(fullScreen) }
+    }
+
+    private fun applyFullScreenUnsafe(fullScreen: Boolean) {
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         if (fullScreen) {
             controller.systemBarsBehavior =
@@ -145,6 +190,18 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         tabManager.onAppForegrounded()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        tabManager.onAppResumed()
+    }
+
+    override fun onPause() {
+        // Stop page rendering before Android removes the drawing surface; this
+        // prevents the false "Fable Browser isn't responding" when switching apps.
+        tabManager.onAppPaused()
+        super.onPause()
     }
 
     override fun onStop() {

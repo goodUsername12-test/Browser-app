@@ -1,7 +1,10 @@
 package com.fable.browser.engine
 
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import com.fable.browser.util.ActivityBridge
+import com.fable.browser.util.UploadFiles
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
@@ -19,6 +22,8 @@ class FablePromptDelegate(
     private val bridge: PromptBridge,
     private val activityBridge: ActivityBridge
 ) : PromptDelegate {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
 
     override fun onAlertPrompt(
         session: GeckoSession,
@@ -196,15 +201,27 @@ class FablePromptDelegate(
     ): GeckoResult<PromptDelegate.PromptResponse> {
         val result = GeckoResult<PromptDelegate.PromptResponse>()
         val multiple = prompt.type == PromptDelegate.FilePrompt.Type.MULTIPLE
-        val mimeTypes = prompt.mimeTypes?.filterNotNull()?.toTypedArray() ?: arrayOf("*/*")
+        val mimeTypes = UploadFiles.normalizeMimeTypes(prompt.mimeTypes)
         activityBridge.requestFiles(mimeTypes, multiple) { uris ->
-            when {
-                uris.isEmpty() -> result.complete(prompt.dismiss())
-                multiple -> result.complete(
-                    prompt.confirm(activityBridge.context(), uris.toTypedArray<Uri>())
-                )
-                else -> result.complete(prompt.confirm(activityBridge.context(), uris.first()))
+            if (uris.isEmpty()) {
+                result.complete(prompt.dismiss())
+                return@requestFiles
             }
+            val context = activityBridge.context().applicationContext
+            // Copy off the main thread (videos can be large), then answer the page.
+            Thread({
+                UploadFiles.cleanOld(context)
+                val files = uris.mapNotNull { UploadFiles.copyToUploads(context, it) }
+                mainHandler.post {
+                    runCatching {
+                        when {
+                            files.isEmpty() -> result.complete(prompt.dismiss())
+                            multiple -> result.complete(prompt.confirm(context, files.toTypedArray<Uri>()))
+                            else -> result.complete(prompt.confirm(context, files.first()))
+                        }
+                    }.onFailure { runCatching { result.complete(prompt.dismiss()) } }
+                }
+            }, "fable-upload").start()
         }
         return result
     }

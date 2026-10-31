@@ -113,13 +113,18 @@ class ActivityBridge @Inject constructor(
             return
         }
         pendingFileResult = onResult
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        fun pickerIntent(action: String) = Intent(action).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = mimeTypes.firstOrNull()?.takeIf { it.isNotBlank() } ?: "*/*"
+            // Several accepted types: "*/*" + the list, otherwise some pickers
+            // only show the first type.
+            type = if (mimeTypes.size == 1) mimeTypes[0].ifBlank { "*/*" } else "*/*"
             if (mimeTypes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes)
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
         }
-        runCatching { launcher.launch(intent) }.onFailure {
+        // Prefer the system document picker; fall back to any file app.
+        val launched = runCatching { launcher.launch(pickerIntent(Intent.ACTION_OPEN_DOCUMENT)) }.isSuccess ||
+            runCatching { launcher.launch(pickerIntent(Intent.ACTION_GET_CONTENT)) }.isSuccess
+        if (!launched) {
             pendingFileResult = null
             onResult(emptyList())
         }

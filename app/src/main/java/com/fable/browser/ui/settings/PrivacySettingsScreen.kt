@@ -98,6 +98,27 @@ fun PrivacySettingsScreen(
         )
         ListDivider()
 
+        SectionHeader("Leak protection")
+        SwitchRow(
+            title = "Hide local IP address (WebRTC)",
+            subtitle = "Sites can no longer see your Wi-Fi/LAN address (like 192.168.x.x). Calls and online games keep working",
+            checked = settings.hideLocalIp,
+            onCheckedChange = viewModel::setHideLocalIp
+        )
+        SwitchRow(
+            title = "Strong fingerprint protection in all tabs",
+            subtitle = "Firefox's protection against canvas, font and hardware fingerprinting. Always on in incognito. May slightly change some games' pixel reading",
+            checked = settings.fingerprintProtectionAll,
+            onCheckedChange = viewModel::setFingerprintProtectionAll
+        )
+        SwitchRow(
+            title = "Hide graphics chip name",
+            subtitle = "Removes the GPU model from WebGL. Some games use it to choose graphics quality",
+            checked = settings.hideGpuModel,
+            onCheckedChange = viewModel::setHideGpuModel
+        )
+        ListDivider()
+
         SectionHeader("DNS over HTTPS")
         com.fable.browser.ui.components.RadioGroup(
             options = DohProvider.entries.toList(),

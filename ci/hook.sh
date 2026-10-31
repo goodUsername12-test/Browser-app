@@ -27,11 +27,30 @@ sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
 
 SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
 export PATH="$SDK/cmdline-tools/latest/bin:$SDK/emulator:$SDK/platform-tools:$PATH"
-IMG="system-images;android-34;google_apis;x86_64"
-log "Installing $IMG"
-yes | sdkmanager --licenses >/dev/null 2>&1 || true
-timeout 900 sdkmanager --install "$IMG" "emulator" "platform-tools" >/dev/null 2>&1 || log "sdkmanager returned an error"
-echo no | avdmanager create avd -n fable -k "$IMG" -d pixel_6 --force >/dev/null
+export ANDROID_SDK_ROOT="$SDK" ANDROID_HOME="$SDK"
+export ANDROID_USER_HOME="$HOME/.android" ANDROID_AVD_HOME="$HOME/.android/avd"
+mkdir -p "$ANDROID_AVD_HOME"
+log "SDK: $SDK (writable: $( [ -w "$SDK" ] && echo yes || echo no ))"
+yes | sdkmanager --licenses > "$ART/licenses.log" 2>&1 || true
+AVD_OK=""
+for IMG in "system-images;android-34;google_apis;x86_64" "system-images;android-33;google_apis;x86_64" "system-images;android-34;default;x86_64"; do
+  log "Installing $IMG"
+  timeout 900 sdkmanager --install "$IMG" "emulator" "platform-tools" >> "$ART/sdkmanager.log" 2>&1 || log "sdkmanager error for $IMG"
+  IMG_DIR="$SDK/$(echo "$IMG" | tr ';' '/')"
+  if [ ! -d "$IMG_DIR" ]; then
+    log "Image dir missing, retrying with sudo"
+    sudo -E env "PATH=$PATH" sdkmanager --install "$IMG" "emulator" >> "$ART/sdkmanager.log" 2>&1 || true
+    sudo chown -R "$(id -u):$(id -g)" "$SDK" >/dev/null 2>&1 || true
+  fi
+  echo no | avdmanager create avd -n fable -k "$IMG" --force >> "$ART/avdmanager.log" 2>&1 || true
+  if { emulator -list-avds 2>/dev/null; avdmanager list avd -c 2>/dev/null; } | grep -qx fable; then AVD_OK="$IMG"; break; fi
+  log "AVD creation failed for $IMG"
+done
+if [ -z "$AVD_OK" ]; then
+  { echo "HOOK-RESULT $VERSION emulator setup failed (no AVD)"; echo '```'; tail -n 25 "$ART/sdkmanager.log"; echo "--- avdmanager"; tail -n 25 "$ART/avdmanager.log"; echo '```'; } > "$REPORT"
+  post "$REPORT"; exit 1
+fi
+log "AVD ready with $AVD_OK"
 
 log "Stopping Gradle daemons to free memory"
 ./gradlew --stop >/dev/null 2>&1 || true
@@ -82,14 +101,52 @@ for url in https://example.com https://en.m.wikipedia.org/wiki/Firefox https://w
   step "open $url"; shot "2-$name"
 done
 
-log "Opening and closing tabs, background/foreground"
-adb shell input keyevent KEYCODE_HOME; sleep 3
-timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 8; step "back from background"
+tap_desc() {
+  # Tap the on-screen control whose accessibility label is $1 (Compose exposes it).
+  adb shell uiautomator dump /sdcard/fable-ui.xml >/dev/null 2>&1
+  adb pull /sdcard/fable-ui.xml "$ART/ui.xml" >/dev/null 2>&1 || return 1
+  local b
+  b="$(python3 - "$1" "$ART/ui.xml" <<'PY'
+import re, sys
+desc, path = sys.argv[1], sys.argv[2]
+xml = open(path, encoding="utf-8", errors="ignore").read()
+for node in re.findall(r"<node [^>]*>", xml):
+    if 'content-desc="%s"' % desc in node:
+        m = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
+        if m:
+            x1, y1, x2, y2 = map(int, m.groups())
+            print((x1 + x2) // 2, (y1 + y2) // 2)
+            break
+PY
+)"
+  [ -n "$b" ] || return 1
+  adb shell input tap $b
+}
+
+log "Full screen button on the WebGL page"
+if tap_desc "Full screen"; then
+  sleep 8; step "full screen button (WebGL page)"; shot 4-fullscreen
+  adb shell input swipe 500 1200 500 1100 300; sleep 3; step "touch while in full screen"
+  adb shell input keyevent KEYCODE_BACK; sleep 4; step "leave full screen with Back"
+else
+  STEPS="$STEPS"$'\n'"- full screen button: not found on screen"
+fi
+
+log "Background/foreground while the WebGL page runs"
+for n in 1 2 3; do
+  adb shell input keyevent KEYCODE_HOME; sleep 6
+  timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 6
+  adb shell input tap 540 1200; sleep 2
+done
+step "back from background x3"; shot 5-after-background
 adb shell am force-stop "$PKG"; sleep 2
 timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 20; step "restart after force-stop (session restore)"; shot 3-restore
 
 adb logcat -d -v brief > "$ART/logcat.txt" 2>/dev/null
+adb logcat -d -b events -v brief 2>/dev/null | grep -E "am_anr|am_crash|am_proc_died.*fable" > "$ART/events.txt" || true
 {
+  echo "== ANR / crash events =="
+  head -n 20 "$ART/events.txt"
   echo "== Fatal errors =="
   grep -E "FATAL EXCEPTION|Fatal signal|ANR in|Abort message|backtrace:" -A30 "$ART/logcat.txt" | grep -v "^--$" | head -n 160
   echo "== Process deaths =="

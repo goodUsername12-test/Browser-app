@@ -1,7 +1,10 @@
 package com.fable.browser.ui.browser
 
 import androidx.activity.compose.BackHandler
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
@@ -83,6 +86,11 @@ fun BrowserScreen(
     val webFullScreen = tab?.isFullScreen?.collectAsStateWithLifecycle()?.value ?: false
     val manualFullScreen by viewModel.manualFullScreen.collectAsStateWithLifecycle()
     val fullScreen = webFullScreen || manualFullScreen
+    // Toolbars hide/show instantly when entering or leaving full screen: animating
+    // them would resize the page surface ~20 times in a row, which is slow on
+    // games and was part of the full-screen crash.
+    val fullScreenChangedAt = remember(fullScreen) { SystemClock.uptimeMillis() }
+    val instantBars = fullScreen || SystemClock.uptimeMillis() - fullScreenChangedAt < 700L
     val interstitial = tab?.interstitial?.collectAsStateWithLifecycle()?.value
     val findMatch = tab?.findMatch?.collectAsStateWithLifecycle()?.value
     val keepLoaded = tab?.isPinned?.collectAsStateWithLifecycle()?.value ?: false
@@ -179,8 +187,8 @@ fun BrowserScreen(
             if (toolbarAtTop) {
                 AnimatedVisibility(
                     visible = showToolbar,
-                    enter = expandVertically(expandFrom = Alignment.Top),
-                    exit = shrinkVertically(shrinkTowards = Alignment.Top)
+                    enter = if (instantBars) EnterTransition.None else expandVertically(expandFrom = Alignment.Top),
+                    exit = if (instantBars) ExitTransition.None else shrinkVertically(shrinkTowards = Alignment.Top)
                 ) { toolbar() }
             }
 
@@ -227,8 +235,8 @@ fun BrowserScreen(
             if (!toolbarAtTop) {
                 AnimatedVisibility(
                     visible = showToolbar,
-                    enter = slideInVertically { it },
-                    exit = slideOutVertically { it }
+                    enter = if (instantBars) EnterTransition.None else slideInVertically { it },
+                    exit = if (instantBars) ExitTransition.None else slideOutVertically { it }
                 ) { toolbar() }
             }
         }

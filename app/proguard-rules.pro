@@ -35,3 +35,22 @@
 
 -dontwarn java.beans.**
 -dontwarn org.yaml.snakeyaml.**
+
+# Annotation-only and optional dependencies referenced by libraries but not
+# shipped at runtime. Without these R8 stops with "Missing class" errors.
+-dontwarn javax.annotation.**
+-dontwarn javax.lang.model.**
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn org.checkerframework.**
+-dontwarn org.jetbrains.annotations.**
+-dontwarn org.jspecify.annotations.**
+-dontwarn com.google.j2objc.annotations.**
+-dontwarn org.codehaus.mojo.animal_sniffer.**
+-dontwarn org.slf4j.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
+-dontwarn com.google.android.exoplayer2.**
+# GeckoView's repackaged ExoPlayer (used for HLS video) is reached from native code.
+-keep class org.mozilla.thirdparty.** { *; }
+-dontwarn org.mozilla.thirdparty.**

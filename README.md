@@ -71,6 +71,18 @@ release build. If you ever want to publish the app, use a private key instead (s
 
 ---
 
+### How updates reach this repository
+
+Two workflows work together. `build-apk.yml` builds and tests the app and posts a short
+result (APK sizes or the exact compiler errors) as a comment on issue #2.
+`apply-update.yml` lets the repository owner deliver a whole new project version through
+issue #2: base64 comments marked `FABLE-DATA <version>` are reassembled, checked against the
+SHA-256 in a `FABLE-APPLY <version> <sha256>` comment, committed to the default branch, and
+then the build is started. Comments from anyone other than the repository owner are ignored,
+and workflow files are never changed this way.
+
+---
+
 ## Speed, RAM and privacy profiles
 
 **Settings → Performance** lets you trade privacy for speed with one tap.

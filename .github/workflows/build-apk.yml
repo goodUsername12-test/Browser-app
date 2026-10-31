@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: build-apk-${{ github.ref }}
@@ -20,6 +21,9 @@ jobs:
     name: Build and test
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     env:
       FABLE_KEYSTORE_PASSWORD: ${{ secrets.FABLE_KEYSTORE_PASSWORD }}
       FABLE_KEY_ALIAS: ${{ secrets.FABLE_KEY_ALIAS }}
@@ -62,7 +66,8 @@ jobs:
           fi
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace --warning-mode all
+        id: debug
+        run: ./gradlew assembleDebug --stacktrace 2>&1 | tee "$RUNNER_TEMP/debug.log"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v6
@@ -73,13 +78,15 @@ jobs:
 
       - name: Run unit tests
         id: tests
+        if: steps.debug.outcome == 'success'
         continue-on-error: true
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: ./gradlew testDebugUnitTest --stacktrace 2>&1 | tee "$RUNNER_TEMP/tests.log"
 
       - name: Build optimized release APK
         id: release
+        if: steps.debug.outcome == 'success'
         continue-on-error: true
-        run: ./gradlew assembleRelease --stacktrace
+        run: ./gradlew assembleRelease --stacktrace 2>&1 | tee "$RUNNER_TEMP/release.log"
 
       - name: Upload release APK
         if: steps.release.outcome == 'success'
@@ -112,3 +119,34 @@ jobs:
             app/build/test-results/
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Report result to issue 2
+        if: always() && github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e +o pipefail
+          VERSION="$(cat .fable-version 2>/dev/null || echo unknown)"
+          OUT="$RUNNER_TEMP/report.md"
+          {
+            echo "CI-RESULT $VERSION run ${{ github.run_id }} commit ${GITHUB_SHA::7} debug=${{ steps.debug.outcome }} tests=${{ steps.tests.outcome }} release=${{ steps.release.outcome }}"
+            echo ""
+            find app/build/outputs/apk -type f -name "*.apk" 2>/dev/null | while read -r apk; do
+              echo "APK $(basename "$apk") $(stat -c %s "$apk") bytes"
+            done
+            for log in debug tests release; do
+              f="$RUNNER_TEMP/$log.log"
+              [ -f "$f" ] || continue
+              if grep -qE "^e: |What went wrong|FAILED|Missing class|ERROR:|error:" "$f"; then
+                echo ""
+                echo "### $log"
+                echo '```'
+                grep -E "^e: |^w: .*(deprecated|Deprecated)|What went wrong|FAILED|Missing class|ERROR:|error:|Caused by|tests completed|> .*Exception" -A4 "$f" \
+                  | grep -v "^--$" | sed -E 's#file:///home/runner/work/[^/]+/[^/]+/##' | cut -c1-400 | head -n 300
+                echo '```'
+              fi
+            done
+          } > "$OUT"
+          head -c 60000 "$OUT" > "$OUT.cut"
+          gh issue comment 2 --repo "$GITHUB_REPOSITORY" --body-file "$OUT.cut"

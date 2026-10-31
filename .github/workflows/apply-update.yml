@@ -1,0 +1,82 @@
+name: Apply update from issue
+
+# Lets the repository owner deliver a new project version through issue #2:
+# the version is posted as base64 comments ("FABLE-DATA <version> i/n") followed by
+# "FABLE-APPLY <version> <sha256>". This workflow rebuilds the archive, checks the
+# hash, commits it to the default branch and starts the "Build APK" workflow.
+# Only comments written by the repository owner are accepted.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: apply-update
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: >-
+      github.event.issue.number == 2 &&
+      github.event.comment.user.login == github.repository_owner &&
+      startsWith(github.event.comment.body, 'FABLE-APPLY ')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BODY: ${{ github.event.comment.body }}
+      OWNER: ${{ github.repository_owner }}
+      BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Download and verify the new version
+        run: |
+          read -r _ VERSION SHA256 _rest <<< "$(printf '%s\n' "$BODY" | head -n 1 | tr -d '\r')"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Applying $VERSION ($SHA256)"
+          gh api "repos/$GITHUB_REPOSITORY/issues/2/comments?per_page=100" --paginate \
+            --jq ".[] | select(.user.login == \"$OWNER\") | select(.body | startswith(\"FABLE-DATA $VERSION \")) | .body" \
+            | tr -d '\r' | grep -v '^FABLE-DATA' | tr -cd 'A-Za-z0-9+/=' | base64 -d > "$RUNNER_TEMP/fable.tar.xz"
+          echo "$SHA256  $RUNNER_TEMP/fable.tar.xz" | sha256sum -c -
+
+      - name: Replace project files
+        run: |
+          # GITHUB_TOKEN may not modify workflow files, so the current ones are kept.
+          cp -r .github "$RUNNER_TEMP/github-keep"
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          tar -xJf "$RUNNER_TEMP/fable.tar.xz"
+          if ! diff -rq .github/workflows "$RUNNER_TEMP/github-keep/workflows" >/dev/null 2>&1; then
+            echo "WORKFLOWS_CHANGED=yes" >> "$GITHUB_ENV"
+            echo "::warning::This version changes workflow files; they must be pushed from the Codespace."
+          fi
+          rm -rf .github && cp -r "$RUNNER_TEMP/github-keep" .github
+          chmod +x gradlew
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Apply Fable Browser $VERSION" || echo "Nothing changed."
+          git push origin "HEAD:$BRANCH"
+          echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: Start the APK build
+        run: gh workflow run build-apk.yml --ref "$BRANCH"
+
+      - name: Report
+        if: always()
+        run: |
+          gh issue comment 2 --body "FABLE-APPLIED $VERSION ${{ job.status }} commit ${COMMIT:-none} workflows-changed ${WORKFLOWS_CHANGED:-no} run $GITHUB_RUN_ID"

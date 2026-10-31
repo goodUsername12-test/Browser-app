@@ -91,8 +91,10 @@ class ContentBlocker @Inject constructor(@ApplicationContext private val context
      * Third-party heuristic: a rule hit on a first-party host is allowed
      * through unless the substring rule matches (same behavior as ABP default).
      */
-    fun shouldBlock(url: String, documentHost: String? = null): Boolean =
-        shouldBlock(filters ?: return false, url, documentHost)
+    fun shouldBlock(url: String, documentHost: String? = null): Boolean {
+        val f = filters ?: return false
+        return shouldBlock(f, url, documentHost)
+    }
 
     fun ruleCount(): Int = filters?.ruleCount ?: 0
 

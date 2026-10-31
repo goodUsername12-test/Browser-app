@@ -20,7 +20,8 @@ val ciKeystoreFile: File? = ciKeystorePath?.let { File(it) }?.takeIf { it.isFile
 
 android {
     namespace = "com.fable.browser"
-    compileSdk = 35
+    // GeckoView 144 pulls in androidx.core 1.17, which must be compiled against API 36.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.fable.browser"
@@ -98,9 +99,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -112,6 +110,13 @@ android {
         jniLibs {
             useLegacyPackaging = true // GeckoView requires extracted native libs
         }
+    }
+}
+
+// Kotlin 2.2 removed the old `kotlinOptions {}` block; compiler options live here now.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 

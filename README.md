@@ -4,8 +4,8 @@ A privacy-first Android web browser built with Kotlin, Jetpack Compose (Material
 **Mozilla GeckoView**, with an incognito mode that is deliberately stronger than Chrome's.
 
 - **Builds automatically on GitHub Actions** (see *Get the APK*), 64-bit only
-- **Language / build**: Kotlin, JDK 17, Gradle Kotlin DSL, AGP 8.7.3, Gradle 8.11.1
-- **minSdk 26 · targetSdk 35 · compileSdk 35**
+- **Language / build**: Kotlin, JDK 17, Gradle Kotlin DSL, Kotlin 2.2.21, AGP 8.13.2, Gradle 8.14.3
+- **minSdk 26 · targetSdk 35 · compileSdk 36**
 - **Engine**: GeckoView (`org.mozilla.geckoview:geckoview`) — chosen over `WebView`
   because it supports true per-session isolation (`contextId` partitions), real
   Enhanced Tracking Protection, a blocking `webRequest` API for a filter-list ad
@@ -130,7 +130,7 @@ app/                         the Android application module
 
 ### Android Studio
 
-1. Install Android Studio (Ladybug or newer) with the Android 15 (API 35) SDK platform
+1. Install Android Studio (Narwhal 2025.1.3 or newer) with the Android 16 (API 36) SDK platform
    and Build-Tools, plus JDK 17 (bundled).
 2. `File → Open` → select the project root (the folder containing `settings.gradle.kts`).
    Gradle pulls GeckoView from `https://maven.mozilla.org/maven2/`.

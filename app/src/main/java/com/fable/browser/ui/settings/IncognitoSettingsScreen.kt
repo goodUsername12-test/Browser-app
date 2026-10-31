@@ -211,5 +211,30 @@ fun IncognitoSettingsScreen(
             subtitle = "Writing a file to disk is the one thing incognito cannot hide, so Fable asks first, per file"
         )
         ListDivider()
+
+        SectionHeader("Incognito protection")
+        SwitchRow(
+            title = "JavaScript in incognito",
+            subtitle = "Turn off for the most private and secure browsing. Most sites and all games need it. Applies to new incognito tabs",
+            checked = settings.incognitoJavascript,
+            onCheckedChange = viewModel::setIncognitoJavascript
+        )
+        SwitchRow(
+            title = "HTTPS-only in incognito",
+            subtitle = "Never load unencrypted pages in incognito, even if HTTPS-only is off for normal tabs",
+            checked = settings.incognitoHttpsOnly,
+            onCheckedChange = viewModel::setIncognitoHttpsOnly
+        )
+        SwitchRow(
+            title = "Block all third-party cookies in incognito",
+            subtitle = "Stronger than the default per-site isolation. Can stop logins and games embedded in other sites (like itch.io) from saving",
+            checked = settings.incognitoBlockThirdPartyCookies,
+            onCheckedChange = viewModel::setIncognitoBlockThirdPartyCookies
+        )
+        SettingRow(
+            title = "Fingerprint protection is always on in incognito",
+            subtitle = "Uses the protections chosen in Privacy > Fingerprint protection, plus a separate identity per incognito session"
+        )
+        ListDivider()
     }
 }

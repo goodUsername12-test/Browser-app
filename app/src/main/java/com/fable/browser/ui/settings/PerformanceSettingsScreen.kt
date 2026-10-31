@@ -95,6 +95,12 @@ fun PerformanceSettingsScreen(
             checked = settings.vibrationApi,
             onCheckedChange = viewModel::setVibrationApi
         )
+        SwitchRow(
+            title = "Use more memory for speed",
+            subtitle = "Bigger caches and instant Back/Forward. Best on phones with 6 GB RAM or more. Restart the app to apply",
+            checked = settings.speedMemory,
+            onCheckedChange = viewModel::setSpeedMemory
+        )
         ListDivider()
 
         SectionHeader("Optional web features (restart the app after changing)")

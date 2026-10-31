@@ -115,6 +115,15 @@ class EngineManager @Inject constructor(
             val v = flags[k] as? Boolean ?: default
             lines += "  $k: $v"
         }
+        intPrefs(null).forEach { (k, default) ->
+            val v = flags[k] as? Int ?: default
+            lines += "  $k: $v"
+        }
+        stringPrefs(null).forEach { (k, default) ->
+            val v = flags[k] as? String ?: default
+            // YAML single-quoted scalar: only ' needs escaping (doubled).
+            lines += "  $k: '" + v.replace("'", "''") + "'"
+        }
         // Optional features are only written when switched on, so "off" always
         // means the engine's own default.
         featurePrefs(null).forEach { (k, default) ->
@@ -137,9 +146,81 @@ class EngineManager @Inject constructor(
             // Firefox's own tracking-parameter stripping (fbclid, gclid, ...).
             "privacy.query_stripping.enabled" to d.stripTrackingParams,
             "privacy.query_stripping.enabled.pbmode" to d.stripTrackingParams,
-            // Graphics chip name in WebGL (games use it to pick quality).
-            "webgl.enable-debug-renderer-info" to !d.hideGpuModel
+            // The GPU name is now hidden per site by fingerprint protection
+            // (WebGLRenderInfo), so the global switch stays on.
+            "webgl.enable-debug-renderer-info" to true,
+            // WebRTC: relay only through the proxy / switch off completely.
+            "media.peerconnection.ice.proxy_only" to d.webRtcProxyOnly,
+            "media.peerconnection.enabled" to !d.webRtcDisabled,
+            // No silent connections to sites you have not opened.
+            "network.prefetch-next" to !d.blockPrefetch,
+            "network.predictor.enabled" to !d.blockPrefetch,
+            // Security hardening: JavaScript without JIT compilers, WebAssembly off.
+            "javascript.options.baselinejit" to !d.noJit,
+            "javascript.options.ion" to !d.noJit,
+            "javascript.options.native_regexp" to !d.noJit,
+            "javascript.options.wasm_optimizingjit" to !d.noJit,
+            "javascript.options.wasm" to !d.disableWasm
         )
+    }
+
+    private fun intPrefs(s: Settings?): List<Pair<String, Int>> {
+        val d = s ?: Settings()
+        return listOf(
+            "network.http.speculative-parallel-limit" to if (d.blockPrefetch) 0 else 6,
+            // Cross-site requests only get the site name as referrer, never the full address.
+            "network.http.referer.XOriginTrimmingPolicy" to if (d.strictReferrer) 2 else 0,
+            "privacy.bounceTrackingProtection.mode" to if (d.bounceTracking) 1 else 0,
+            // Speed: more RAM for caches and instant back/forward when the user allows it.
+            "browser.cache.memory.capacity" to if (d.speedMemory) 65536 else 16384,
+            "browser.sessionhistory.max_total_viewers" to if (d.speedMemory) 3 else 1,
+            "image.mem.surfacecache.max_size_kb" to if (d.speedMemory) 262144 else 131072
+        )
+    }
+
+    private fun stringPrefs(s: Settings?): List<Pair<String, String>> {
+        val d = s ?: Settings()
+        return listOf(
+            "privacy.fingerprintingProtection.overrides" to fingerprintOverrides(d),
+            "privacy.fingerprintingProtection.granularOverrides" to trustedSitesJson(d)
+        )
+    }
+
+    /** Firefox fingerprinting-protection targets chosen in Settings > Privacy. */
+    private fun fingerprintOverrides(d: Settings): String {
+        val targets = listOf(
+            d.fpCanvas to listOf("CanvasRandomization"),
+            d.fpCanvasThirdParty to listOf("CanvasExtractionFromThirdPartiesIsBlocked"),
+            d.fpFonts to listOf("FontVisibilityBaseSystem", "FontVisibilityLangPack"),
+            d.hideGpuModel to listOf("WebGLRenderInfo"),
+            d.fpWebGlLimits to listOf("WebGLRenderCapability"),
+            d.fpUserAgent to listOf(
+                "NavigatorUserAgent", "HttpUserAgent", "NavigatorAppVersion",
+                "NavigatorOscpu", "NavigatorPlatform", "NavigatorBuildID"
+            ),
+            d.fpHardware to listOf("NavigatorHWConcurrencyTiered", "MaxTouchPointsCollapse"),
+            d.fpScreen to listOf(
+                "ScreenRect", "ScreenAvailRect", "WindowOuterSize", "WindowScreenXY",
+                "ScreenPixelDepth", "CSSDeviceSize"
+            ),
+            d.fpAudio to listOf("AudioContext", "AudioSampleRate"),
+            d.fpMedia to listOf("MediaDevices", "MediaCapabilities", "SpeechSynthesis", "NetworkConnection"),
+            d.fpSensors to listOf("DeviceSensors"),
+            d.fpTimezone to listOf("JSDateTimeUTC"),
+            d.fpLanguage to listOf("JSLocale"),
+            d.fpTimers to listOf("ReduceTimerPrecision")
+        )
+        return targets.flatMap { (on, names) -> names.map { (if (on) "+" else "-") + it } }
+            .joinToString(",")
+    }
+
+    /** Trusted sites (games etc.) get no fingerprinting protection at all. */
+    private fun trustedSitesJson(d: Settings): String {
+        val hosts = d.fpTrustedSites.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        if (hosts.isEmpty()) return "[]"
+        return hosts.joinToString(prefix = "[", postfix = "]", separator = ",") { host ->
+            "{\"firstPartyDomain\":\"$host\",\"overrides\":\"-AllTargets\"}"
+        }
     }
 
     /** Optional web platform features. Only applied when switched on. */
@@ -161,10 +242,24 @@ class EngineManager @Inject constructor(
     private fun applyOptionalPrefs(s: Settings) {
         val privacy = privacyPrefs(s)
         val features = featurePrefs(s)
+        val ints = intPrefs(s)
+        val strings = stringPrefs(s)
         runCatching {
             val editor = engineFlags.edit()
             (privacy + features).forEach { (k, v) -> editor.putBoolean(k, v) }
+            ints.forEach { (k, v) -> editor.putInt(k, v) }
+            strings.forEach { (k, v) -> editor.putString(k, v) }
             editor.apply()
+        }
+        ints.forEach { (k, v) ->
+            runCatching {
+                GeckoPreferenceController.setGeckoPref(k, v, GeckoPreferenceController.PREF_BRANCH_USER)
+            }
+        }
+        strings.forEach { (k, v) ->
+            runCatching {
+                GeckoPreferenceController.setGeckoPref(k, v, GeckoPreferenceController.PREF_BRANCH_USER)
+            }
         }
         privacy.forEach { (k, v) ->
             runCatching {
@@ -256,6 +351,11 @@ class EngineManager @Inject constructor(
             rt.settings.setBaselineFingerprintingProtection(true)
             rt.settings.setFingerprintingProtectionPrivateBrowsing(true)
             rt.settings.setFingerprintingProtection(s.fingerprintProtectionAll)
+            // Incognito: third-party cookies fully blocked if chosen, else isolated per site.
+            rt.settings.contentBlocking.setCookieBehaviorPrivateMode(
+                if (s.incognitoBlockThirdPartyCookies) ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY
+                else ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS
+            )
         }
         // Speed: honour <img fetchpriority="high"> etc. so important resources load first.
         runCatching { rt.settings.setFetchPriorityEnabled(true) }
@@ -351,9 +451,6 @@ class EngineManager @Inject constructor(
         private val BASE_PREFS: List<Pair<String, Any>> = listOf(
             // Memory (unchanged from v5)
             "dom.ipc.processPrelaunch.enabled" to false,
-            "browser.sessionhistory.max_total_viewers" to 1,
-            "browser.cache.memory.capacity" to 16384,
-            "image.mem.surfacecache.max_size_kb" to 131072,
             // Privacy: hide host candidates behind mDNS names if any are gathered,
             // and send WebRTC through the proxy when one is set.
             "media.peerconnection.ice.obfuscate_host_addresses" to true,

@@ -15,6 +15,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import com.fable.browser.ui.components.ConfirmDialog
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,7 +73,17 @@ fun SiteSettingsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 SectionHeader(origin, Modifier.weight(1f))
-                IconButton(onClick = { viewModel.clearOrigin(origin) }) {
+                var askForget by remember { mutableStateOf(false) }
+                if (askForget) {
+                    ConfirmDialog(
+                        title = "Forget $origin?",
+                        message = "All permissions you gave this site will be removed.",
+                        confirmLabel = "Forget",
+                        onConfirm = { viewModel.clearOrigin(origin) },
+                        onDismiss = { askForget = false }
+                    )
+                }
+                IconButton(onClick = { askForget = true }) {
                     Icon(
                         Icons.Outlined.Delete,
                         contentDescription = "Forget $origin",

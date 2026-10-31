@@ -63,7 +63,8 @@ class SessionFactory @Inject constructor(
 
     private fun applyCommon(session: GeckoSession, settings: Settings, incognito: Boolean) {
         session.settings.apply {
-            allowJavascript = true
+            // Incognito can run with JavaScript off (Settings > Incognito).
+            allowJavascript = if (incognito) settings.incognitoJavascript else true
         }
         // Force-dark handled per navigation via the content delegate; text zoom
         // applied through the display. Nothing here writes to disk in incognito.

@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import com.fable.browser.ui.components.ConfirmDialog
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -90,13 +91,27 @@ fun TabsScreen(
                         }
                     },
                     actions = {
-                        IconButton(
-                            onClick = {
+                        var askCloseAll by remember { mutableStateOf(false) }
+                        if (askCloseAll) {
+                            ConfirmDialog(
+                                title = if (showIncognito) "Close all incognito tabs?" else "Close all tabs?",
+                                message = if (showIncognito) {
+                                    "All incognito tabs and their data will be erased right away."
+                                } else {
+                                    "Every open tab will be closed."
+                                },
+                                confirmLabel = "Close all",
                                 // "Close all incognito" takes the panic path: tabs
                                 // closed, containers dropped, identity reset.
-                                if (showIncognito) viewModel.panicWipe()
-                                else viewModel.closeAll(false)
-                            }
+                                onConfirm = {
+                                    if (showIncognito) viewModel.panicWipe()
+                                    else viewModel.closeAll(false)
+                                },
+                                onDismiss = { askCloseAll = false }
+                            )
+                        }
+                        IconButton(
+                            onClick = { askCloseAll = true }
                         ) {
                             Icon(
                                 Icons.Outlined.DeleteSweep,

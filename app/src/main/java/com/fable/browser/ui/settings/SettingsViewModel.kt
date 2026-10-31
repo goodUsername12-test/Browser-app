@@ -86,6 +86,81 @@ class SettingsViewModel @Inject constructor(
     fun setFeatureSpeechRecognition(v: Boolean) = edit { store.setFeatureSpeechRecognition(v) }
     fun setFeatureWebGlDraft(v: Boolean) = edit { store.setFeatureWebGlDraft(v) }
     fun setFeatureWasmExperimental(v: Boolean) = edit { store.setFeatureWasmExperimental(v) }
+    fun setFpCanvas(v: Boolean) = edit { store.setFpCanvas(v) }
+    fun setFpCanvasThirdParty(v: Boolean) = edit { store.setFpCanvasThirdParty(v) }
+    fun setFpFonts(v: Boolean) = edit { store.setFpFonts(v) }
+    fun setFpUserAgent(v: Boolean) = edit { store.setFpUserAgent(v) }
+    fun setFpHardware(v: Boolean) = edit { store.setFpHardware(v) }
+    fun setFpScreen(v: Boolean) = edit { store.setFpScreen(v) }
+    fun setFpAudio(v: Boolean) = edit { store.setFpAudio(v) }
+    fun setFpMedia(v: Boolean) = edit { store.setFpMedia(v) }
+    fun setFpWebGlLimits(v: Boolean) = edit { store.setFpWebGlLimits(v) }
+    fun setFpSensors(v: Boolean) = edit { store.setFpSensors(v) }
+    fun setFpTimezone(v: Boolean) = edit { store.setFpTimezone(v) }
+    fun setFpLanguage(v: Boolean) = edit { store.setFpLanguage(v) }
+    fun setFpTimers(v: Boolean) = edit { store.setFpTimers(v) }
+    fun setWebRtcProxyOnly(v: Boolean) = edit { store.setWebRtcProxyOnly(v) }
+    fun setWebRtcDisabled(v: Boolean) = edit { store.setWebRtcDisabled(v) }
+    fun setBlockPrefetch(v: Boolean) = edit { store.setBlockPrefetch(v) }
+    fun setStrictReferrer(v: Boolean) = edit { store.setStrictReferrer(v) }
+    fun setBounceTracking(v: Boolean) = edit { store.setBounceTracking(v) }
+    fun setNoJit(v: Boolean) = edit { store.setNoJit(v) }
+    fun setDisableWasm(v: Boolean) = edit { store.setDisableWasm(v) }
+    fun setSpeedMemory(v: Boolean) = edit { store.setSpeedMemory(v) }
+    fun setIncognitoJavascript(v: Boolean) = edit { store.setIncognitoJavascript(v) }
+    fun setIncognitoHttpsOnly(v: Boolean) = edit { store.setIncognitoHttpsOnly(v) }
+    fun setIncognitoBlockThirdPartyCookies(v: Boolean) = edit { store.setIncognitoBlockThirdPartyCookies(v) }
+
+    fun addTrustedSite(raw: String) {
+        val host = normalizeHost(raw) ?: return
+        val current = settings.value.fpTrustedSites.split(',').filter { it.isNotBlank() }
+        if (host in current) return
+        edit { store.setFpTrustedSites((current + host).joinToString(",")) }
+    }
+
+    fun removeTrustedSite(host: String) {
+        val current = settings.value.fpTrustedSites.split(',').filter { it.isNotBlank() && it != host }
+        edit { store.setFpTrustedSites(current.joinToString(",")) }
+    }
+
+    private fun normalizeHost(raw: String): String? {
+        val t = raw.trim().lowercase()
+            .removePrefix("https://").removePrefix("http://")
+            .substringBefore('/').substringBefore(':').removePrefix("www.")
+        return t.takeIf { it.isNotEmpty() && '.' in it && t.all { c -> c.isLetterOrDigit() || c == '.' || c == '-' } }
+    }
+
+    /** One-tap profiles. Every switch can still be changed by hand afterwards. */
+    fun applyPreset(preset: PrivacyPreset) = edit {
+        val max = preset == PrivacyPreset.MAXIMUM
+        val game = preset == PrivacyPreset.GAMING
+        store.setFingerprintProtectionAll(true)
+        store.setFpCanvas(!game)
+        store.setFpCanvasThirdParty(!game)
+        store.setFpFonts(true)
+        store.setFpUserAgent(true)
+        store.setFpHardware(!game)
+        store.setFpScreen(!game)
+        store.setFpAudio(!game)
+        store.setFpMedia(true)
+        store.setHideGpuModel(!game)
+        store.setFpWebGlLimits(max)
+        store.setFpSensors(max)
+        store.setFpTimezone(max)
+        store.setFpLanguage(max)
+        store.setFpTimers(max)
+        store.setHideLocalIp(true)
+        store.setWebRtcProxyOnly(false)
+        store.setWebRtcDisabled(max)
+        store.setBlockPrefetch(true)
+        store.setStrictReferrer(true)
+        store.setBounceTracking(true)
+        store.setStrictTrackingProtection(true)
+        store.setNoJit(max)
+        store.setDisableWasm(max)
+        store.setGameMode(true)
+        store.setHighRefreshRate(true)
+    }
     fun setStripTrackingParams(v: Boolean) = edit { store.setStripTrackingParams(v) }
     fun setDohProvider(v: DohProvider) = edit { store.setDohProvider(v) }
     fun setDohCustomUrl(v: String) = edit { store.setDohCustomUrl(v.trim()) }

@@ -141,7 +141,8 @@ class SessionDelegateFactory @Inject constructor(
             }
 
             // HTTPS-only mode: refuse plain HTTP unless the user allowed this host.
-            if (current.httpsOnly && UrlUtils.isInsecure(uri) &&
+            val httpsOnly = current.httpsOnly || (tab.isIncognito && current.incognitoHttpsOnly)
+            if (httpsOnly && UrlUtils.isInsecure(uri) &&
                 !tab.isHttpAllowed(UrlUtils.host(uri))
             ) {
                 tab.updateInterstitial(Interstitial.HttpsOnly(uri))

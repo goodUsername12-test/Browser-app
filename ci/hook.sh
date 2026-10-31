@@ -93,17 +93,9 @@ log "Cold start"
 timeout 90 adb shell am start -W -n "$ACT" > "$ART/start.txt" 2>&1
 sleep 20; step "cold start (new tab page)"; shot 1-start
 
-for url in https://example.com https://en.m.wikipedia.org/wiki/Firefox https://webglsamples.org/aquarium/aquarium.html; do
-  log "Opening $url"
-  timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "$url" -n "$ACT" >> "$ART/start.txt" 2>&1
-  sleep 25
-  name="$(echo "$url" | sed -E 's#https?://##; s#[^a-zA-Z0-9]+#-#g' | cut -c1-30)"
-  step "open $url"; shot "2-$name"
-done
-
 tap_desc() {
   # Tap the on-screen control whose accessibility label is $1 (Compose exposes it).
-  adb shell uiautomator dump /sdcard/fable-ui.xml >/dev/null 2>&1
+  adb shell uiautomator dump /sdcard/fable-ui.xml > "$ART/uidump.txt" 2>&1
   adb pull /sdcard/fable-ui.xml "$ART/ui.xml" >/dev/null 2>&1 || return 1
   local b
   b="$(python3 - "$1" "$ART/ui.xml" <<'PY'
@@ -123,22 +115,36 @@ PY
   adb shell input tap $b
 }
 
-log "Full screen button on the WebGL page"
+for url in https://example.com https://en.m.wikipedia.org/wiki/Firefox https://webglsamples.org/aquarium/aquarium.html; do
+  log "Opening $url"
+  timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "$url" -n "$ACT" >> "$ART/start.txt" 2>&1
+  sleep 25
+  name="$(echo "$url" | sed -E 's#https?://##; s#[^a-zA-Z0-9]+#-#g' | cut -c1-30)"
+  step "open $url"; shot "2-$name"
+done
+
+log "Full screen button, then the WebGL page while in full screen"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com" -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 12
 if tap_desc "Full screen"; then
-  sleep 8; step "full screen button (WebGL page)"; shot 4-fullscreen
-  adb shell input swipe 500 1200 500 1100 300; sleep 3; step "touch while in full screen"
+  sleep 6; step "full screen button (static page)"; shot 4-fullscreen
+  adb shell input swipe 300 700 300 600 300; sleep 2; step "touch while in full screen"
   adb shell input keyevent KEYCODE_BACK; sleep 4; step "leave full screen with Back"
+  tap_desc "Full screen" && { sleep 4; step "full screen again"; }
+  timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://webglsamples.org/aquarium/aquarium.html" -n "$ACT" >> "$ART/start.txt" 2>&1
+  sleep 20; step "WebGL page loaded in full screen"; shot 4b-webgl-fullscreen
 else
-  STEPS="$STEPS"$'\n'"- full screen button: not found on screen"
+  STEPS="$STEPS"$'\n'"- full screen button: not found ($(head -c 200 "$ART/uidump.txt" 2>/dev/null | tr '\n' ' '))"
 fi
 
-log "Background/foreground while the WebGL page runs"
+log "Background/foreground while the WebGL page runs (full screen)"
 for n in 1 2 3; do
   adb shell input keyevent KEYCODE_HOME; sleep 6
   timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 6
   adb shell input tap 540 1200; sleep 2
 done
 step "back from background x3"; shot 5-after-background
+adb shell input keyevent KEYCODE_BACK; sleep 3; step "leave full screen after background"
 adb shell am force-stop "$PKG"; sleep 2
 timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 20; step "restart after force-stop (session restore)"; shot 3-restore
 

@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.fable.browser.data.model.DataSaverMode
 import com.fable.browser.data.model.DohProvider
@@ -106,6 +107,7 @@ data class Settings(
     val superDeviceRange: SuperDeviceRange = SuperDeviceRange.ANY,
     val superDevicePick: String = "",
     val superRandomTimezone: Boolean = true,
+    val superReveal: Set<String> = emptySet(),
     val keepSuperTabs: Boolean = false,
     val superProxyEnabled: Boolean = false,
     val superProxyType: SuperProxyType = SuperProxyType.SOCKS5,
@@ -211,6 +213,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val KEEP_INCOGNITO_TABS = booleanPreferencesKey("keep_incognito_tabs")
         val SUPER_DEVICE_RANGE = stringPreferencesKey("super_device_range")
         val SUPER_RANDOM_TZ = booleanPreferencesKey("super_random_tz")
+        val SUPER_REVEAL = stringSetPreferencesKey("super_reveal")
         val KEEP_SUPER_TABS = booleanPreferencesKey("keep_super_tabs")
         val SUPER_PROXY_ENABLED = booleanPreferencesKey("super_proxy_enabled")
         val SUPER_PROXY_TYPE = stringPreferencesKey("super_proxy_type")
@@ -309,6 +312,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             superDeviceRange = enum(p[Keys.SUPER_DEVICE_RANGE], SuperDeviceRange.ANY),
             superDevicePick = p[Keys.SUPER_DEVICE_PICK] ?: "",
             superRandomTimezone = p[Keys.SUPER_RANDOM_TZ] ?: true,
+            superReveal = p[Keys.SUPER_REVEAL] ?: emptySet(),
             keepSuperTabs = p[Keys.KEEP_SUPER_TABS] ?: false,
             superProxyEnabled = p[Keys.SUPER_PROXY_ENABLED] ?: false,
             superProxyType = enum(p[Keys.SUPER_PROXY_TYPE], SuperProxyType.SOCKS5),
@@ -407,6 +411,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setKeepIncognitoTabs(v: Boolean) = set(Keys.KEEP_INCOGNITO_TABS, v)
     suspend fun setSuperDeviceRange(v: SuperDeviceRange) = set(Keys.SUPER_DEVICE_RANGE, v.name)
     suspend fun setSuperRandomTimezone(v: Boolean) = set(Keys.SUPER_RANDOM_TZ, v)
+    suspend fun setSuperHidden(item: String, hidden: Boolean) {
+        context.dataStore.edit {
+            val now = it[Keys.SUPER_REVEAL] ?: emptySet()
+            it[Keys.SUPER_REVEAL] = if (hidden) now - item else now + item
+        }
+    }
     suspend fun setKeepSuperTabs(v: Boolean) = set(Keys.KEEP_SUPER_TABS, v)
     suspend fun setSuperProxyEnabled(v: Boolean) = set(Keys.SUPER_PROXY_ENABLED, v)
     suspend fun setSuperProxyType(v: SuperProxyType) = set(Keys.SUPER_PROXY_TYPE, v.name)

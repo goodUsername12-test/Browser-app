@@ -50,11 +50,15 @@
   const CANVAS_LEVEL = SUPER ? Math.max(1, Math.min(3, SUPER.canvasNoise | 0)) : 2;
   const AUDIO_LEVEL = SUPER ? Math.max(1, Math.min(3, SUPER.audioNoise | 0)) : 2;
   const TIME_ZONE = SUPER ? SUPER.timeZone || "" : CFG.utc ? "UTC" : "";
+  const HIDE = SUPER && SUPER.hide && typeof SUPER.hide === "object" ? SUPER.hide : {};
+  function hiding(key) {
+    return HIDE[key] !== false;
+  }
   const GENERIC = new Set([
     "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "ui-serif",
     "ui-sans-serif", "ui-monospace", "ui-rounded", "emoji", "math", "fangsong", "inherit", "initial",
   ]);
-  const FONTS = SUPER && Array.isArray(SUPER.fonts) ? new Set(SUPER.fonts.map((f) => String(f).toLowerCase())) : null;
+  const FONTS = SUPER && hiding("fonts") && Array.isArray(SUPER.fonts) ? new Set(SUPER.fonts.map((f) => String(f).toLowerCase())) : null;
 
   function firstFamily(list) {
     if (!list) return "";
@@ -836,39 +840,45 @@
         const S = SUPER;
         const langs = Array.isArray(S.languages) && S.languages.length ? S.languages : ["en-US", "en"];
         const frozen = W.Object.freeze(pageArray(langs));
-        constant(NP, "userAgent", S.ua);
-        constant(NP, "appVersion", S.appVersion);
-        constant(NP, "platform", S.platform);
-        if (S.oscpu) constant(NP, "oscpu", S.oscpu);
-        else defGet(NP, "oscpu", () => undefined);
-        constant(NP, "vendor", S.vendor || "");
-        constant(NP, "hardwareConcurrency", S.cores);
-        constant(NP, "maxTouchPoints", S.touchPoints);
-        constant(NP, "language", langs[0]);
-        defGet(NP, "languages", () => frozen);
-        constant(NP, "doNotTrack", S.doNotTrack ? "1" : "unspecified");
-        constant(NP, "pdfViewerEnabled", !!S.pdfViewer);
+        if (hiding("browser")) {
+          constant(NP, "userAgent", S.ua);
+          constant(NP, "appVersion", S.appVersion);
+          constant(NP, "platform", S.platform);
+          if (S.oscpu) constant(NP, "oscpu", S.oscpu);
+          else defGet(NP, "oscpu", () => undefined);
+          constant(NP, "vendor", S.vendor || "");
+          constant(NP, "pdfViewerEnabled", !!S.pdfViewer);
+        }
+        if (hiding("cpu")) constant(NP, "hardwareConcurrency", S.cores);
+        if (hiding("touch")) constant(NP, "maxTouchPoints", S.touchPoints);
+        if (hiding("languages")) {
+          constant(NP, "language", langs[0]);
+          defGet(NP, "languages", () => frozen);
+        }
+        if (hiding("dnt")) constant(NP, "doNotTrack", S.doNotTrack ? "1" : "unspecified");
         constant(NP, "webdriver", false);
-        const width = S.screenWidth;
-        const height = S.screenHeight;
-        constant(SP, "width", width);
-        constant(SP, "height", height);
-        constant(SP, "availWidth", width);
-        constant(SP, "availHeight", S.availHeight || height);
-        constant(SP, "availTop", S.availTop || 0);
-        constant(SP, "availLeft", 0);
-        constant(SP, "left", 0);
-        constant(SP, "top", 0);
-        constant(SP, "colorDepth", S.colorDepth);
-        constant(SP, "pixelDepth", S.colorDepth);
-        constant(W, "devicePixelRatio", S.pixelRatio);
-        shieldCanvas();
-        shieldWebGl(S.glVendor, S.glRenderer, S.glLimits || null);
-        shieldAudio();
-        shieldFonts();
-        if (S.rectNoise) shieldRects();
-        shieldVoices(Number(S.voiceShare) || 100);
-        shieldWebRtc();
+        if (hiding("screen")) {
+          const width = S.screenWidth;
+          const height = S.screenHeight;
+          constant(SP, "width", width);
+          constant(SP, "height", height);
+          constant(SP, "availWidth", width);
+          constant(SP, "availHeight", S.availHeight || height);
+          constant(SP, "availTop", S.availTop || 0);
+          constant(SP, "availLeft", 0);
+          constant(SP, "left", 0);
+          constant(SP, "top", 0);
+          constant(SP, "colorDepth", S.colorDepth);
+          constant(SP, "pixelDepth", S.colorDepth);
+          constant(W, "devicePixelRatio", S.pixelRatio);
+        }
+        if (hiding("canvas")) shieldCanvas();
+        if (hiding("graphics")) shieldWebGl(S.glVendor, S.glRenderer, S.glLimits || null);
+        if (hiding("audio")) shieldAudio();
+        if (hiding("fonts")) shieldFonts();
+        if (hiding("rects") && S.rectNoise) shieldRects();
+        if (hiding("voices")) shieldVoices(Number(S.voiceShare) || 100);
+        if (hiding("webrtc")) shieldWebRtc();
         if (TIME_ZONE) shieldTimeZone(TIME_ZONE);
       } else {
         const bucket = (v) => Math.max(100, Math.round(v / 100) * 100);

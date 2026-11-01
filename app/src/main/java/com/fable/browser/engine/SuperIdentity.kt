@@ -89,6 +89,11 @@ data class SuperIdentity(
         append(if (timeZone.isEmpty()) "real time zone" else timeZone)
     }
 
+    fun withRealBrowser(): SuperIdentity {
+        val real = runCatching { GeckoSession.getDefaultUserAgent() }.getOrNull().orEmpty()
+        return if (real.isEmpty()) this else copy(ua = real, desktop = false)
+    }
+
     fun details(): List<Pair<String, String>> = listOf(
         "Device" to label,
         "Browser" to ua,
@@ -106,6 +111,17 @@ data class SuperIdentity(
     )
 
     companion object {
+        const val HIDE_BROWSER = "browser"
+
+        val HIDE_KEYS: List<String> = listOf(
+            HIDE_BROWSER, "screen", "cpu", "touch", "languages", "graphics", "fonts",
+            "canvas", "audio", "rects", "voices", "dnt", "webrtc"
+        )
+
+        fun hideJson(reveal: Set<String>): JSONObject = JSONObject().apply {
+            HIDE_KEYS.forEach { put(it, it !in reveal) }
+        }
+
         fun fromJson(o: JSONObject): SuperIdentity? = runCatching {
             val langs = o.getJSONArray("languages")
             val fontsArr = o.optJSONArray("fonts") ?: JSONArray()

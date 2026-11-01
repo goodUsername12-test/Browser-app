@@ -47,12 +47,13 @@ class SuperIncognito @Inject constructor(
         _identity.value?.let { return it }
         val avoid = HashSet<String>(fingerprintShield.knownUserAgents())
         runCatching { avoid += GeckoSession.getDefaultUserAgent() }
-        val created = SuperIdentityFactory.create(
+        val made = SuperIdentityFactory.create(
             settings.superDeviceRange,
             settings.superDevicePick,
             settings.superRandomTimezone,
             avoid
         )
+        val created = if (SuperIdentity.HIDE_BROWSER in settings.superReveal) made.withRealBrowser() else made
         _identity.value = created
         changed()
         return created

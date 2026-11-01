@@ -52,6 +52,22 @@ import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
 import com.fable.browser.ui.components.SwitchRow
 
+private val superHideItems: List<Triple<String, String, String>> = listOf(
+    Triple(SuperIdentity.HIDE_BROWSER, "Browser and system", "Fake browser, version and operating system"),
+    Triple("screen", "Screen", "Fake screen size and pixel density"),
+    Triple("cpu", "CPU cores", "Fake number of processor cores"),
+    Triple("touch", "Touch points", "Fake number of touch points"),
+    Triple("languages", "Languages", "Fake languages sent to websites"),
+    Triple("graphics", "Graphics card", "Fake WebGL graphics card and WebGL noise"),
+    Triple("fonts", "Fonts", "Fake list of installed fonts"),
+    Triple("canvas", "Canvas noise", "Random noise in canvas drawings"),
+    Triple("audio", "Audio noise", "Random noise in audio checks"),
+    Triple("rects", "Layout noise", "Tiny random changes to measured element sizes"),
+    Triple("voices", "Speech voices", "Fake list of text to speech voices"),
+    Triple("dnt", "Do Not Track", "Random Do Not Track signal"),
+    Triple("webrtc", "Local IP address", "Hides your IP address from WebRTC")
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SuperIncognitoSettingsScreen(
@@ -143,6 +159,24 @@ fun SuperIncognitoSettingsScreen(
             checked = settings.superRandomTimezone,
             icon = Icons.Outlined.Schedule,
             onCheckedChange = viewModel::setSuperRandomTimezone
+        )
+        ListDivider()
+
+        SectionHeader("What super incognito hides")
+        superHideItems.forEach { (key, title, subtitle) ->
+            SwitchRow(
+                title = title,
+                subtitle = subtitle,
+                checked = key !in settings.superReveal,
+                onCheckedChange = { on -> viewModel.setSuperHidden(key, on) }
+            )
+        }
+        Text(
+            "Turned off items show your real value. Changes apply to the next page you open, browser and system " +
+                "apply to the next identity.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
         )
         ListDivider()
 

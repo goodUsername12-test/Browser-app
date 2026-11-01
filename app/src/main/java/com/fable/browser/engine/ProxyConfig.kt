@@ -87,7 +87,8 @@ class ProxyConfig @Inject constructor(
     private fun configJson(): JSONObject {
         val s = current
         val supers = JSONArray()
-        superIncognito.identity.value?.let { supers.put(it.toJson()) }
+        val reveal = s?.superReveal ?: emptySet()
+        superIncognito.identity.value?.let { supers.put(it.toJson().put("hide", SuperIdentity.hideJson(reveal))) }
         val superProxyOn = (s?.superProxyEnabled ?: false) && !s?.superProxyHost.isNullOrBlank()
         return JSONObject().apply {
             put("type", "config")

@@ -108,6 +108,10 @@ function superFor(details) {
   return null;
 }
 
+function hides(sup, key) {
+  return !!sup && (!sup.hide || sup.hide[key] !== false);
+}
+
 function superProxyOn() {
   return config.superProxyEnabled === true && !!config.superProxyHost;
 }
@@ -150,7 +154,7 @@ function connectNative() {
   port.onMessage.addListener(onNativeMessage);
   port.onDisconnect.addListener(() => {
     port = null;
-    setTimeout(connectNative, 2000);
+    setTimeout(connectNative, 1000);
   });
   port.postMessage({ type: "hello" });
 }
@@ -275,9 +279,9 @@ function onBeforeSendHeaders(details) {
     }
 
     if (CLIENT_HINT_HEADERS.has(name)) continue;
-    if (sup && name.startsWith("sec-ch-ua")) continue;
+    if (hides(sup, "browser") && name.startsWith("sec-ch-ua")) continue;
 
-    if (sup && name === "accept-language") {
+    if (hides(sup, "languages") && name === "accept-language") {
       headers.push({ name: header.name, value: sup.acceptLanguage || header.value });
       continue;
     }
@@ -296,13 +300,13 @@ function onBeforeSendHeaders(details) {
 
     if (name === "dnt") {
       sawDnt = true;
-      if (sup && !sup.doNotTrack) continue;
+      if (hides(sup, "dnt") && !sup.doNotTrack) continue;
     }
     headers.push(header);
   }
 
   if (sup) {
-    if (sup.doNotTrack && !sawDnt) headers.push({ name: "DNT", value: "1" });
+    if (hides(sup, "dnt") && sup.doNotTrack && !sawDnt) headers.push({ name: "DNT", value: "1" });
   } else if (shield && !sawDnt) {
     headers.push({ name: "DNT", value: "1" });
   }
@@ -413,14 +417,22 @@ function registerListeners() {
     const proxyEvent = browser.proxy.onRequest;
     if (proxyEvent.hasListener(onProxyRequest)) proxyEvent.removeListener(onProxyRequest);
     if (proxyOn) {
-      try {
-        proxyEvent.addListener(onProxyRequest, { urls: ["<all_urls>"] }, ["requestHeaders"]);
-        proxyHeadersSupported = true;
-      } catch (e) {
-        proxyHeadersSupported = false;
+      const attempts = [
+        [{ urls: ["<all_urls>"], incognito: true }, ["requestHeaders"]],
+        [{ urls: ["<all_urls>"] }, ["requestHeaders"]],
+        [{ urls: ["<all_urls>"] }, null],
+      ];
+      for (const [filter, extra] of attempts) {
         try {
-          proxyEvent.addListener(onProxyRequest, { urls: ["<all_urls>"] });
-        } catch (x) {
+          if (proxyEvent.hasListener(onProxyRequest)) proxyEvent.removeListener(onProxyRequest);
+          if (extra) {
+            proxyEvent.addListener(onProxyRequest, filter, extra);
+          } else {
+            proxyEvent.addListener(onProxyRequest, filter);
+          }
+          proxyHeadersSupported = !!extra;
+          break;
+        } catch (e) {
         }
       }
     }

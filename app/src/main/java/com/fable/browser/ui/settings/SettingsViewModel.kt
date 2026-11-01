@@ -276,6 +276,7 @@ class SettingsViewModel @Inject constructor(
     fun setKeepIncognitoTabs(v: Boolean) = edit { store.setKeepIncognitoTabs(v) }
     fun setSuperDeviceRange(v: SuperDeviceRange) = edit { store.setSuperDeviceRange(v) }
     fun setSuperRandomTimezone(v: Boolean) = edit { store.setSuperRandomTimezone(v) }
+    fun setSuperHidden(item: String, hidden: Boolean) = edit { store.setSuperHidden(item, hidden) }
     fun setKeepSuperTabs(v: Boolean) = edit { store.setKeepSuperTabs(v) }
     fun setSuperProxyEnabled(v: Boolean) = edit { store.setSuperProxyEnabled(v) }
     fun setSuperProxyType(v: SuperProxyType) = edit { store.setSuperProxyType(v) }

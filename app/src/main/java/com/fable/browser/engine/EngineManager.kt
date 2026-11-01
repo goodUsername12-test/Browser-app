@@ -144,11 +144,13 @@ class EngineManager @Inject constructor(
         if (networkWatchStarted) return
         networkWatchStarted = true
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
-        metered = runCatching { cm.isActiveNetworkMetered }.getOrDefault(false)
+        metered = runCatching {
+            cm.getNetworkCapabilities(cm.activeNetwork)?.let { meteredOf(it) } ?: cm.isActiveNetworkMetered
+        }.getOrDefault(false)
         runCatching {
             cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
                 override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                    val now = !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+                    val now = meteredOf(caps)
                     if (now == metered) return
                     metered = now
                     scope.launch {
@@ -161,6 +163,16 @@ class EngineManager @Inject constructor(
                 }
             })
         }
+    }
+
+    private fun meteredOf(caps: NetworkCapabilities): Boolean {
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+            ) return false
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return true
+        }
+        return !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
 
     private fun privacyPrefs(s: Settings?): List<Pair<String, Boolean>> {
@@ -330,15 +342,29 @@ class EngineManager @Inject constructor(
     }
 
     private fun installShieldExtension(runtime: GeckoRuntime) {
-        runtime.webExtensionController
+        val controller = runtime.webExtensionController
+        controller
             .ensureBuiltIn("resource://android/assets/extensions/fable_shield/", SHIELD_ID)
             .accept(
                 { ext ->
-                    shieldExtension = ext
-                    ext?.let { proxyConfig.attach(it) }
+                    if (ext != null) {
+                        if (ext.metaData.allowedInPrivateBrowsing) {
+                            useShield(ext)
+                        } else {
+                            controller.setAllowedInPrivateBrowsing(ext, true).accept(
+                                { updated -> useShield(updated ?: ext) },
+                                { useShield(ext) }
+                            )
+                        }
+                    }
                 },
                 {}
             )
+    }
+
+    private fun useShield(ext: WebExtension) {
+        shieldExtension = ext
+        proxyConfig.attach(ext)
     }
 
     private fun observeSettings() {

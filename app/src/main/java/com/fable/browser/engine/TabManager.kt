@@ -27,6 +27,7 @@ import javax.inject.Singleton
 class TabManager @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
     private val incognitoStore: com.fable.browser.data.repo.IncognitoTabStore,
+    private val superIncognito: SuperIncognito,
     private val sessionFactory: SessionFactory,
     private val delegateFactory: SessionDelegateFactory,
     private val engineManager: EngineManager,
@@ -77,6 +78,7 @@ class TabManager @Inject constructor(
     private var lastScrollY = 0
 
     private companion object {
+        const val SUPER_WAIT_MS = 6000L
         const val TRIM_RUNNING_LOW = 10
         const val TRIM_RUNNING_CRITICAL = 15
         const val KILL_LOOP_WINDOW_MS = 60_000L
@@ -94,7 +96,7 @@ class TabManager @Inject constructor(
                     updated.keepLoadedTabs != settings.keepLoadedTabs ||
                     updated.memoryMode != settings.memoryMode ||
                     updated.idleTabMinutes != settings.idleTabMinutes
-                val keepChanged = updated.keepIncognitoTabs != settings.keepIncognitoTabs
+                val keepChanged = updated.keepIncognitoTabs != settings.keepIncognitoTabs || updated.keepSuperTabs != settings.keepSuperTabs
                 settings = updated
                 if (wipeChanged) restartAutoWipeTimer()
                 if (budgetChanged) {
@@ -138,7 +140,7 @@ class TabManager @Inject constructor(
                 }
                 restored.getOrNull(activeIndex)?.let { selectTab(it.id) }
             }
-            if (current.keepIncognitoTabs) restoreIncognitoTabs()
+            if (current.keepIncognitoTabs || current.keepSuperTabs) restoreIncognitoTabs()
             restartAutoWipeTimer()
             restartIdleSweep()
         }
@@ -147,9 +149,10 @@ class TabManager @Inject constructor(
     private suspend fun restoreIncognitoTabs() {
         val entries = withContext(Dispatchers.IO) { incognitoStore.load() }
         if (entries.isEmpty()) return
+        if (entries.any { it.superTab }) withContext(Dispatchers.IO) { superIncognito.restoreIdentity() }
         var toSelect: BrowserTab? = null
         entries.forEachIndexed { index, entry ->
-            val tab = createTab(incognito = true, open = false)
+            val tab = createTab(incognito = true, open = false, superMode = entry.superTab)
             tab.updateTitle(entry.title)
             tab.updateUrl(entry.url)
             tab.savedState = entry.state?.let { runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() }
@@ -174,18 +177,25 @@ class TabManager @Inject constructor(
                 isActive = tab.id == activeId
             )
         }.filter { it.url.startsWith("http", ignoreCase = true) }
-        val keepIncognito = settings.keepIncognitoTabs
+        val keepNormalIncognito = settings.keepIncognitoTabs
+        val keepSuper = settings.keepSuperTabs
+        val keepIncognito = keepNormalIncognito || keepSuper
         val incognitoTabs = if (keepIncognito) {
-            _tabs.value.filter { it.isIncognito && it.url.value.startsWith("http", ignoreCase = true) }.map { tab ->
+            _tabs.value.filter { tab ->
+                tab.isIncognito && tab.url.value.startsWith("http", ignoreCase = true) &&
+                    (if (tab.isSuper) keepSuper else keepNormalIncognito)
+            }.map { tab ->
                 PendingIncognito(
                     url = tab.url.value,
                     title = tab.title.value,
                     state = tab.savedState,
                     active = tab.id == activeId,
-                    pinned = tab.isPinned.value
+                    pinned = tab.isPinned.value,
+                    superTab = tab.isSuper
                 )
             }
         } else emptyList()
+        val saveIdentity = keepSuper && incognitoTabs.any { it.superTab }
         scope.launch {
             tabPersistence.save(snapshot)
             withContext(Dispatchers.IO) {
@@ -196,13 +206,15 @@ class TabManager @Inject constructor(
                             title = t.title,
                             state = t.state?.let { runCatching { it.toString() }.getOrNull() },
                             active = t.active,
-                            pinned = t.pinned
+                            pinned = t.pinned,
+                            superTab = t.superTab
                         )
                     }
                     incognitoStore.save(entries)
                 } else {
                     incognitoStore.clear()
                 }
+                if (saveIdentity) superIncognito.saveIdentity() else superIncognito.clearSaved()
             }
         }
     }
@@ -217,7 +229,7 @@ class TabManager @Inject constructor(
     }
 
     fun onAppExit(onDone: () -> Unit = {}) {
-        if (settings.keepIncognitoTabs) persist() else wipeIncognito()
+        if (settings.keepIncognitoTabs || settings.keepSuperTabs) persist() else wipeIncognito()
         val s = settings
         if (s.clearCookiesOnExit) engineManager.clearCookies()
         if (s.clearCacheOnExit) engineManager.clearCache()
@@ -288,8 +300,16 @@ class TabManager @Inject constructor(
         tab(tabId)?.updateThumbnail(bitmap)
     }
 
-    fun openTab(url: String? = null, incognito: Boolean = _isIncognitoMode.value): BrowserTab {
-        val tab = createTab(incognito)
+    fun openSuperTab(url: String? = null): BrowserTab = openTab(url, incognito = true, superMode = true)
+
+    fun newSuperIdentity() {
+        _tabs.value.filter { it.isSuper }.forEach { closeTab(it.id) }
+        superIncognito.endSession()
+        scope.launch(Dispatchers.IO) { superIncognito.clearSaved() }
+    }
+
+    fun openTab(url: String? = null, incognito: Boolean = _isIncognitoMode.value, superMode: Boolean = false): BrowserTab {
+        val tab = createTab(incognito || superMode, superMode = superMode)
         activate(tab)
         val target = url?.takeIf { it.isNotBlank() }
         if (target != null) load(tab, target) else tab.updateUrl("about:blank")
@@ -301,20 +321,29 @@ class TabManager @Inject constructor(
     private fun createTab(
         incognito: Boolean,
         open: Boolean = true,
-        inheritedContextId: String? = null
+        inheritedContextId: String? = null,
+        superMode: Boolean = false
     ): BrowserTab {
-        val contextId = if (incognito) {
+        val contextId = if (superMode) {
+            inheritedContextId ?: if (settings.isolateIncognitoTabs) sessionFactory.newContextId()
+            else superIncognito.sharedContextId ?: sessionFactory.newContextId().also { superIncognito.sharedContextId = it }
+        } else if (incognito) {
             inheritedContextId ?: if (settings.isolateIncognitoTabs) sessionFactory.newContextId()
             else sharedIncognitoContext ?: sessionFactory.newContextId().also { sharedIncognitoContext = it }
         } else null
 
-        val session = if (incognito) {
-            sessionFactory.createIncognitoSession(settings, contextId!!, open)
-        } else {
-            sessionFactory.createNormalSession(settings, open)
+        val session = when {
+            superMode -> sessionFactory.createSuperSession(settings, contextId!!, superIncognito.current(settings), open)
+            incognito -> sessionFactory.createIncognitoSession(settings, contextId!!, open)
+            else -> sessionFactory.createNormalSession(settings, open)
         }
 
-        val tab = BrowserTab(isIncognito = incognito, initialSession = session, contextId = contextId)
+        val tab = BrowserTab(
+            isIncognito = incognito || superMode,
+            initialSession = session,
+            contextId = contextId,
+            isSuper = superMode
+        )
         delegateFactory.attach(tab, scope, { settings }, callbacks)
         _tabs.value = _tabs.value + tab
         return tab
@@ -338,8 +367,17 @@ class TabManager @Inject constructor(
         }
     }
 
+    private var lastSelectAt = 0L
+
     fun selectTab(id: String) {
         val tab = tab(id) ?: return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (id == _activeTabId.value && !tab.isEvicted) {
+            _toolbarVisible.value = true
+            return
+        }
+        if (now - lastSelectAt < 400) return
+        lastSelectAt = now
         activate(tab)
         resumeIfEvicted(tab)
         _toolbarVisible.value = true
@@ -362,8 +400,15 @@ class TabManager @Inject constructor(
         val remaining = _tabs.value.filter { it.id != id }
         _tabs.value = remaining
 
+        if (tab.isSuper) {
+            if (remaining.none { it.contextId == tab.contextId }) tab.contextId?.let { engineManager.clearContainer(it) }
+            if (remaining.none { it.isSuper }) {
+                superIncognito.endSession()
+                scope.launch(Dispatchers.IO) { superIncognito.clearSaved() }
+            }
+        }
         if (tab.isIncognito) {
-            tab.contextId?.let { engineManager.clearContainer(it) }
+            if (!tab.isSuper) tab.contextId?.let { engineManager.clearContainer(it) }
             if (remaining.none { it.isIncognito }) {
                 sharedIncognitoContext = null
                 fingerprintShield.resetSession()
@@ -405,7 +450,11 @@ class TabManager @Inject constructor(
         _incognitoLocked.value = false
         autoWipeJob?.cancel()
         val incognitoTabs = _tabs.value.filter { it.isIncognito }
-        scope.launch(Dispatchers.IO) { incognitoStore.clear() }
+        superIncognito.endSession()
+        scope.launch(Dispatchers.IO) {
+            incognitoStore.clear()
+            superIncognito.clearSaved()
+        }
         if (incognitoTabs.isEmpty()) {
             fingerprintShield.resetSession()
             return
@@ -431,8 +480,46 @@ class TabManager @Inject constructor(
         val url = UrlUtils.toUrlOrSearch(input, settings.searchEngine)
         tab.updateInterstitial(null)
         ensureLive(tab)
-        tab.session.load(GeckoSession.Loader().uri(url))
+        whenSuperReady(tab, url) { tab.session.load(GeckoSession.Loader().uri(url)) }
         touchIncognitoActivity()
+    }
+
+    private fun whenSuperReady(tab: BrowserTab, pendingUrl: String?, action: () -> Unit) {
+        if (!tab.isSuper) {
+            action()
+            return
+        }
+        val id = superIncognito.identity.value?.id
+        if (id == null || proxyConfig.isSuperApplied(id)) {
+            if (id == null) superIncognito.current(settings)
+            val fresh = superIncognito.identity.value?.id
+            if (fresh != null && !proxyConfig.isSuperApplied(fresh)) {
+                waitForSuper(tab, fresh, pendingUrl, action)
+            } else {
+                action()
+            }
+            return
+        }
+        waitForSuper(tab, id, pendingUrl, action)
+    }
+
+    private fun waitForSuper(tab: BrowserTab, id: String, pendingUrl: String?, action: () -> Unit) {
+        proxyConfig.push()
+        scope.launch {
+            val ok = proxyConfig.awaitSuperApplied(id, SUPER_WAIT_MS)
+            if (_tabs.value.none { it.id == tab.id }) return@launch
+            val proxyWanted = settings.superProxyEnabled && settings.superProxyHost.isNotBlank()
+            if (ok || !proxyWanted) {
+                action()
+            } else {
+                tab.updateInterstitial(
+                    Interstitial.Network(
+                        pendingUrl ?: tab.url.value,
+                        "Super incognito could not start its protected connection yet, so nothing was loaded. Tap Try again."
+                    )
+                )
+            }
+        }
     }
 
     fun loadInActive(input: String) {
@@ -441,6 +528,11 @@ class TabManager @Inject constructor(
     }
 
     fun reload() = activeTab?.let { tab ->
+        val pending = (tab.interstitial.value as? Interstitial.Network)?.url
+        if (tab.isSuper && pending != null && pending.isNotBlank() && pending != "about:blank") {
+            load(tab, pending)
+            return@let
+        }
         tab.updateInterstitial(null)
         if (tab.isEvicted || !tab.session.isOpen) {
             if (!tab.isEvicted) tab.markUnloaded()
@@ -597,7 +689,9 @@ class TabManager @Inject constructor(
         if (tab.isEvicted) {
             tab.isEvicted = false
             tab.evictedUrl = null
-            tab.savedState?.let { state -> freshSession(tab).restoreState(state) } ?: freshSession(tab)
+            val state = tab.savedState
+            val session = freshSession(tab)
+            if (state != null) whenSuperReady(tab, null) { session.restoreState(state) }
         } else if (!tab.session.isOpen) {
             freshSession(tab)
         }
@@ -612,18 +706,18 @@ class TabManager @Inject constructor(
         val state = tab.savedState
         val session = freshSession(tab)
         when {
-            state != null -> session.restoreState(state)
-            url != null && url != "about:blank" -> session.load(GeckoSession.Loader().uri(url))
+            state != null -> whenSuperReady(tab, url) { session.restoreState(state) }
+            url != null && url != "about:blank" -> whenSuperReady(tab, url) { session.load(GeckoSession.Loader().uri(url)) }
         }
     }
 
     private fun freshSession(tab: BrowserTab): GeckoSession {
-        val session = if (tab.isIncognito) {
-            sessionFactory.createIncognitoSession(settings, tab.contextId ?: sessionFactory.newContextId())
-        } else {
-            sessionFactory.createNormalSession(settings)
+        val session = when {
+            tab.isSuper -> sessionFactory.createSuperSession(settings, tab.contextId ?: sessionFactory.newContextId(), superIncognito.current(settings))
+            tab.isIncognito -> sessionFactory.createIncognitoSession(settings, tab.contextId ?: sessionFactory.newContextId())
+            else -> sessionFactory.createNormalSession(settings)
         }
-        if (tab.isDesktopMode.value) applyDesktopMode(session, true)
+        if (tab.isDesktopMode.value && !tab.isSuper) applyDesktopMode(session, true)
         tab.replaceSession(session)
         delegateFactory.attach(tab, scope, { settings }, callbacks)
         session.setActive(tab.id == _activeTabId.value)
@@ -660,11 +754,11 @@ class TabManager @Inject constructor(
 
     private val callbacks = object : TabCallbacks {
         override fun onPageChanged(tab: BrowserTab) {
-            if (!tab.isIncognito || settings.keepIncognitoTabs) schedulePersist()
+            if (!tab.isIncognito || settings.keepIncognitoTabs || (tab.isSuper && settings.keepSuperTabs)) schedulePersist()
         }
 
         override fun onNewSessionRequested(tab: BrowserTab, uri: String): GeckoSession? {
-            val child = createTab(tab.isIncognito, open = false, inheritedContextId = tab.contextId)
+            val child = createTab(tab.isIncognito, open = false, inheritedContextId = tab.contextId, superMode = tab.isSuper)
             if (uri.isNotBlank()) child.updateUrl(uri)
             child.touch()
             _activeTabId.value = child.id
@@ -739,5 +833,6 @@ private class PendingIncognito(
     val title: String,
     val state: GeckoSession.SessionState?,
     val active: Boolean,
-    val pinned: Boolean
+    val pinned: Boolean,
+    val superTab: Boolean
 )

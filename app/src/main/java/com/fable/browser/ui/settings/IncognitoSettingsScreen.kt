@@ -41,6 +41,7 @@ import com.fable.browser.ui.components.SwitchRow
 @Composable
 fun IncognitoSettingsScreen(
     onBack: () -> Unit,
+    onOpenSuper: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
     browserViewModel: BrowserViewModel = hiltViewModel()
 ) {
@@ -55,6 +56,13 @@ fun IncognitoSettingsScreen(
     var showKeepWarning by remember { mutableStateOf(false) }
 
     SettingsPage(title = "Incognito", onBack = onBack, viewModel = viewModel) {
+        SettingRow(
+            title = "Super incognito",
+            subtitle = "Random fake device and fingerprint for every session, optional super proxy",
+            icon = Icons.Outlined.Shield,
+            onClick = onOpenSuper
+        )
+        ListDivider()
         Card(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             colors = CardDefaults.cardColors(

@@ -23,7 +23,8 @@ class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
     val isIncognito: Boolean,
     initialSession: GeckoSession,
-    val contextId: String? = null
+    val contextId: String? = null,
+    val isSuper: Boolean = false
 ) {
     private val _session = MutableStateFlow(initialSession)
     val sessionFlow: StateFlow<GeckoSession> = _session.asStateFlow()

@@ -17,6 +17,8 @@ class FingerprintShield @Inject constructor() {
 
     @Volatile private var sessionUa: String? = null
 
+    fun knownUserAgents(): Set<String> = uaPool.toSet()
+
     fun sessionUserAgent(): String =
         sessionUa ?: synchronized(this) {
             sessionUa ?: uaPool[Random.nextInt(uaPool.size)].also { sessionUa = it }

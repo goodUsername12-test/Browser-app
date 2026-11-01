@@ -93,6 +93,7 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
 enum class DohProvider(val label: String, val url: String) {
     CLOUDFLARE("Cloudflare", "https://mozilla.cloudflare-dns.com/dns-query"),
     QUAD9("Quad9", "https://dns.quad9.net/dns-query"),
+    GOOGLE("Google", "https://dns.google/dns-query"),
     CUSTOM("Custom", ""),
     OFF("Off", "")
 }
@@ -151,4 +152,24 @@ enum class MemoryMode(val label: String, val summary: String) {
         "Custom",
         "Choose exactly how many tabs stay loaded and when the others sleep."
     )
+}
+
+enum class SuperDeviceRange(val label: String, val summary: String) {
+    ANY("Any device", "Android phones and tablets, Windows, Mac, Linux and iPhone. Best hiding, but some sites look different"),
+    PHONES("Android phones", "Sites keep their normal phone layout"),
+    PHONES_TABLETS("Android phones and tablets", "Some sites may show a tablet layout"),
+    COMPUTERS("Computers", "Windows, Mac and Linux. Sites show their desktop version"),
+    IPHONES("iPhones", "Sites think you use Firefox on an iPhone")
+}
+
+enum class SuperProxyType(val label: String, val wire: String) {
+    SOCKS5("SOCKS5", "socks5"),
+    HTTP("HTTP", "http"),
+    HTTPS("HTTPS", "https")
+}
+
+enum class DataSaverMode(val label: String, val summary: String) {
+    OFF("Off", "Pages load normally"),
+    MOBILE("On mobile data", "Asks sites for lighter pages and stops preloading when you are not on Wi-Fi"),
+    ALWAYS("Always", "Asks sites for lighter pages and stops preloading everywhere")
 }

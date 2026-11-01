@@ -176,7 +176,11 @@ class MainActivity : FragmentActivity() {
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
             Intent.ACTION_VIEW -> intent.dataString?.let { url ->
-                tabManager.openExternalUrl(url)
+                if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_super", false)) {
+                    tabManager.openSuperTab(url)
+                } else {
+                    tabManager.openExternalUrl(url)
+                }
             }
             Intent.ACTION_WEB_SEARCH -> intent.getStringExtra("query")?.let { q ->
                 tabManager.openExternalSearch(q)

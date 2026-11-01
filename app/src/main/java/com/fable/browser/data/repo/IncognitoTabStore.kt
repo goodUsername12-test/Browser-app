@@ -24,7 +24,8 @@ class IncognitoTabStore @Inject constructor(
         val title: String,
         val state: String?,
         val active: Boolean,
-        val pinned: Boolean
+        val pinned: Boolean,
+        val superTab: Boolean = false
     )
 
     private val file: File get() = File(context.noBackupFilesDir, "incognito_tabs.bin")
@@ -45,6 +46,7 @@ class IncognitoTabStore @Inject constructor(
                         .put("state", e.state ?: "")
                         .put("active", e.active)
                         .put("pinned", e.pinned)
+                        .put("super", e.superTab)
                 )
             }
             val plain = arr.toString().toByteArray(Charsets.UTF_8)
@@ -84,7 +86,8 @@ class IncognitoTabStore @Inject constructor(
                     title = o.optString("title"),
                     state = o.optString("state").takeIf { it.isNotEmpty() },
                     active = o.optBoolean("active"),
-                    pinned = o.optBoolean("pinned")
+                    pinned = o.optBoolean("pinned"),
+                    superTab = o.optBoolean("super")
                 )
             }.filter { it.url.isNotBlank() }
         }.getOrElse {

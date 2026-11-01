@@ -1,6 +1,10 @@
 package com.fable.browser.engine
 
 import android.content.Context
+import com.fable.browser.data.model.DataSaverMode
+import android.net.NetworkCapabilities
+import android.net.Network
+import android.net.ConnectivityManager
 import android.content.pm.ActivityInfo
 import android.os.Handler
 import android.os.Looper
@@ -122,11 +126,57 @@ class EngineManager @Inject constructor(
         return lines.joinToString(separator = "\n", postfix = "\n")
     }
 
+    @Volatile private var metered = false
+    @Volatile private var lastSettings: Settings? = null
+    private var networkWatchStarted = false
+
+    private fun superProxyOn(d: Settings): Boolean = d.superProxyEnabled && d.superProxyHost.isNotBlank()
+
+    private fun dataSaverOn(d: Settings): Boolean = when (d.dataSaver) {
+        DataSaverMode.ALWAYS -> true
+        DataSaverMode.MOBILE -> metered
+        DataSaverMode.OFF -> false
+    }
+
+    private fun quietNetwork(d: Settings): Boolean = d.blockPrefetch || dataSaverOn(d) || superProxyOn(d)
+
+    private fun startNetworkWatch() {
+        if (networkWatchStarted) return
+        networkWatchStarted = true
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
+        metered = runCatching { cm.isActiveNetworkMetered }.getOrDefault(false)
+        runCatching {
+            cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    val now = !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+                    if (now == metered) return
+                    metered = now
+                    scope.launch {
+                        val s = lastSettings ?: return@launch
+                        if (s.dataSaver == DataSaverMode.MOBILE) {
+                            proxyConfig.setDataSaverActive(dataSaverOn(s))
+                            if (_runtime != null) applyOptionalPrefs(s)
+                        }
+                    }
+                }
+            })
+        }
+    }
+
     private fun privacyPrefs(s: Settings?): List<Pair<String, Boolean>> {
         val d = s ?: Settings()
+        val quiet = quietNetwork(d)
+        val anyProxy = superProxyOn(d) || (d.incognitoProxyEnabled && d.incognitoProxyHost.isNotBlank())
         return listOf(
-            "media.peerconnection.ice.no_host" to d.hideLocalIp,
-            "media.peerconnection.ice.default_address_only" to d.hideLocalIp,
+            "media.peerconnection.ice.no_host" to (d.hideLocalIp || superProxyOn(d)),
+            "media.peerconnection.ice.default_address_only" to (d.hideLocalIp || superProxyOn(d)),
+            "network.proxy.failover_direct" to !anyProxy,
+            "network.http.http3.enable" to true,
+            "network.http.http3.enable_0rtt" to d.fastConnections,
+            "security.tls.enable_0rtt_data" to d.fastConnections,
+            "network.http.rcwn.enabled" to d.fastConnections,
+            "network.dns.disablePrefetch" to quiet,
+            "network.dns.disablePrefetchFromHTTPS" to (quiet || !d.fastConnections),
             "privacy.query_stripping.enabled" to d.stripTrackingParams,
             "privacy.query_stripping.enabled.pbmode" to d.incognitoStripParams,
             "privacy.globalprivacycontrol.pbmode.enabled" to d.incognitoGpc,
@@ -134,8 +184,8 @@ class EngineManager @Inject constructor(
             "webgl.enable-debug-renderer-info" to true,
             "media.peerconnection.ice.proxy_only" to d.webRtcProxyOnly,
             "media.peerconnection.enabled" to !d.webRtcDisabled,
-            "network.prefetch-next" to !d.blockPrefetch,
-            "network.predictor.enabled" to !d.blockPrefetch,
+            "network.prefetch-next" to !quiet,
+            "network.predictor.enabled" to !quiet,
             "javascript.options.baselinejit" to !d.noJit,
             "javascript.options.ion" to !d.noJit,
             "javascript.options.native_regexp" to !d.noJit,
@@ -148,7 +198,10 @@ class EngineManager @Inject constructor(
         val d = s ?: Settings()
         val policy = MemoryPolicy.resolve(context, d)
         return listOf(
-            "network.http.speculative-parallel-limit" to if (d.blockPrefetch) 0 else 6,
+            "network.http.speculative-parallel-limit" to if (quietNetwork(d)) 0 else 6,
+            "network.http.max-persistent-connections-per-server" to if (d.fastConnections) 10 else 6,
+            "network.http.max-urgent-start-excessive-connections-per-host" to if (d.fastConnections) 5 else 3,
+            "media.preload.auto" to if (dataSaverOn(d)) 1 else 2,
             "network.http.referer.XOriginTrimmingPolicy" to if (d.strictReferrer) 2 else 0,
             "privacy.bounceTrackingProtection.mode" to if (d.bounceTracking) 1 else 0,
             "browser.cache.memory.capacity" to policy.memoryCacheKb,
@@ -296,6 +349,9 @@ class EngineManager @Inject constructor(
 
     private fun applySettings(s: Settings) {
         val rt = _runtime ?: return
+        lastSettings = s
+        startNetworkWatch()
+        proxyConfig.setDataSaverActive(dataSaverOn(s))
         proxyConfig.update(s)
 
         val dohUrl = when (s.dohProvider) {
@@ -407,8 +463,6 @@ class EngineManager @Inject constructor(
             "media.peerconnection.ice.obfuscate_host_addresses" to true,
             "media.peerconnection.ice.proxy_only_if_behind_proxy" to true,
             "network.IDN_show_punycode" to true,
-            "network.http.max-persistent-connections-per-server" to 10,
-            "network.http.max-urgent-start-excessive-connections-per-host" to 5,
             "network.http.pacing.requests.enabled" to false,
             "network.dnsCacheEntries" to 1000,
             "network.dnsCacheExpiration" to 3600,

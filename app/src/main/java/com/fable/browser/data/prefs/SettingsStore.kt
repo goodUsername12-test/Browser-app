@@ -8,11 +8,14 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.fable.browser.data.model.DataSaverMode
 import com.fable.browser.data.model.DohProvider
 import com.fable.browser.data.model.IncognitoAutoWipe
 import com.fable.browser.data.model.MemoryMode
 import com.fable.browser.data.model.PerformanceProfile
 import com.fable.browser.data.model.SearchEngine
+import com.fable.browser.data.model.SuperDeviceRange
+import com.fable.browser.data.model.SuperProxyType
 import com.fable.browser.data.model.TabUnloadMode
 import com.fable.browser.data.model.ThemeMode
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -100,6 +103,16 @@ data class Settings(
     val gpuProcess: Boolean = false,
     val freezeDetector: Boolean = true,
     val keepIncognitoTabs: Boolean = false,
+    val superDeviceRange: SuperDeviceRange = SuperDeviceRange.ANY,
+    val superDevicePick: String = "",
+    val superRandomTimezone: Boolean = true,
+    val keepSuperTabs: Boolean = false,
+    val superProxyEnabled: Boolean = false,
+    val superProxyType: SuperProxyType = SuperProxyType.SOCKS5,
+    val superProxyHost: String = "",
+    val superProxyPort: Int = 1080,
+    val fastConnections: Boolean = true,
+    val dataSaver: DataSaverMode = DataSaverMode.OFF,
     val incognitoAdBlock: Boolean = true,
     val incognitoTrackingProtection: Boolean = true,
     val incognitoStripParams: Boolean = true,
@@ -196,6 +209,16 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val GPU_PROCESS = booleanPreferencesKey("gpu_process")
         val FREEZE_DETECTOR = booleanPreferencesKey("freeze_detector")
         val KEEP_INCOGNITO_TABS = booleanPreferencesKey("keep_incognito_tabs")
+        val SUPER_DEVICE_RANGE = stringPreferencesKey("super_device_range")
+        val SUPER_RANDOM_TZ = booleanPreferencesKey("super_random_tz")
+        val KEEP_SUPER_TABS = booleanPreferencesKey("keep_super_tabs")
+        val SUPER_PROXY_ENABLED = booleanPreferencesKey("super_proxy_enabled")
+        val SUPER_PROXY_TYPE = stringPreferencesKey("super_proxy_type")
+        val SUPER_PROXY_HOST = stringPreferencesKey("super_proxy_host")
+        val SUPER_PROXY_PORT = intPreferencesKey("super_proxy_port")
+        val SUPER_DEVICE_PICK = stringPreferencesKey("super_device_pick")
+        val FAST_CONNECTIONS = booleanPreferencesKey("fast_connections")
+        val DATA_SAVER = stringPreferencesKey("data_saver")
         val INCOGNITO_AD_BLOCK = booleanPreferencesKey("incognito_ad_block")
         val INCOGNITO_TP = booleanPreferencesKey("incognito_tracking_protection")
         val INCOGNITO_STRIP = booleanPreferencesKey("incognito_strip_params")
@@ -283,6 +306,16 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             gpuProcess = p[Keys.GPU_PROCESS] ?: false,
             freezeDetector = p[Keys.FREEZE_DETECTOR] ?: true,
             keepIncognitoTabs = p[Keys.KEEP_INCOGNITO_TABS] ?: false,
+            superDeviceRange = enum(p[Keys.SUPER_DEVICE_RANGE], SuperDeviceRange.ANY),
+            superDevicePick = p[Keys.SUPER_DEVICE_PICK] ?: "",
+            superRandomTimezone = p[Keys.SUPER_RANDOM_TZ] ?: true,
+            keepSuperTabs = p[Keys.KEEP_SUPER_TABS] ?: false,
+            superProxyEnabled = p[Keys.SUPER_PROXY_ENABLED] ?: false,
+            superProxyType = enum(p[Keys.SUPER_PROXY_TYPE], SuperProxyType.SOCKS5),
+            superProxyHost = p[Keys.SUPER_PROXY_HOST] ?: "",
+            superProxyPort = p[Keys.SUPER_PROXY_PORT] ?: 1080,
+            fastConnections = p[Keys.FAST_CONNECTIONS] ?: true,
+            dataSaver = enum(p[Keys.DATA_SAVER], DataSaverMode.OFF),
             incognitoAdBlock = p[Keys.INCOGNITO_AD_BLOCK] ?: true,
             incognitoTrackingProtection = p[Keys.INCOGNITO_TP] ?: true,
             incognitoStripParams = p[Keys.INCOGNITO_STRIP] ?: true,
@@ -372,6 +405,16 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setGpuProcess(v: Boolean) = set(Keys.GPU_PROCESS, v)
     suspend fun setFreezeDetector(v: Boolean) = set(Keys.FREEZE_DETECTOR, v)
     suspend fun setKeepIncognitoTabs(v: Boolean) = set(Keys.KEEP_INCOGNITO_TABS, v)
+    suspend fun setSuperDeviceRange(v: SuperDeviceRange) = set(Keys.SUPER_DEVICE_RANGE, v.name)
+    suspend fun setSuperRandomTimezone(v: Boolean) = set(Keys.SUPER_RANDOM_TZ, v)
+    suspend fun setKeepSuperTabs(v: Boolean) = set(Keys.KEEP_SUPER_TABS, v)
+    suspend fun setSuperProxyEnabled(v: Boolean) = set(Keys.SUPER_PROXY_ENABLED, v)
+    suspend fun setSuperProxyType(v: SuperProxyType) = set(Keys.SUPER_PROXY_TYPE, v.name)
+    suspend fun setSuperProxyHost(v: String) = set(Keys.SUPER_PROXY_HOST, v)
+    suspend fun setSuperProxyPort(v: Int) = set(Keys.SUPER_PROXY_PORT, v)
+    suspend fun setSuperDevicePick(v: String) = set(Keys.SUPER_DEVICE_PICK, v)
+    suspend fun setFastConnections(v: Boolean) = set(Keys.FAST_CONNECTIONS, v)
+    suspend fun setDataSaver(v: DataSaverMode) = set(Keys.DATA_SAVER, v.name)
     suspend fun setIncognitoAdBlock(v: Boolean) = set(Keys.INCOGNITO_AD_BLOCK, v)
     suspend fun setIncognitoTrackingProtection(v: Boolean) = set(Keys.INCOGNITO_TP, v)
     suspend fun setIncognitoStripParams(v: Boolean) = set(Keys.INCOGNITO_STRIP, v)

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.outlined.AddToHomeScreen
@@ -65,7 +66,8 @@ fun MenuSheet(
     onAddToHomeScreen: () -> Unit,
     onSaveAsPdf: () -> Unit,
     onTextZoom: (Int) -> Unit,
-    onFingerprintTest: () -> Unit
+    onFingerprintTest: () -> Unit,
+    onNewSuperTab: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -124,6 +126,7 @@ fun MenuSheet(
             MenuItem(Icons.Outlined.Fingerprint, "Test my fingerprint") {
                 onFingerprintTest(); onDismiss()
             }
+            MenuItem(Icons.Outlined.Security, "New super incognito tab") { onNewSuperTab(); onDismiss() }
             MenuItem(Icons.Outlined.Settings, "Settings") { onSettings(); onDismiss() }
         }
     }

@@ -15,6 +15,7 @@ import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -118,6 +119,26 @@ fun SettingsScreen(
             subtitle = "Isolation, fingerprint shield, lock, auto-wipe, proxy",
             icon = Icons.Outlined.VisibilityOff,
             onClick = { onNavigate(Routes.SETTINGS_INCOGNITO) }
+        )
+        ListDivider()
+        SettingRow(
+            title = "Super incognito",
+            subtitle = "Random fake device for every session, super proxy",
+            icon = Icons.Outlined.Security,
+            onClick = { onNavigate(Routes.SETTINGS_SUPER) }
+        )
+        ListDivider()
+        SettingRow(
+            title = "Wi-Fi booster",
+            subtitle = buildString {
+                append("DNS: ")
+                append(settings.dohProvider.label)
+                append(if (settings.fastConnections) "  ·  Fast connections" else "  ·  Normal connections")
+                append("  ·  Data saver: ")
+                append(settings.dataSaver.label)
+            },
+            icon = Icons.Outlined.Wifi,
+            onClick = { onNavigate(Routes.SETTINGS_BOOSTER) }
         )
         ListDivider()
         SettingRow(

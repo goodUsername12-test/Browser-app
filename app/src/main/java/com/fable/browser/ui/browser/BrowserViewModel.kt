@@ -176,6 +176,12 @@ class BrowserViewModel @Inject constructor(
     }
 
     fun selectTab(id: String) = tabManager.selectTab(id)
+
+    fun openSuperTab(url: String? = null) {
+        maybeShowDisclosure(true)
+        val tab = tabManager.openSuperTab(url)
+        if (tab.isSuper) toast("Super incognito: new fake device for this session")
+    }
     fun closeTab(id: String) = tabManager.closeTab(id)
     fun setPinned(id: String, pinned: Boolean) = tabManager.setPinned(id, pinned)
     fun closeAll(incognito: Boolean) = tabManager.closeAllTabs(incognito)

@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fable.browser.data.model.TopSite
+import com.fable.browser.ui.components.SiteIcon
 import com.fable.browser.util.UrlUtils
 
 @Composable
@@ -103,7 +104,6 @@ fun NewTabPage(
 @Composable
 private fun SiteTile(site: TopSite, onOpen: (String) -> Unit, modifier: Modifier = Modifier) {
     val host = UrlUtils.displayHost(site.url)
-    val letter = host.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "?"
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
@@ -111,19 +111,7 @@ private fun SiteTile(site: TopSite, onOpen: (String) -> Unit, modifier: Modifier
             .clickable { onOpen(site.url) }
             .padding(vertical = 8.dp)
     ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.secondaryContainer)
-        ) {
-            Text(
-                text = letter,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
-            )
-        }
+        SiteIcon(url = site.url, size = 48.dp)
         Spacer(Modifier.height(6.dp))
         Text(
             text = host,

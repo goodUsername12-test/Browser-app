@@ -28,6 +28,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Security
+import com.fable.browser.ui.components.SiteIcon
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -69,6 +71,7 @@ fun TabsScreen(
     val activeTabId by viewModel.activeTabId.collectAsStateWithLifecycle()
     val incognitoMode by viewModel.isIncognito.collectAsStateWithLifecycle()
     var showIncognito by remember { mutableStateOf(incognitoMode) }
+    var leaving by remember { mutableStateOf(false) }
 
     LaunchedEffect(incognitoMode) { showIncognito = incognitoMode }
 
@@ -113,11 +116,27 @@ fun TabsScreen(
                         }
                         IconButton(
                             onClick = {
-                                viewModel.openTab(incognito = showIncognito)
-                                onClose()
+                                if (!leaving) {
+                                    leaving = true
+                                    viewModel.openTab(incognito = showIncognito)
+                                    onClose()
+                                }
                             }
                         ) {
                             Icon(Icons.Outlined.Add, contentDescription = "New tab")
+                        }
+                        if (showIncognito) {
+                            IconButton(
+                                onClick = {
+                                    if (!leaving) {
+                                        leaving = true
+                                        viewModel.openSuperTab()
+                                        onClose()
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Outlined.Security, contentDescription = "New super incognito tab")
+                            }
                         }
                     }
                 )
@@ -155,8 +174,11 @@ fun TabsScreen(
                         tab = tab,
                         isActive = tab.id == activeTabId,
                         onSelect = {
-                            viewModel.selectTab(tab.id)
-                            onClose()
+                            if (!leaving) {
+                                leaving = true
+                                viewModel.selectTab(tab.id)
+                                onClose()
+                            }
                         },
                         onClose = { viewModel.closeTab(tab.id) },
                         onToggleKeepLoaded = { viewModel.setPinned(tab.id, !tab.isPinned.value) }
@@ -233,12 +255,16 @@ private fun TabCard(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Icon(
-                        if (tab.isIncognito) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
-                        contentDescription = null,
-                        modifier = Modifier.size(28.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (tab.isIncognito) {
+                        Icon(
+                            if (tab.isSuper) Icons.Outlined.Security else Icons.Outlined.VisibilityOff,
+                            contentDescription = null,
+                            modifier = Modifier.size(28.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        SiteIcon(url = url, size = 40.dp)
+                    }
                 }
             }
             Row(
@@ -255,6 +281,8 @@ private fun TabCard(
                     )
                     Text(
                         text = when {
+                            tab.isSuper && pinned -> "Super · Instant · " + UrlUtils.displayHost(url)
+                            tab.isSuper -> "Super · " + UrlUtils.displayHost(url)
                             pinned -> "Instant · " + UrlUtils.displayHost(url)
                             sleeping && !isActive -> "Sleeping · " + UrlUtils.displayHost(url)
                             else -> UrlUtils.displayHost(url)

@@ -26,6 +26,8 @@ import com.fable.browser.ui.settings.AppearanceSettingsScreen
 import com.fable.browser.ui.settings.DownloadSettingsScreen
 import com.fable.browser.ui.settings.GeneralSettingsScreen
 import com.fable.browser.ui.settings.IncognitoSettingsScreen
+import com.fable.browser.ui.settings.SuperIncognitoSettingsScreen
+import com.fable.browser.ui.settings.WifiBoosterSettingsScreen
 import com.fable.browser.ui.settings.PerformanceSettingsScreen
 import com.fable.browser.ui.settings.PrivacySettingsScreen
 import com.fable.browser.ui.settings.SettingsScreen
@@ -48,6 +50,8 @@ object Routes {
     const val SETTINGS_DOWNLOADS = "settings/downloads"
     const val SETTINGS_ABOUT = "settings/about"
     const val SETTINGS_PERFORMANCE = "settings/performance"
+    const val SETTINGS_SUPER = "settings/super"
+    const val SETTINGS_BOOSTER = "settings/booster"
 }
 
 @Composable
@@ -90,22 +94,22 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
         composable(Routes.BROWSER) {
             BrowserScreen(
                 viewModel = viewModel,
-                onOpenTabs = { navController.navigate(Routes.TABS) },
-                onOpenBookmarks = { navController.navigate(Routes.BOOKMARKS) },
-                onOpenHistory = { navController.navigate(Routes.HISTORY) },
-                onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) }
+                onOpenTabs = { navController.navigate(Routes.TABS) { launchSingleTop = true } },
+                onOpenBookmarks = { navController.navigate(Routes.BOOKMARKS) { launchSingleTop = true } },
+                onOpenHistory = { navController.navigate(Routes.HISTORY) { launchSingleTop = true } },
+                onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) { launchSingleTop = true } },
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } }
             )
         }
         composable(Routes.TABS) {
             TabsScreen(
                 viewModel = viewModel,
-                onClose = { navController.popBackStack() }
+                onClose = { navController.popIfNotRoot() }
             )
         }
         composable(Routes.BOOKMARKS) {
             BookmarksScreen(
-                onBack = { navController.popBackStack() },
+                onBack = { navController.popIfNotRoot() },
                 onOpenUrl = { url ->
                     viewModel.load(url)
                     navController.popBackStack(Routes.BROWSER, inclusive = false)
@@ -118,7 +122,7 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
         }
         composable(Routes.HISTORY) {
             HistoryScreen(
-                onBack = { navController.popBackStack() },
+                onBack = { navController.popIfNotRoot() },
                 onOpenUrl = { url ->
                     viewModel.load(url)
                     navController.popBackStack(Routes.BROWSER, inclusive = false)
@@ -126,40 +130,53 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
             )
         }
         composable(Routes.DOWNLOADS) {
-            DownloadsScreen(onBack = { navController.popBackStack() })
+            DownloadsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(
-                onBack = { navController.popBackStack() },
-                onNavigate = { route -> navController.navigate(route) }
+                onBack = { navController.popIfNotRoot() },
+                onNavigate = { route -> navController.navigate(route) { launchSingleTop = true } }
             )
         }
         composable(Routes.SETTINGS_GENERAL) {
-            GeneralSettingsScreen(onBack = { navController.popBackStack() })
+            GeneralSettingsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS_PERFORMANCE) {
-            PerformanceSettingsScreen(onBack = { navController.popBackStack() })
+            PerformanceSettingsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS_PRIVACY) {
-            PrivacySettingsScreen(onBack = { navController.popBackStack() })
+            PrivacySettingsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS_INCOGNITO) {
-            IncognitoSettingsScreen(onBack = { navController.popBackStack() })
+            IncognitoSettingsScreen(
+                onBack = { navController.popIfNotRoot() },
+                onOpenSuper = { navController.navigate(Routes.SETTINGS_SUPER) { launchSingleTop = true } }
+            )
+        }
+        composable(Routes.SETTINGS_SUPER) {
+            SuperIncognitoSettingsScreen(onBack = { navController.popIfNotRoot() })
+        }
+        composable(Routes.SETTINGS_BOOSTER) {
+            WifiBoosterSettingsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS_APPEARANCE) {
-            AppearanceSettingsScreen(onBack = { navController.popBackStack() })
+            AppearanceSettingsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS_SITES) {
-            SiteSettingsScreen(onBack = { navController.popBackStack() })
+            SiteSettingsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS_DOWNLOADS) {
             DownloadSettingsScreen(
-                onBack = { navController.popBackStack() },
-                onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) }
+                onBack = { navController.popIfNotRoot() },
+                onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) { launchSingleTop = true } }
             )
         }
         composable(Routes.SETTINGS_ABOUT) {
-            AboutScreen(onBack = { navController.popBackStack() })
+            AboutScreen(onBack = { navController.popIfNotRoot() })
         }
     }
+}
+
+private fun androidx.navigation.NavController.popIfNotRoot() {
+    if (previousBackStackEntry != null) popBackStack()
 }

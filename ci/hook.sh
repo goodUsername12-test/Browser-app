@@ -188,6 +188,13 @@ else
   STEPS="$STEPS"$'\n'"- typing test: address bar not found"
 fi
 
+log "Super incognito check"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com/?fable=super" --ez fable_super true -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 20; step "super incognito tab (example.com)"; shot 8-super
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://www.wikipedia.org/" --ez fable_super true -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 20; step "second super incognito tab (wikipedia)"; shot 9-super-second
+adb logcat -d -v brief -s FableShield:* > "$ART/super.txt" 2>/dev/null || true
+
 log "Fast app switching x5"
 for n in 1 2 3 4 5; do
   adb shell input keyevent KEYCODE_HOME; sleep 1
@@ -197,6 +204,7 @@ sleep 5; step "fast app switching x5"
 FREEZE="$(adb shell run-as "$PKG" cat files/freeze_report.txt 2>/dev/null | head -c 6000)"
 
 adb logcat -d -v brief > "$ART/logcat.txt" 2>/dev/null
+SUPERDIAG="$( { cat "$ART/super.txt" 2>/dev/null; grep -E "FableShield" "$ART/logcat.txt"; } | grep -E "FableShield" | sort -u | cut -c1-900 | head -n 24)"
 adb logcat -d -b events -v brief 2>/dev/null | grep -E "am_anr|am_crash|am_proc_died.*fable" > "$ART/events.txt" || true
 {
   echo "== ANR / crash events =="
@@ -220,6 +228,10 @@ adb logcat -d -b events -v brief 2>/dev/null | grep -E "am_anr|am_crash|am_proc_
   echo "Freeze detector:"
   echo '```'
   if [ -n "$FREEZE" ]; then echo "$FREEZE"; else echo "no freeze recorded"; fi
+  echo '```'
+  echo "Super incognito diagnostics:"
+  echo '```'
+  if [ -n "$SUPERDIAG" ]; then echo "$SUPERDIAG"; else echo "no FableShield lines"; fi
   echo '```'
   echo "Problems found in logcat ($(wc -l < "$ART/problems.txt") lines):"
   echo '```'

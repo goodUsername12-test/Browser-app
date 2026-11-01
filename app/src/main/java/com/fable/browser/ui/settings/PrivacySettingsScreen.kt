@@ -319,6 +319,7 @@ fun PrivacySettingsScreen(
                 when (provider) {
                     DohProvider.CLOUDFLARE -> "mozilla.cloudflare-dns.com — no logging agreement"
                     DohProvider.QUAD9 -> "dns.quad9.net — malware filtering, Swiss non-profit"
+                    DohProvider.GOOGLE -> "dns.google — fast worldwide"
                     DohProvider.CUSTOM -> "Your own resolver endpoint"
                     DohProvider.OFF -> "Use the network's DNS (your ISP can see every hostname)"
                 }

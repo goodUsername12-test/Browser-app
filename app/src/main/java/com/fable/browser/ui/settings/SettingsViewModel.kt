@@ -2,7 +2,10 @@ package com.fable.browser.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.fable.browser.data.model.DataSaverMode
 import com.fable.browser.data.model.DohProvider
+import com.fable.browser.data.model.SuperDeviceRange
+import com.fable.browser.data.model.SuperProxyType
 import com.fable.browser.data.model.IncognitoAutoWipe
 import com.fable.browser.data.model.PermissionDecision
 import com.fable.browser.data.model.PermissionKind
@@ -11,10 +14,16 @@ import com.fable.browser.data.model.SitePermission
 import com.fable.browser.data.model.ThemeMode
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.data.prefs.SettingsStore
+import com.fable.browser.data.repo.FaviconStore
 import com.fable.browser.data.repo.HistoryRepository
 import com.fable.browser.data.repo.SitePermissionRepository
 import com.fable.browser.engine.ContentBlocker
 import com.fable.browser.engine.EngineManager
+import com.fable.browser.engine.SuperIdentity
+import com.fable.browser.engine.SuperIdentityFactory
+import com.fable.browser.engine.SuperIncognito
+import com.fable.browser.engine.TabManager
+import kotlinx.coroutines.Dispatchers
 import com.fable.browser.util.BiometricGate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,8 +43,45 @@ class SettingsViewModel @Inject constructor(
     private val contentBlocker: ContentBlocker,
     private val sitePermissions: SitePermissionRepository,
     private val historyRepository: HistoryRepository,
-    private val biometricGate: BiometricGate
+    private val biometricGate: BiometricGate,
+    private val superIncognito: SuperIncognito,
+    private val tabManager: TabManager,
+    private val faviconStore: FaviconStore
 ) : ViewModel() {
+    val superIdentity: StateFlow<SuperIdentity?> = superIncognito.identity
+
+    fun superProxyUser(): String = superIncognito.proxyUser
+
+    fun superProxyHasPassword(): Boolean = superIncognito.proxyPass.isNotEmpty()
+
+    fun currentSuperProxyPassword(): String = superIncognito.proxyPass
+
+    fun setSuperProxyLogin(user: String, pass: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { superIncognito.setProxyAuth(user.trim(), pass) }
+            _message.value = if (user.isBlank() && pass.isEmpty()) "Proxy login removed" else "Proxy login saved (encrypted)"
+        }
+    }
+
+    fun newSuperIdentity() {
+        tabManager.newSuperIdentity()
+        _message.value = "Super incognito tabs closed. The next one gets a brand new random identity."
+    }
+
+    fun previewSuperIdentity(): SuperIdentity {
+        val s = settings.value
+        return SuperIdentityFactory.create(s.superDeviceRange, s.superDevicePick, s.superRandomTimezone)
+    }
+
+    fun setSuperProxyPortText(raw: String) {
+        val port = raw.trim().toIntOrNull()
+        if (port == null || port !in 1..65535) {
+            _message.value = "Port must be a number from 1 to 65535"
+            return
+        }
+        setSuperProxyPort(port)
+    }
+
     val settings: StateFlow<Settings> = store.settings
         .stateIn(viewModelScope, SharingStarted.Eagerly, Settings())
 
@@ -185,6 +231,7 @@ class SettingsViewModel @Inject constructor(
 
     fun clearEverythingNow() {
         engineManager.clearAllBrowsingData()
+        faviconStore.clear()
         viewModelScope.launch {
             historyRepository.clearAll()
             _message.value = "All browsing data cleared"
@@ -227,6 +274,16 @@ class SettingsViewModel @Inject constructor(
     fun setGpuProcess(v: Boolean) = edit { store.setGpuProcess(v) }
     fun setFreezeDetector(v: Boolean) = edit { store.setFreezeDetector(v) }
     fun setKeepIncognitoTabs(v: Boolean) = edit { store.setKeepIncognitoTabs(v) }
+    fun setSuperDeviceRange(v: SuperDeviceRange) = edit { store.setSuperDeviceRange(v) }
+    fun setSuperRandomTimezone(v: Boolean) = edit { store.setSuperRandomTimezone(v) }
+    fun setKeepSuperTabs(v: Boolean) = edit { store.setKeepSuperTabs(v) }
+    fun setSuperProxyEnabled(v: Boolean) = edit { store.setSuperProxyEnabled(v) }
+    fun setSuperProxyType(v: SuperProxyType) = edit { store.setSuperProxyType(v) }
+    fun setSuperProxyHost(v: String) = edit { store.setSuperProxyHost(v.trim()) }
+    fun setSuperProxyPort(v: Int) = edit { store.setSuperProxyPort(v) }
+    fun setSuperDevicePick(v: String) = edit { store.setSuperDevicePick(v) }
+    fun setFastConnections(v: Boolean) = edit { store.setFastConnections(v) }
+    fun setDataSaver(v: DataSaverMode) = edit { store.setDataSaver(v) }
     fun setIncognitoAdBlock(v: Boolean) = edit { store.setIncognitoAdBlock(v) }
     fun setIncognitoTrackingProtection(v: Boolean) = edit { store.setIncognitoTrackingProtection(v) }
     fun setIncognitoStripParams(v: Boolean) = edit { store.setIncognitoStripParams(v) }

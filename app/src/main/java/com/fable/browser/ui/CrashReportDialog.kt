@@ -28,7 +28,6 @@ import com.fable.browser.util.CrashReporter
 
 private const val ISSUE_URL = "https://github.com/goodUsername12-test/Browser-app/issues/new"
 
-/** Shows the saved report of the previous crash, if there is one. */
 @Composable
 fun CrashReportDialog() {
     val context = LocalContext.current
@@ -71,7 +70,6 @@ private fun openIssue(context: Context, text: String) {
         .appendQueryParameter("body", "```\n${text.take(6_000)}\n```")
         .build()
     val view = Intent(Intent.ACTION_VIEW, uri)
-    // Open the report in another browser, never in Fable itself.
     val chooser = Intent.createChooser(view, "Open GitHub with").apply {
         putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(ComponentName(context, "com.fable.browser.MainActivity")))
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

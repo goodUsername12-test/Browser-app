@@ -45,7 +45,6 @@ class BookmarkRepository @Inject constructor(private val dao: BookmarkDao) {
     }
 }
 
-/** Only ever called from normal-mode sessions. Incognito code has no reference to this class. */
 @Singleton
 class HistoryRepository @Inject constructor(private val dao: HistoryDao) {
     fun recent(): Flow<List<HistoryEntry>> = dao.recent()
@@ -54,7 +53,6 @@ class HistoryRepository @Inject constructor(private val dao: HistoryDao) {
     fun topSites(limit: Int = 8): Flow<List<TopSite>> = dao.topSites(limit)
 
     suspend fun record(title: String, url: String) {
-        // Debounce duplicate consecutive visits within 5 seconds
         val last = dao.lastVisitOf(url)
         if (last != null && System.currentTimeMillis() - last.visitedAt < 5_000) return
         dao.insert(HistoryEntry(title = title.ifBlank { url }, url = url))
@@ -84,7 +82,6 @@ class DownloadRepository @Inject constructor(private val dao: DownloadDao) {
     suspend fun byId(id: Long): DownloadEntry? = dao.byId(id)
 }
 
-/** Persists NORMAL tabs only for restore-after-kill. Incognito tabs are never given to this class. */
 @Singleton
 class TabPersistenceRepository @Inject constructor(private val dao: SavedTabDao) {
     suspend fun load(): List<SavedTab> = dao.all()

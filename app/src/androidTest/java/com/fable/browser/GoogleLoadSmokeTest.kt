@@ -16,18 +16,8 @@ import org.mozilla.geckoview.GeckoSessionSettings
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-/**
- * Instrumented smoke test: boots a real GeckoRuntime with the same privacy
- * configuration the app uses, loads https://www.google.com in a private
- * (incognito) session, and asserts the page actually reached DOMContentLoaded
- * with a secure (HTTPS) connection.
- *
- * Requires a connected device/emulator with network access:
- *   ./gradlew connectedDebugAndroidTest
- */
 @RunWith(AndroidJUnit4::class)
 class GoogleLoadSmokeTest {
-
     @Test
     fun loadsGoogleOverHttpsInPrivateSession() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

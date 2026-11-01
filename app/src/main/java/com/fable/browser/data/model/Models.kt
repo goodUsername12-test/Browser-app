@@ -4,7 +4,6 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-/** A saved bookmark. folderId == null means root folder. */
 @Entity(
     tableName = "bookmarks",
     indices = [Index("folderId"), Index("url")]
@@ -17,7 +16,6 @@ data class Bookmark(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-/** A bookmark folder. parentId == null means root. */
 @Entity(tableName = "bookmark_folders", indices = [Index("parentId")])
 data class BookmarkFolder(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -26,7 +24,6 @@ data class BookmarkFolder(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-/** Normal-mode history entry. NEVER written from incognito sessions. */
 @Entity(tableName = "history", indices = [Index("url"), Index("visitedAt")])
 data class HistoryEntry(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -41,7 +38,6 @@ data class TopSite(
     val visits: Int
 )
 
-/** A download record (normal mode only; incognito downloads require confirmation and are still recorded only if the user opts in). */
 @Entity(tableName = "downloads", indices = [Index("startedAt")])
 data class DownloadEntry(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -58,7 +54,6 @@ data class DownloadEntry(
 
 enum class DownloadStatus { IN_PROGRESS, COMPLETED, FAILED, CANCELLED }
 
-/** Persisted normal tabs for restore-after-kill. Incognito tabs are NEVER persisted. */
 @Entity(tableName = "saved_tabs")
 data class SavedTab(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -68,7 +63,6 @@ data class SavedTab(
     val isActive: Boolean = false
 )
 
-/** Per-site permission decisions, revocable in Settings -> Site settings. */
 @Entity(
     tableName = "site_permissions",
     indices = [Index(value = ["origin", "permission"], unique = true)]
@@ -85,7 +79,6 @@ enum class PermissionKind { CAMERA, MICROPHONE, LOCATION, NOTIFICATIONS, AUTOPLA
 
 enum class PermissionDecision { ALLOW, BLOCK, ASK }
 
-/** Search engines the omnibox can use. */
 enum class SearchEngine(val label: String, val queryUrl: String, val suggestUrl: String?) {
     GOOGLE("Google", "https://www.google.com/search?q=%s", null),
     DUCKDUCKGO("DuckDuckGo", "https://duckduckgo.com/?q=%s", null),
@@ -135,4 +128,27 @@ enum class TabUnloadMode(val label: String, val summary: String) {
     ),
     KEEP_ALL("Keep all loaded", "Tabs are never unloaded. Uses more memory."),
     AGGRESSIVE("Only current tab", "Every background tab is unloaded. Lowest memory use.")
+}
+
+enum class MemoryMode(val label: String, val summary: String) {
+    AUTO(
+        "Automatic",
+        "Picks Low RAM or Balanced from how much memory this phone has."
+    ),
+    LOW(
+        "Low RAM",
+        "Background tabs sleep after 30 seconds, small caches, tiny previews. Lowest memory use; going back to an old tab reloads it."
+    ),
+    BALANCED(
+        "Balanced",
+        "Your 2 or 3 most recent tabs stay instant (more on phones with lots of RAM), others sleep after 10 to 20 minutes unused. Medium caches."
+    ),
+    FAST(
+        "Maximum speed",
+        "Tabs stay loaded until Android needs the memory, big caches, instant Back/Forward. Uses the most RAM."
+    ),
+    CUSTOM(
+        "Custom",
+        "Choose exactly how many tabs stay loaded and when the others sleep."
+    )
 }

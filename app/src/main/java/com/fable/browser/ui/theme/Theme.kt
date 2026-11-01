@@ -17,11 +17,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.fable.browser.data.model.ThemeMode
 
-/**
- * Three palettes, no dynamic color: the incognito palette must be recognisably
- * different from the normal one at a glance, and a wallpaper-derived scheme
- * would break that guarantee.
- */
 private val InkTeal = Color(0xFF0E6E63)
 private val InkTealLight = Color(0xFF63D8C7)
 private val Violet = Color(0xFF8B7BFF)
@@ -77,7 +72,6 @@ private val DarkScheme = darkColorScheme(
     onError = Color(0xFF690005)
 )
 
-/** Incognito: violet on near-black, deliberately unmistakable. */
 private val IncognitoScheme = darkColorScheme(
     primary = Violet,
     onPrimary = Color(0xFF11072E),

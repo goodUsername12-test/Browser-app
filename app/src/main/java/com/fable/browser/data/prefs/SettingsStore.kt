@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.fable.browser.data.model.DohProvider
 import com.fable.browser.data.model.IncognitoAutoWipe
+import com.fable.browser.data.model.MemoryMode
 import com.fable.browser.data.model.PerformanceProfile
 import com.fable.browser.data.model.SearchEngine
 import com.fable.browser.data.model.TabUnloadMode
@@ -22,18 +23,12 @@ import javax.inject.Singleton
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "fable_settings")
 
-/** Every user-facing setting, backed by DataStore. Nothing here is ever sent anywhere. */
 data class Settings(
-    // General
     val searchEngine: SearchEngine = SearchEngine.GOOGLE,
     val homepage: String = "about:blank",
     val restoreTabs: Boolean = true,
-    /** Address bar at the top of the screen (true) or at the bottom (false). */
     val toolbarAtTop: Boolean = true,
-    /** Slide the toolbar away while scrolling down. Off by default: resizing the page
-     *  in the middle of a touch gesture confuses games and canvas apps. */
     val hideToolbarOnScroll: Boolean = false,
-    // Privacy & security
     val adBlockEnabled: Boolean = true,
     val blockThirdPartyCookies: Boolean = true,
     val httpsOnly: Boolean = true,
@@ -81,7 +76,6 @@ data class Settings(
     val clearHistoryOnExit: Boolean = false,
     val clearCookiesOnExit: Boolean = false,
     val clearCacheOnExit: Boolean = false,
-    // Incognito
     val isolateIncognitoTabs: Boolean = true,
     val fingerprintShield: Boolean = true,
     val forceUtcTimezone: Boolean = true,
@@ -90,16 +84,29 @@ data class Settings(
     val incognitoProxyEnabled: Boolean = false,
     val incognitoProxyHost: String = "",
     val incognitoProxyPort: Int = 9050,
-    val incognitoProxyType: String = "SOCKS5", // SOCKS5 or HTTP
+    val incognitoProxyType: String = "SOCKS5",
     val incognitoDisclosureShown: Boolean = false,
-    // Appearance
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val forceDarkWeb: Boolean = false,
     val textZoomPercent: Int = 100,
     val normalTabShield: Boolean = false,
     val strictTrackingProtection: Boolean = true,
     val tabUnloadMode: TabUnloadMode = TabUnloadMode.SMART,
-    val keepLoadedTabs: Int = 3
+    val keepLoadedTabs: Int = 3,
+    val memoryMode: MemoryMode = MemoryMode.AUTO,
+    val idleTabMinutes: Int = 10,
+    val preconnectSearch: Boolean = true,
+    val preconnectTyped: Boolean = false,
+    val gpuProcess: Boolean = false,
+    val freezeDetector: Boolean = true,
+    val keepIncognitoTabs: Boolean = false,
+    val incognitoAdBlock: Boolean = true,
+    val incognitoTrackingProtection: Boolean = true,
+    val incognitoStripParams: Boolean = true,
+    val incognitoGpc: Boolean = true,
+    val incognitoFingerprintProtection: Boolean = true,
+    val gameTouchFix: Boolean = true,
+    val fpTouch: Boolean = false
 ) {
     val performanceProfile: PerformanceProfile
         get() = when {
@@ -112,7 +119,6 @@ data class Settings(
 
 @Singleton
 class SettingsStore @Inject constructor(@ApplicationContext private val context: Context) {
-
     private object Keys {
         val SEARCH_ENGINE = stringPreferencesKey("search_engine")
         val HOMEPAGE = stringPreferencesKey("homepage")
@@ -183,6 +189,20 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val STRICT_ETP = booleanPreferencesKey("strict_tracking_protection")
         val TAB_UNLOAD_MODE = stringPreferencesKey("tab_unload_mode")
         val KEEP_LOADED_TABS = intPreferencesKey("keep_loaded_tabs")
+        val MEMORY_MODE = stringPreferencesKey("memory_mode")
+        val IDLE_TAB_MINUTES = intPreferencesKey("idle_tab_minutes")
+        val PRECONNECT_SEARCH = booleanPreferencesKey("preconnect_search")
+        val PRECONNECT_TYPED = booleanPreferencesKey("preconnect_typed")
+        val GPU_PROCESS = booleanPreferencesKey("gpu_process")
+        val FREEZE_DETECTOR = booleanPreferencesKey("freeze_detector")
+        val KEEP_INCOGNITO_TABS = booleanPreferencesKey("keep_incognito_tabs")
+        val INCOGNITO_AD_BLOCK = booleanPreferencesKey("incognito_ad_block")
+        val INCOGNITO_TP = booleanPreferencesKey("incognito_tracking_protection")
+        val INCOGNITO_STRIP = booleanPreferencesKey("incognito_strip_params")
+        val INCOGNITO_GPC = booleanPreferencesKey("incognito_gpc")
+        val INCOGNITO_FPP = booleanPreferencesKey("incognito_fingerprint_protection")
+        val GAME_TOUCH_FIX = booleanPreferencesKey("game_touch_fix")
+        val FP_TOUCH = booleanPreferencesKey("fp_touch")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -255,7 +275,21 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             normalTabShield = p[Keys.NORMAL_TAB_SHIELD] ?: false,
             strictTrackingProtection = p[Keys.STRICT_ETP] ?: true,
             tabUnloadMode = enum(p[Keys.TAB_UNLOAD_MODE], TabUnloadMode.SMART),
-            keepLoadedTabs = (p[Keys.KEEP_LOADED_TABS] ?: 3).coerceIn(1, 8)
+            keepLoadedTabs = (p[Keys.KEEP_LOADED_TABS] ?: 3).coerceIn(1, 8),
+            memoryMode = enum(p[Keys.MEMORY_MODE], MemoryMode.AUTO),
+            idleTabMinutes = (p[Keys.IDLE_TAB_MINUTES] ?: 10).coerceIn(0, 120),
+            preconnectSearch = p[Keys.PRECONNECT_SEARCH] ?: true,
+            preconnectTyped = p[Keys.PRECONNECT_TYPED] ?: false,
+            gpuProcess = p[Keys.GPU_PROCESS] ?: false,
+            freezeDetector = p[Keys.FREEZE_DETECTOR] ?: true,
+            keepIncognitoTabs = p[Keys.KEEP_INCOGNITO_TABS] ?: false,
+            incognitoAdBlock = p[Keys.INCOGNITO_AD_BLOCK] ?: true,
+            incognitoTrackingProtection = p[Keys.INCOGNITO_TP] ?: true,
+            incognitoStripParams = p[Keys.INCOGNITO_STRIP] ?: true,
+            incognitoGpc = p[Keys.INCOGNITO_GPC] ?: true,
+            incognitoFingerprintProtection = p[Keys.INCOGNITO_FPP] ?: true,
+            gameTouchFix = p[Keys.GAME_TOUCH_FIX] ?: true,
+            fpTouch = p[Keys.FP_TOUCH] ?: false
         )
     }
 
@@ -331,6 +365,33 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setStrictTrackingProtection(v: Boolean) = set(Keys.STRICT_ETP, v)
     suspend fun setTabUnloadMode(v: TabUnloadMode) = set(Keys.TAB_UNLOAD_MODE, v.name)
     suspend fun setKeepLoadedTabs(v: Int) = set(Keys.KEEP_LOADED_TABS, v.coerceIn(1, 8))
+    suspend fun setMemoryMode(v: MemoryMode) = set(Keys.MEMORY_MODE, v.name)
+    suspend fun setIdleTabMinutes(v: Int) = set(Keys.IDLE_TAB_MINUTES, v.coerceIn(0, 120))
+    suspend fun setPreconnectSearch(v: Boolean) = set(Keys.PRECONNECT_SEARCH, v)
+    suspend fun setPreconnectTyped(v: Boolean) = set(Keys.PRECONNECT_TYPED, v)
+    suspend fun setGpuProcess(v: Boolean) = set(Keys.GPU_PROCESS, v)
+    suspend fun setFreezeDetector(v: Boolean) = set(Keys.FREEZE_DETECTOR, v)
+    suspend fun setKeepIncognitoTabs(v: Boolean) = set(Keys.KEEP_INCOGNITO_TABS, v)
+    suspend fun setIncognitoAdBlock(v: Boolean) = set(Keys.INCOGNITO_AD_BLOCK, v)
+    suspend fun setIncognitoTrackingProtection(v: Boolean) = set(Keys.INCOGNITO_TP, v)
+    suspend fun setIncognitoStripParams(v: Boolean) = set(Keys.INCOGNITO_STRIP, v)
+    suspend fun setIncognitoGpc(v: Boolean) = set(Keys.INCOGNITO_GPC, v)
+    suspend fun setIncognitoFingerprintProtection(v: Boolean) = set(Keys.INCOGNITO_FPP, v)
+    suspend fun setGameTouchFix(v: Boolean) = set(Keys.GAME_TOUCH_FIX, v)
+    suspend fun setFpTouch(v: Boolean) = set(Keys.FP_TOUCH, v)
+
+    suspend fun copyIncognitoFromNormal(s: Settings) {
+        context.dataStore.edit {
+            it[Keys.INCOGNITO_AD_BLOCK] = s.adBlockEnabled
+            it[Keys.INCOGNITO_HTTPS] = s.httpsOnly
+            it[Keys.INCOGNITO_STRIP] = s.stripTrackingParams
+            it[Keys.INCOGNITO_GPC] = s.sendGpc
+            it[Keys.INCOGNITO_FPP] = s.fingerprintProtectionAll
+            it[Keys.INCOGNITO_TP] = true
+            it[Keys.INCOGNITO_JS] = true
+            it[Keys.FP_SHIELD] = s.normalTabShield
+        }
+    }
 
     suspend fun applyPerformanceProfile(profile: PerformanceProfile) {
         val values = when (profile) {

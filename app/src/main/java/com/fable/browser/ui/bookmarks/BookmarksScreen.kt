@@ -53,7 +53,6 @@ import com.fable.browser.data.model.Bookmark
 import com.fable.browser.data.model.BookmarkFolder
 import com.fable.browser.ui.components.ListDivider
 
-/** Bookmark manager: folders, search, edit/delete, HTML import & export. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BookmarksScreen(

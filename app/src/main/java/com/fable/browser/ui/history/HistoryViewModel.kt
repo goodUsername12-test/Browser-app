@@ -15,22 +15,16 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** The ranges offered by "Clear history". */
 enum class ClearRange(val label: String) {
     LAST_HOUR("Last hour"),
     TODAY("Today"),
     ALL_TIME("All time")
 }
 
-/**
- * History exists for normal mode only. Incognito sessions never write here, so
- * there is nothing to filter out — the table simply has no private rows.
- */
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
     private val repository: HistoryRepository
 ) : ViewModel() {
-
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 

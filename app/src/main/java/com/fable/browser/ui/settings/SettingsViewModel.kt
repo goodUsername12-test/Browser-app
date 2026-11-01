@@ -27,11 +27,6 @@ import com.fable.browser.data.model.PerformanceProfile
 import com.fable.browser.data.model.TabUnloadMode
 import javax.inject.Inject
 
-/**
- * Backs every settings sub-screen. Writes go straight to DataStore;
- * [EngineManager] observes the same flow and re-applies engine prefs, so there
- * is no separate "apply" step and no chance of UI and engine drifting apart.
- */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val store: SettingsStore,
@@ -41,7 +36,6 @@ class SettingsViewModel @Inject constructor(
     private val historyRepository: HistoryRepository,
     private val biometricGate: BiometricGate
 ) : ViewModel() {
-
     val settings: StateFlow<Settings> = store.settings
         .stateIn(viewModelScope, SharingStarted.Eagerly, Settings())
 
@@ -60,15 +54,11 @@ class SettingsViewModel @Inject constructor(
 
     fun filterRuleCount(): Int = contentBlocker.ruleCount()
 
-    // ------------------------------------------------------------- general
-
     fun setSearchEngine(v: SearchEngine) = edit { store.setSearchEngine(v) }
     fun setHomepage(v: String) = edit { store.setHomepage(v.trim()) }
     fun setRestoreTabs(v: Boolean) = edit { store.setRestoreTabs(v) }
     fun setToolbarAtTop(v: Boolean) = edit { store.setToolbarAtTop(v) }
     fun setHideToolbarOnScroll(v: Boolean) = edit { store.setHideToolbarOnScroll(v) }
-
-    // ---------------------------------------------------- privacy & security
 
     fun setAdBlockEnabled(v: Boolean) = edit { store.setAdBlockEnabled(v) }
     fun setBlockThirdPartyCookies(v: Boolean) = edit { store.setBlockThirdPartyCookies(v) }
@@ -130,7 +120,6 @@ class SettingsViewModel @Inject constructor(
         return t.takeIf { it.isNotEmpty() && '.' in it && t.all { c -> c.isLetterOrDigit() || c == '.' || c == '-' } }
     }
 
-    /** One-tap profiles. Every switch can still be changed by hand afterwards. */
     fun applyPreset(preset: PrivacyPreset) = edit {
         val max = preset == PrivacyPreset.MAXIMUM
         val game = preset == PrivacyPreset.GAMING
@@ -168,7 +157,6 @@ class SettingsViewModel @Inject constructor(
     fun setClearCookiesOnExit(v: Boolean) = edit { store.setClearCookiesOnExit(v) }
     fun setClearCacheOnExit(v: Boolean) = edit { store.setClearCacheOnExit(v) }
 
-    /** Explicit, user-initiated filter-list refresh — the only outbound call in Settings. */
     fun updateFilterLists() {
         if (_updatingFilters.value) return
         _updatingFilters.value = true
@@ -203,8 +191,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ----------------------------------------------------------- incognito
-
     fun setIsolateIncognitoTabs(v: Boolean) = edit { store.setIsolateIncognitoTabs(v) }
     fun setFingerprintShield(v: Boolean) = edit { store.setFingerprintShield(v) }
     fun setForceUtcTimezone(v: Boolean) = edit { store.setForceUtcTimezone(v) }
@@ -226,8 +212,6 @@ class SettingsViewModel @Inject constructor(
         edit { store.setIncognitoLock(v) }
     }
 
-    // ---------------------------------------------------------- appearance
-
     fun setThemeMode(v: ThemeMode) = edit { store.setThemeMode(v) }
     fun setForceDarkWeb(v: Boolean) = edit { store.setForceDarkWeb(v) }
     fun setTextZoomPercent(v: Int) = edit { store.setTextZoomPercent(v) }
@@ -236,8 +220,24 @@ class SettingsViewModel @Inject constructor(
     fun setStrictTrackingProtection(v: Boolean) = edit { store.setStrictTrackingProtection(v) }
     fun setTabUnloadMode(v: TabUnloadMode) = edit { store.setTabUnloadMode(v) }
     fun setKeepLoadedTabs(v: Int) = edit { store.setKeepLoadedTabs(v) }
+    fun setMemoryMode(v: com.fable.browser.data.model.MemoryMode) = edit { store.setMemoryMode(v) }
+    fun setIdleTabMinutes(v: Int) = edit { store.setIdleTabMinutes(v) }
+    fun setPreconnectSearch(v: Boolean) = edit { store.setPreconnectSearch(v) }
+    fun setPreconnectTyped(v: Boolean) = edit { store.setPreconnectTyped(v) }
+    fun setGpuProcess(v: Boolean) = edit { store.setGpuProcess(v) }
+    fun setFreezeDetector(v: Boolean) = edit { store.setFreezeDetector(v) }
+    fun setKeepIncognitoTabs(v: Boolean) = edit { store.setKeepIncognitoTabs(v) }
+    fun setIncognitoAdBlock(v: Boolean) = edit { store.setIncognitoAdBlock(v) }
+    fun setIncognitoTrackingProtection(v: Boolean) = edit { store.setIncognitoTrackingProtection(v) }
+    fun setIncognitoStripParams(v: Boolean) = edit { store.setIncognitoStripParams(v) }
+    fun setIncognitoGpc(v: Boolean) = edit { store.setIncognitoGpc(v) }
+    fun setIncognitoFingerprintProtection(v: Boolean) = edit { store.setIncognitoFingerprintProtection(v) }
+    fun setGameTouchFix(v: Boolean) = edit { store.setGameTouchFix(v) }
+    fun setFpTouch(v: Boolean) = edit { store.setFpTouch(v) }
+    fun copyIncognitoFromNormal() = edit { store.copyIncognitoFromNormal(settings.value) }
 
-    // -------------------------------------------------------- site settings
+    fun autoMemoryInfo(context: android.content.Context): Pair<com.fable.browser.data.model.MemoryMode, Long> =
+        com.fable.browser.engine.MemoryPolicy.autoMode(context) to com.fable.browser.engine.MemoryPolicy.totalRamMb(context)
 
     fun setPermission(origin: String, kind: PermissionKind, decision: PermissionDecision) {
         viewModelScope.launch { sitePermissions.set(origin, kind, decision) }

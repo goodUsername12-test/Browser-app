@@ -17,7 +17,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // Mozilla Maven for GeckoView
         maven("https://maven.mozilla.org/maven2/")
     }
 }

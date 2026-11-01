@@ -1,15 +1,3 @@
-/*
- * Fable Shield — background script.
- *
- * Runs inside Gecko's network stack, so blocking here is real request
- * cancellation (not CSS hiding). Kotlin owns the rule set and the settings;
- * this script only enforces what it is told over the native port.
- *
- *  - webRequest.onBeforeRequest  -> cancel ads/trackers
- *  - webRequest.onBeforeSendHeaders -> strip referer leakage + send DNT/GPC
- *  - proxy.onRequest -> route private-tab traffic through the user's proxy
- */
-
 const NATIVE_APP = "fable";
 
 let config = {
@@ -18,6 +6,8 @@ let config = {
   proxyPort: 9050,
   proxyType: "socks5",
   adBlockEnabled: true,
+  adBlockIncognito: true,
+  gameTouchFix: true,
   fingerprintShield: true,
   normalTabShield: false,
   forceUtc: true,
@@ -31,10 +21,6 @@ let rules = {
   exceptionSubstrings: [],
 };
 
-/* ------------------------------------------------------------------ *
- * Native bridge
- * ------------------------------------------------------------------ */
-
 let port = null;
 
 function connectNative() {
@@ -46,10 +32,8 @@ function connectNative() {
   port.onMessage.addListener(onNativeMessage);
   port.onDisconnect.addListener(() => {
     port = null;
-    // Gecko restarts the extension process on demand; try again shortly.
     setTimeout(connectNative, 2000);
   });
-  // Ping so the native side answers with config + rules.
   port.postMessage({ type: "hello" });
 }
 
@@ -77,13 +61,8 @@ async function broadcastToActiveTab(message) {
       browser.tabs.sendMessage(tab.id, message).catch(() => {});
     }
   } catch (e) {
-    /* tabs API unavailable in this embedding; ignore */
   }
 }
-
-/* ------------------------------------------------------------------ *
- * Matching helpers (mirror of ContentBlocker.kt)
- * ------------------------------------------------------------------ */
 
 function hostOf(url) {
   try {
@@ -120,7 +99,6 @@ function shouldBlock(url, documentUrl) {
 
   const docHost = documentUrl ? hostOf(documentUrl) : null;
   if (matchesDomain(host, rules.blockedDomains)) {
-    // Never cancel first-party requests for the page the user is on.
     if (isSameSite(host, docHost)) return false;
     return true;
   }
@@ -130,12 +108,9 @@ function shouldBlock(url, documentUrl) {
   return false;
 }
 
-/* ------------------------------------------------------------------ *
- * Request blocking
- * ------------------------------------------------------------------ */
-
 function onBeforeRequest(details) {
-  if (!config.adBlockEnabled && !details.incognito) return {};
+  const on = details.incognito ? config.adBlockIncognito !== false : config.adBlockEnabled !== false;
+  if (!on) return {};
   if (details.type === "main_frame") return {};
   if (shouldBlock(details.url, details.documentUrl || details.originUrl)) {
     if (details.tabId >= 0) {
@@ -237,15 +212,20 @@ function filterFor(allTabs) {
 let listenerState = "";
 
 function registerListeners() {
-  const blockAll = config.adBlockEnabled !== false;
+  const blockNormal = config.adBlockEnabled !== false;
+  const blockPrivate = config.adBlockIncognito !== false;
+  const blockAll = blockNormal;
   const headersAll = config.normalTabShield === true;
   const proxyOn = config.proxyEnabled === true && !!config.proxyHost;
-  const state = [blockAll, headersAll, proxyOn].join(",");
+  const state = [blockNormal, blockPrivate, headersAll, proxyOn].join(",");
   if (state === listenerState) return;
   listenerState = state;
 
   const wr = browser.webRequest;
-  replaceListener(wr.onBeforeRequest, onBeforeRequest, filterFor(blockAll), ["blocking"]);
+  if (wr.onBeforeRequest.hasListener(onBeforeRequest)) wr.onBeforeRequest.removeListener(onBeforeRequest);
+  if (blockNormal || blockPrivate) {
+    addListenerSafe(wr.onBeforeRequest, onBeforeRequest, filterFor(blockAll), ["blocking"]);
+  }
   replaceListener(
     wr.onBeforeSendHeaders,
     onBeforeSendHeaders,
@@ -262,16 +242,13 @@ function registerListeners() {
 
 registerListeners();
 
-/* ------------------------------------------------------------------ *
- * Content script handshake
- * ------------------------------------------------------------------ */
-
 browser.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "fable-get-config") {
     return Promise.resolve({
       fingerprintShield: config.fingerprintShield,
       normalTabShield: config.normalTabShield,
       forceUtc: config.forceUtc,
+      gameTouchFix: config.gameTouchFix !== false,
     });
   }
   return undefined;

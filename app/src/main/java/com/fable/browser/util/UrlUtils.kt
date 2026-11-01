@@ -2,14 +2,7 @@ package com.fable.browser.util
 
 import java.net.URLEncoder
 
-/**
- * Pure-Kotlin URL helpers — deliberately free of android.net.Uri so that every
- * rule here (URL vs search detection, tracking-param stripping, host parsing)
- * is covered by plain JVM unit tests in UrlUtilsTest.
- */
 object UrlUtils {
-
-    /** Known tracking query parameters, stripped on every navigation. */
     private val TRACKING_PARAM_PREFIXES = listOf("utm_", "pk_", "piwik_", "matomo_")
     private val TRACKING_PARAMS = setOf(
         "fbclid", "gclid", "gclsrc", "dclid", "gbraid", "wbraid",
@@ -26,12 +19,6 @@ object UrlUtils {
     private val IP_REGEX = Regex("^(\\d{1,3}\\.){3}\\d{1,3}(:\\d+)?(/.*)?$")
     private const val LOCALHOST = "localhost"
 
-    /**
-     * Decide whether omnibox input is a URL or a search query.
-     * Rules: explicit scheme -> URL; localhost/IP -> URL;
-     * contains a dot with characters on both sides and no spaces -> URL;
-     * otherwise -> search.
-     */
     fun isLikelyUrl(input: String): Boolean {
         val trimmed = input.trim()
         if (trimmed.isEmpty()) return false
@@ -46,26 +33,17 @@ object UrlUtils {
         return dot in 1 until hostPart.length - 1
     }
 
-    /**
-     * Normalize omnibox input into a loadable URL, or a search URL when the
-     * input is not a URL. Auto-prepends https:// — never http:// — unless the
-     * user explicitly typed http:// themselves.
-     */
     fun normalizeInput(input: String, searchTemplate: String): String {
         val trimmed = input.trim()
         if (!isLikelyUrl(trimmed)) return searchUrl(trimmed, searchTemplate)
         return when {
             trimmed.startsWith("http://", ignoreCase = true) -> trimmed
             trimmed.startsWith("https://", ignoreCase = true) -> trimmed
-            SCHEME_REGEX.containsMatchIn(trimmed) -> trimmed // about:, file:, data:, intent:, mailto:
+            SCHEME_REGEX.containsMatchIn(trimmed) -> trimmed
             else -> "https://$trimmed"
         }
     }
 
-    /**
-     * Omnibox entry point: normalize [input] into a URL, or into a search URL
-     * for the given engine when it is not a URL.
-     */
     fun toUrlOrSearch(
         input: String,
         engine: com.fable.browser.data.model.SearchEngine
@@ -74,19 +52,13 @@ object UrlUtils {
     fun searchUrl(query: String, template: String): String =
         template.replace("%s", URLEncoder.encode(query.trim(), "UTF-8"))
 
-    /** True when the user is navigating over plain HTTP. */
     fun isInsecure(url: String): Boolean = url.startsWith("http://", ignoreCase = true)
 
-    /** scheme of [url] in lowercase, or "" when there is none. */
     fun scheme(url: String): String {
         val match = SCHEME_REGEX.find(url) ?: return ""
         return match.value.dropLast(1).lowercase()
     }
 
-    /**
-     * Host of [url] in lowercase without userinfo or port, or null when the URL
-     * has no authority component (about:, data:, mailto:, malformed input).
-     */
     fun host(url: String): String? {
         val schemeEnd = url.indexOf("://")
         val afterScheme = if (schemeEnd >= 0) url.substring(schemeEnd + 3) else {
@@ -98,17 +70,15 @@ object UrlUtils {
             .substringBefore('#')
             .substringAfterLast('@')
         val host = if (authority.startsWith("[")) {
-            authority.substringBefore(']').removePrefix("[") // IPv6 literal
+            authority.substringBefore(']').removePrefix("[")
         } else {
             authority.substringBefore(':')
         }
         return host.lowercase().ifBlank { null }
     }
 
-    /** Host for omnibox display; falls back to the whole URL for scheme-only URLs. */
     fun displayHost(url: String): String = host(url)?.removePrefix("www.") ?: url
 
-    /** scheme://host[:port] used as the per-site permission key. */
     fun origin(url: String): String {
         val schemeEnd = url.indexOf("://")
         if (schemeEnd < 0) return url
@@ -122,7 +92,6 @@ object UrlUtils {
         return "$scheme://${authority.lowercase()}"
     }
 
-    /** Remove known tracking parameters. Returns the input unchanged when nothing matched. */
     fun stripTrackingParams(url: String): String {
         val queryStart = url.indexOf('?')
         if (queryStart < 0) return url
@@ -144,18 +113,15 @@ object UrlUtils {
         else base + "?" + kept.joinToString("&") + fragment
     }
 
-    /** Upgrade http:// to https:// (HTTPS-only mode). */
     fun upgradeToHttps(url: String): String =
         if (url.startsWith("http://", ignoreCase = true)) "https://" + url.substring(7) else url
 
-    /** External (non-web) schemes handed off to the OS. */
     fun isExternalScheme(url: String): Boolean =
         scheme(url) in setOf("intent", "mailto", "tel", "sms", "market", "geo", "whatsapp", "bitcoin")
 
     fun isWebScheme(url: String): Boolean =
         scheme(url) in setOf("http", "https", "about", "data", "file", "blob", "resource")
 
-    /** True when [candidateHost] is [baseHost] or a subdomain of it. */
     fun isSameSite(candidateHost: String?, baseHost: String?): Boolean {
         if (candidateHost == null || baseHost == null) return false
         return candidateHost == baseHost || candidateHost.endsWith(".$baseHost")

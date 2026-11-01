@@ -29,11 +29,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-/**
- * The honest disclosure card, shown once before the first incognito tab.
- * It states plainly what this protects against and what it cannot protect
- * against — no vague "other people who use this device" hand-waving.
- */
 @Composable
 fun IncognitoDisclosure(onAcknowledge: () -> Unit) {
     AlertDialog(
@@ -96,10 +91,6 @@ private fun Bullet(text: String, icon: androidx.compose.ui.graphics.vector.Image
     }
 }
 
-/**
- * Covers the incognito tabs until the user re-authenticates. Rendered instead of
- * the engine surface, so no private page content is on screen while locked.
- */
 @Composable
 fun IncognitoLockScreen(onUnlock: () -> Unit, onLeaveIncognito: () -> Unit) {
     Column(

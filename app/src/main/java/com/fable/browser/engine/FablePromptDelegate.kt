@@ -10,20 +10,11 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSession.PromptDelegate
 
-/**
- * Routes every web-content prompt into [PromptBridge] so Compose draws it with
- * the app theme, and hands `<input type="file">` to [ActivityBridge].
- *
- * Nothing here persists anything: there is no autofill store, no "remember my
- * answer" for credentials, and no login/password saving at all — which is also
- * why incognito cannot leak a saved credential into the normal profile.
- */
 class FablePromptDelegate(
     private val bridge: PromptBridge,
     private val activityBridge: ActivityBridge
 ) : PromptDelegate {
     private val mainHandler = Handler(Looper.getMainLooper())
-
 
     override fun onAlertPrompt(
         session: GeckoSession,
@@ -208,7 +199,6 @@ class FablePromptDelegate(
                 return@requestFiles
             }
             val context = activityBridge.context().applicationContext
-            // Copy off the main thread (videos can be large), then answer the page.
             Thread({
                 UploadFiles.cleanOld(context)
                 val files = uris.mapNotNull { UploadFiles.copyToUploads(context, it) }
@@ -226,10 +216,6 @@ class FablePromptDelegate(
         return result
     }
 
-    /**
-     * Login/credential saving is deliberately unimplemented: Fable never stores
-     * passwords, so there is nothing to leak between profiles or off the device.
-     */
     override fun onLoginSave(
         session: GeckoSession,
         request: PromptDelegate.AutocompleteRequest<org.mozilla.geckoview.Autocomplete.LoginSaveOption>

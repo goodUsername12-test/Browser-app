@@ -13,16 +13,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/**
- * Download manager state. The list is Room-backed, so progress written by the
- * IO worker in [Downloader] streams straight into the UI without polling.
- */
 @HiltViewModel
 class DownloadsViewModel @Inject constructor(
     private val repository: DownloadRepository,
     private val downloader: Downloader
 ) : ViewModel() {
-
     val downloads: StateFlow<List<DownloadEntry>> = repository.all()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -33,7 +28,6 @@ class DownloadsViewModel @Inject constructor(
         viewModelScope.launch { downloader.open(entry) }
     }
 
-    /** Removes the record only; the saved file in Downloads/Fable is left alone. */
     fun remove(entry: DownloadEntry) {
         viewModelScope.launch { repository.delete(entry.id) }
     }

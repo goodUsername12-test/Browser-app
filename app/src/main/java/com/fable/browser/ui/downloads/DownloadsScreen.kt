@@ -39,7 +39,6 @@ import com.fable.browser.data.model.DownloadStatus
 import com.fable.browser.ui.components.ListDivider
 import java.util.Locale
 
-/** Download manager: live progress, tap to open, swipe-free explicit remove. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DownloadsScreen(

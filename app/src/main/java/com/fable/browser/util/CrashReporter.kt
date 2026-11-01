@@ -14,12 +14,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Saves the stack trace of an app crash so it can be shown (and copied or reported)
- * the next time the browser starts. Nothing is sent anywhere automatically.
- */
 object CrashReporter {
-
     private const val FILE_NAME = "last_crash.txt"
 
     fun install(context: Context) {
@@ -29,8 +24,7 @@ object CrashReporter {
             runCatching { file(appContext).writeText(describe(thread, error)) }
             previous?.uncaughtException(thread, error)
         }
-        // Android 11+: also learn about freezes (ANR) and native/engine crashes,
-        // which never reach the Java handler above. Runs off the main thread.
+        FreezeWatchdog.install(appContext)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Thread({ runCatching { collectExitInfo(appContext) } }, "fable-exit-info").start()
         }
@@ -51,7 +45,6 @@ object CrashReporter {
         prefs.edit().putLong(KEY_LAST_EXIT, fresh.maxOf { it.timestamp }).apply()
         val worth = fresh.filter { isWorthReporting(it) }.sortedByDescending { it.timestamp }
         if (worth.isEmpty()) return
-        // A Java crash report is more precise: keep it if there is one.
         if (file(context).exists()) return
         val report = buildString {
             appendLine("Fable Browser ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) ${BuildConfig.BUILD_TYPE}")
@@ -66,7 +59,6 @@ object CrashReporter {
     private fun isWorthReporting(info: ApplicationExitInfo): Boolean = when (info.reason) {
         ApplicationExitInfo.REASON_ANR,
         ApplicationExitInfo.REASON_CRASH_NATIVE -> true
-        // Killed for memory while on screen (e.g. a big game page).
         ApplicationExitInfo.REASON_LOW_MEMORY ->
             info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE
         else -> false
@@ -95,23 +87,47 @@ object CrashReporter {
         }
     }
 
-    /** The "main" thread block of an ANR trace: shows exactly what the UI thread was waiting for. */
     @RequiresApi(Build.VERSION_CODES.R)
     private fun mainThreadTrace(info: ApplicationExitInfo): String? {
         val stream = info.traceInputStream ?: return null
-        val lines = stream.bufferedReader().use { reader -> reader.lineSequence().take(4000).toList() }
-        val subject = lines.firstOrNull { it.startsWith("Subject:") }
-        val start = lines.indexOfFirst { it.startsWith("\"main\"") }
-        if (start < 0) return subject
-        val block = lines.drop(start).takeWhile { it.isNotBlank() }.take(60)
-        return (listOfNotNull(subject) + block).joinToString("\n")
+        var subject: String? = null
+        val block = ArrayList<String>()
+        var inMain = false
+        var scanned = 0
+        stream.bufferedReader().use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (++scanned > 200_000) break
+                if (subject == null && line.startsWith("Subject:")) subject = line
+                if (!inMain) {
+                    if (line.startsWith("\"main\"") || (line.startsWith("\"") && line.contains(" tid=1 "))) {
+                        inMain = true
+                        block += line
+                    }
+                } else {
+                    if (line.isBlank() || block.size >= 70) break
+                    block += line
+                }
+            }
+        }
+        if (block.isEmpty()) {
+            return listOfNotNull(subject, "(Android did not include the main thread; see the freeze report below if there is one.)")
+                .joinToString("\n")
+        }
+        val idle = block.any { it.contains("nativePollOnce") } && block.size < 14
+        val note = if (idle) "(Main thread was already idle when Android took the dump.)" else null
+        return (listOfNotNull(subject, note) + block).joinToString("\n")
     }
 
-    fun pendingReport(context: Context): String? =
-        runCatching { file(context).takeIf { it.exists() }?.readText() }.getOrNull()
+    fun pendingReport(context: Context): String? {
+        val crash = runCatching { file(context).takeIf { it.exists() }?.readText() }.getOrNull()
+        val freeze = FreezeWatchdog.pendingReport(context)
+        return listOfNotNull(crash?.takeIf { it.isNotBlank() }, freeze).joinToString("\n\n").ifBlank { null }
+    }
 
     fun clear(context: Context) {
         runCatching { file(context).delete() }
+        FreezeWatchdog.clear(context)
     }
 
     private fun file(context: Context) = File(context.filesDir, FILE_NAME)

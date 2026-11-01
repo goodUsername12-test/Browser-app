@@ -7,11 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** URL-vs-search detection, https upgrading, host parsing and tracking-param stripping. */
 class UrlUtilsTest {
-
-    // ------------------------------------------------- URL vs search detection
-
     @Test
     fun `hostnames with a dot are treated as urls`() {
         assertTrue(UrlUtils.isLikelyUrl("google.com"))
@@ -56,8 +52,6 @@ class UrlUtilsTest {
         assertFalse(UrlUtils.isLikelyUrl("hello."))
         assertFalse(UrlUtils.isLikelyUrl(".hello"))
     }
-
-    // ------------------------------------------------------------ normalization
 
     @Test
     fun `bare hosts are upgraded to https never http`() {
@@ -111,8 +105,6 @@ class UrlUtilsTest {
         assertEquals("about:blank", UrlUtils.upgradeToHttps("about:blank"))
     }
 
-    // ------------------------------------------------------------------- hosts
-
     @Test
     fun `host strips userinfo port and case`() {
         assertEquals("example.com", UrlUtils.host("https://user:pw@Example.com:8443/path?a=b"))
@@ -158,8 +150,6 @@ class UrlUtilsTest {
         assertTrue(UrlUtils.isWebScheme("about:blank"))
         assertFalse(UrlUtils.isWebScheme("tel:+15551234"))
     }
-
-    // -------------------------------------------------- tracking-param removal
 
     @Test
     fun `utm parameters are removed`() {

@@ -27,7 +27,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.selectable
 
-/** Section heading used across the settings tree. */
 @Composable
 fun SectionHeader(text: String, modifier: Modifier = Modifier) {
     Text(
@@ -96,7 +95,6 @@ fun SwitchRow(
     )
 }
 
-/** Radio list used for search engine, theme, DoH provider and auto-wipe pickers. */
 @Composable
 fun <T> RadioGroup(
     options: List<T>,
@@ -163,7 +161,6 @@ fun ListDivider() {
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
-/** Compact single-line label used in tab cards and history rows. */
 @Composable
 fun OneLine(text: String, modifier: Modifier = Modifier, muted: Boolean = false) {
     Text(

@@ -4,6 +4,7 @@ import com.fable.browser.data.model.SavedTab
 import com.fable.browser.data.model.TabUnloadMode
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.data.prefs.SettingsStore
+import com.fable.browser.data.repo.IncognitoTabStore
 import com.fable.browser.data.repo.TabPersistenceRepository
 import com.fable.browser.util.UrlUtils
 import kotlinx.coroutines.CoroutineScope
@@ -16,25 +17,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Single owner of every open tab.
- *
- * Incognito guarantees implemented here:
- *  - incognito tabs are never handed to [TabPersistenceRepository], so they
- *    cannot survive a process death or appear in a restore;
- *  - each incognito tab gets its own `contextId` when isolation is ON, and its
- *    storage partition is wiped the moment the tab closes;
- *  - [wipeIncognito] closes every private tab, clears each container, and
- *    resets the fingerprint identity so the next session looks like a new user;
- *  - an idle timer ([Settings.incognitoAutoWipe]) triggers the same wipe.
- */
 @Singleton
 class TabManager @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
+    private val incognitoStore: com.fable.browser.data.repo.IncognitoTabStore,
     private val sessionFactory: SessionFactory,
     private val delegateFactory: SessionDelegateFactory,
     private val engineManager: EngineManager,
@@ -62,32 +54,35 @@ class TabManager @Inject constructor(
     private val _toolbarVisible = MutableStateFlow(true)
     val toolbarVisible: StateFlow<Boolean> = _toolbarVisible.asStateFlow()
 
-    /** Full screen chosen by the user from the toolbar (games, videos, reading). */
     private var lastKilledTabId: String? = null
     private var lastKilledAt = 0L
 
     private val _manualFullScreen = MutableStateFlow(false)
     val manualFullScreen: StateFlow<Boolean> = _manualFullScreen.asStateFlow()
 
-    /** True when the biometric/PIN gate must be passed before private tabs render. */
     private val _incognitoLocked = MutableStateFlow(false)
     val incognitoLocked: StateFlow<Boolean> = _incognitoLocked.asStateFlow()
 
-    /** Latest settings snapshot, read synchronously by the Gecko delegates. */
     @Volatile private var settings: Settings = Settings()
 
-    /** Shared incognito container used when per-tab isolation is OFF. */
     private var sharedIncognitoContext: String? = null
 
     private var autoWipeJob: Job? = null
+    private var idleSweepJob: Job? = null
+    private var hiddenUnloadJob: Job? = null
+    private var persistJob: Job? = null
+    @Volatile private var appVisible = true
+
+    fun memoryPolicy(): MemoryPolicy = MemoryPolicy.resolve(appContext, settings)
     private var lastScrollY = 0
 
     private companion object {
         const val TRIM_RUNNING_LOW = 10
         const val TRIM_RUNNING_CRITICAL = 15
-        /** A page killed for memory twice within this window is not reloaded again automatically. */
         const val KILL_LOOP_WINDOW_MS = 60_000L
         const val TRIM_UI_HIDDEN = 20
+        const val TRIM_BACKGROUND = 40
+        const val TRIM_COMPLETE = 80
     }
 
     init {
@@ -96,15 +91,20 @@ class TabManager @Inject constructor(
             settingsStore.settings.collect { updated ->
                 val wipeChanged = updated.incognitoAutoWipe != settings.incognitoAutoWipe
                 val budgetChanged = updated.tabUnloadMode != settings.tabUnloadMode ||
-                    updated.keepLoadedTabs != settings.keepLoadedTabs
+                    updated.keepLoadedTabs != settings.keepLoadedTabs ||
+                    updated.memoryMode != settings.memoryMode ||
+                    updated.idleTabMinutes != settings.idleTabMinutes
+                val keepChanged = updated.keepIncognitoTabs != settings.keepIncognitoTabs
                 settings = updated
                 if (wipeChanged) restartAutoWipeTimer()
-                if (budgetChanged) enforceTabBudget()
+                if (budgetChanged) {
+                    enforceTabBudget()
+                    if (appVisible) restartIdleSweep()
+                }
+                if (keepChanged) persist()
             }
         }
     }
-
-    // ------------------------------------------------------------------ query
 
     fun tab(id: String?): BrowserTab? = _tabs.value.firstOrNull { it.id == id }
 
@@ -116,12 +116,6 @@ class TabManager @Inject constructor(
 
     fun incognitoTabCount(): Int = _tabs.value.count { it.isIncognito }
 
-    // ------------------------------------------------------------- lifecycle
-
-    /**
-     * Restores persisted normal tabs, or opens a fresh one. Incognito tabs are
-     * intentionally absent — they never touched storage.
-     */
     fun restoreOrCreate() {
         scope.launch {
             val current = settingsStore.settings.first()
@@ -144,26 +138,86 @@ class TabManager @Inject constructor(
                 }
                 restored.getOrNull(activeIndex)?.let { selectTab(it.id) }
             }
+            if (current.keepIncognitoTabs) restoreIncognitoTabs()
             restartAutoWipeTimer()
+            restartIdleSweep()
         }
     }
 
-    /** Persist normal tabs only. Called from onStop. */
+    private suspend fun restoreIncognitoTabs() {
+        val entries = withContext(Dispatchers.IO) { incognitoStore.load() }
+        if (entries.isEmpty()) return
+        var toSelect: BrowserTab? = null
+        entries.forEachIndexed { index, entry ->
+            val tab = createTab(incognito = true, open = false)
+            tab.updateTitle(entry.title)
+            tab.updateUrl(entry.url)
+            tab.savedState = entry.state?.let { runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() }
+            tab.markUnloaded()
+            if (entry.pinned) tab.updatePinned(true)
+            tab.lastAccessed = System.currentTimeMillis() - (entries.size - index) * 1000L
+            if (entry.active) toSelect = tab
+        }
+        if (settings.incognitoLock) _incognitoLocked.value = true
+        toSelect?.let { selectTab(it.id) }
+    }
+
     fun persist() {
+        persistJob?.cancel()
+        persistJob = null
+        val activeId = _activeTabId.value
         val snapshot = _tabs.value.filter { !it.isIncognito }.mapIndexed { index, tab ->
             SavedTab(
                 url = tab.url.value,
                 title = tab.title.value,
                 position = index,
-                isActive = tab.id == _activeTabId.value
+                isActive = tab.id == activeId
             )
         }.filter { it.url.startsWith("http", ignoreCase = true) }
-        scope.launch { tabPersistence.save(snapshot) }
+        val keepIncognito = settings.keepIncognitoTabs
+        val incognitoTabs = if (keepIncognito) {
+            _tabs.value.filter { it.isIncognito && it.url.value.startsWith("http", ignoreCase = true) }.map { tab ->
+                PendingIncognito(
+                    url = tab.url.value,
+                    title = tab.title.value,
+                    state = tab.savedState,
+                    active = tab.id == activeId,
+                    pinned = tab.isPinned.value
+                )
+            }
+        } else emptyList()
+        scope.launch {
+            tabPersistence.save(snapshot)
+            withContext(Dispatchers.IO) {
+                if (keepIncognito) {
+                    val entries = incognitoTabs.map { t ->
+                        IncognitoTabStore.Entry(
+                            url = t.url,
+                            title = t.title,
+                            state = t.state?.let { runCatching { it.toString() }.getOrNull() },
+                            active = t.active,
+                            pinned = t.pinned
+                        )
+                    }
+                    incognitoStore.save(entries)
+                } else {
+                    incognitoStore.clear()
+                }
+            }
+        }
     }
 
-    /** Honour the clear-on-exit switches. Called when the task is removed. */
+    private fun schedulePersist() {
+        persistJob?.cancel()
+        persistJob = scope.launch {
+            delay(3_000L)
+            persistJob = null
+            persist()
+        }
+    }
+
     fun onAppExit(onDone: () -> Unit = {}) {
-        wipeIncognito()
+        if (settings.keepIncognitoTabs) persist() else wipeIncognito()
         val s = settings
         if (s.clearCookiesOnExit) engineManager.clearCookies()
         if (s.clearCacheOnExit) engineManager.clearCache()
@@ -171,66 +225,68 @@ class TabManager @Inject constructor(
         onDone()
     }
 
-    /**
-     * Called from MainActivity.onStop: persist the normal tabs and, when the
-     * incognito lock is enabled, arm the gate so returning to the app requires
-     * biometrics before any private tab is shown again.
-     */
-    /**
-     * Called from MainActivity.onPause: stop the page's painting and
-     * requestAnimationFrame loop before Android tears down the drawing surface.
-     * Doing this early (instead of only in onStop) keeps the renderer idle while
-     * the surface goes away, which avoids the false "not responding" dialog.
-     */
     fun onAppPaused() {
         runCatching { activeTab?.session?.takeIf { it.isOpen }?.setActive(false) }
     }
 
     fun onAppResumed() {
         val tab = activeTab ?: return
-        if (tab.isEvicted) return
+        if (tab.isEvicted || isGated(tab)) return
         runCatching { tab.session.takeIf { it.isOpen }?.setActive(true) }
     }
 
-    fun onAppBackgrounded() {
+    fun onAppBackgrounded(temporary: Boolean = false) {
+        appVisible = false
         persist()
+        idleSweepJob?.cancel()
         activeTab?.session?.takeIf { it.isOpen }?.setActive(false)
+        hiddenUnloadJob?.cancel()
+        if (temporary) return
         if (settings.incognitoLock && _tabs.value.any { it.isIncognito }) {
             _incognitoLocked.value = true
+        }
+        val hiddenMs = memoryPolicy().hiddenUnloadMs
+        if (hiddenMs > 0) {
+            hiddenUnloadJob = scope.launch {
+                delay(hiddenMs)
+                if (!appVisible) evictBackgroundTabs()
+            }
         }
     }
 
     fun onAppForegrounded() {
+        appVisible = true
+        hiddenUnloadJob?.cancel()
+        restartIdleSweep()
         activeTab?.let { tab ->
+            if (isGated(tab)) return@let
             if (tab.isEvicted) resumeIfEvicted(tab)
-            tab.session.takeIf { it.isOpen }?.setActive(true)
         }
     }
 
-    fun unlockIncognito() { _incognitoLocked.value = false }
+    private fun isGated(tab: BrowserTab): Boolean = tab.isIncognito && _incognitoLocked.value
 
-    /** ACTION_VIEW from another app — always lands in a normal tab. */
+    fun unlockIncognito() {
+        _incognitoLocked.value = false
+        activeTab?.let { tab ->
+            if (tab.isEvicted) resumeIfEvicted(tab)
+            runCatching { tab.session.takeIf { it.isOpen }?.setActive(true) }
+        }
+    }
+
     fun openExternalUrl(url: String) {
         if (url.isBlank()) return
         openTab(url, incognito = false)
     }
 
-    /** ACTION_WEB_SEARCH from another app. */
     fun openExternalSearch(query: String) {
         if (query.isBlank()) return
         openTab(UrlUtils.toUrlOrSearch(query, settings.searchEngine), incognito = false)
     }
 
-    /**
-     * Store a freshly captured tab preview. Incognito previews stay in this
-     * process's heap only — there is no thumbnail cache directory at all — and
-     * are recycled by [BrowserTab.close].
-     */
     fun setThumbnail(tabId: String, bitmap: android.graphics.Bitmap?) {
         tab(tabId)?.updateThumbnail(bitmap)
     }
-
-    // ------------------------------------------------------------ tab actions
 
     fun openTab(url: String? = null, incognito: Boolean = _isIncognitoMode.value): BrowserTab {
         val tab = createTab(incognito)
@@ -266,9 +322,12 @@ class TabManager @Inject constructor(
 
     private fun activate(tab: BrowserTab) {
         val previous = activeTab
-        if (previous != null && previous.id != tab.id && previous.session.isOpen) {
-            previous.session.setActive(false)
-            setPriority(previous, high = false)
+        if (previous != null && previous.id != tab.id) {
+            previous.touch()
+            if (previous.session.isOpen) {
+                previous.session.setActive(false)
+                setPriority(previous, high = false)
+            }
         }
         tab.touch()
         _activeTabId.value = tab.id
@@ -303,7 +362,6 @@ class TabManager @Inject constructor(
         val remaining = _tabs.value.filter { it.id != id }
         _tabs.value = remaining
 
-        // Incognito teardown: drop the storage partition with the tab.
         if (tab.isIncognito) {
             tab.contextId?.let { engineManager.clearContainer(it) }
             if (remaining.none { it.isIncognito }) {
@@ -312,6 +370,7 @@ class TabManager @Inject constructor(
             }
         }
         tab.close()
+        schedulePersist()
 
         if (_activeTabId.value == id) {
             val sameMode = remaining.filter { it.isIncognito == tab.isIncognito }
@@ -331,7 +390,6 @@ class TabManager @Inject constructor(
         _tabs.value.filter { it.isIncognito == incognito }.forEach { closeTab(it.id) }
     }
 
-    /** Switch between the normal and incognito tab strips. */
     fun setIncognitoMode(enabled: Boolean) {
         _isIncognitoMode.value = enabled
         val candidate = _tabs.value.lastOrNull { it.isIncognito == enabled }
@@ -342,15 +400,12 @@ class TabManager @Inject constructor(
         }
     }
 
-    /**
-     * The panic path: close every incognito tab, wipe each container, and
-     * reset the spoofed identity. Nothing survives.
-     */
     fun wipeIncognito() {
         promptBridge.dismissAll()
         _incognitoLocked.value = false
         autoWipeJob?.cancel()
         val incognitoTabs = _tabs.value.filter { it.isIncognito }
+        scope.launch(Dispatchers.IO) { incognitoStore.clear() }
         if (incognitoTabs.isEmpty()) {
             fingerprintShield.resetSession()
             return
@@ -371,8 +426,6 @@ class TabManager @Inject constructor(
             _tabs.value.lastOrNull()?.let { selectTab(it.id) }
         }
     }
-
-    // ------------------------------------------------------------ navigation
 
     fun load(tab: BrowserTab, input: String) {
         val url = UrlUtils.toUrlOrSearch(input, settings.searchEngine)
@@ -409,17 +462,9 @@ class TabManager @Inject constructor(
     fun enterFullScreen() {
         if (_manualFullScreen.value) return
         _manualFullScreen.value = true
-        // Holding a finger on a game joystick must not open the link/image menu:
-        // that is handled in onContextMenu below. (v5 used a test-only GeckoView
-        // call here, which crashed the app on some devices.)
         onGameModeStarted()
     }
 
-    /**
-     * Game mode: when a page goes full screen, free as much memory as possible
-     * for it (unload background tabs that are not playing media) so big WebGL /
-     * WebAssembly games do not run the content process out of memory.
-     */
     private fun onGameModeStarted() {
         if (!settings.gameMode) return
         scope.launch(Dispatchers.Main) {
@@ -440,7 +485,6 @@ class TabManager @Inject constructor(
 
     fun goForward() = activeTab?.takeIf { it.canGoForward.value }?.session?.goForward()
 
-    /** HTTPS-only interstitial escape hatch, scoped to this tab and host. */
     fun proceedOverHttp(tab: BrowserTab, url: String) {
         UrlUtils.host(url)?.let { tab.allowHttp(it) }
         tab.updateInterstitial(null)
@@ -471,8 +515,6 @@ class TabManager @Inject constructor(
         proxyConfig.toggleReaderMode()
     }
 
-    // -------------------------------------------------------- find in page
-
     fun findInPage(query: String, forward: Boolean = true) {
         val tab = activeTab ?: return
         if (query.isBlank()) {
@@ -491,12 +533,6 @@ class TabManager @Inject constructor(
         tab.updateFindMatch(null)
     }
 
-    // ------------------------------------------------- memory / eviction
-
-    /**
-     * Free the engine session of background tabs under memory pressure. The
-     * tab keeps its URL so selecting it reloads transparently.
-     */
     fun evictBackgroundTabs() {
         val activeId = _activeTabId.value
         _tabs.value
@@ -506,20 +542,42 @@ class TabManager @Inject constructor(
 
     fun onTrimMemory(level: Int) {
         if (level == TRIM_UI_HIDDEN) return
-        // While a game is in full screen, free memory as soon as Android says it is low.
         val gaming = settings.gameMode && (_manualFullScreen.value || activeTab?.isFullScreen?.value == true)
         if (gaming && level >= TRIM_RUNNING_LOW) {
             evictBackgroundTabs()
             return
         }
-        if (settings.tabUnloadMode == TabUnloadMode.KEEP_ALL) return
-        if (level >= TRIM_RUNNING_LOW) evictBackgroundTabs()
+        val policy = memoryPolicy()
+        when {
+            level >= TRIM_COMPLETE -> evictBackgroundTabs()
+            level >= TRIM_BACKGROUND -> if (policy.unloadOnBackgroundTrim) evictBackgroundTabs()
+            level >= TRIM_RUNNING_CRITICAL -> evictBackgroundTabs()
+            level >= TRIM_RUNNING_LOW -> if (policy.keepLoaded >= 0) evictBackgroundTabs()
+        }
+    }
+
+    private fun restartIdleSweep() {
+        idleSweepJob?.cancel()
+        val idleMs = memoryPolicy().idleUnloadMs
+        if (idleMs <= 0) return
+        idleSweepJob = scope.launch {
+            while (true) {
+                delay((idleMs / 3).coerceIn(10_000L, 60_000L))
+                val now = System.currentTimeMillis()
+                val activeId = _activeTabId.value
+                _tabs.value
+                    .filter {
+                        it.id != activeId && !it.isEvicted && !it.isPinned.value &&
+                            !it.isMediaPlaying && now - it.lastAccessed >= idleMs
+                    }
+                    .forEach { unload(it) }
+            }
+        }
     }
 
     private fun enforceTabBudget() {
-        val mode = settings.tabUnloadMode
-        if (mode == TabUnloadMode.KEEP_ALL) return
-        val keep = if (mode == TabUnloadMode.AGGRESSIVE) 0 else settings.keepLoadedTabs
+        val keep = memoryPolicy().keepLoaded
+        if (keep < 0) return
         val activeId = _activeTabId.value
         _tabs.value
             .filter { it.id != activeId && !it.isEvicted && !it.isPinned.value && !it.isMediaPlaying }
@@ -573,11 +631,6 @@ class TabManager @Inject constructor(
         return session
     }
 
-    /**
-     * The visible tab (and tabs playing media) get high process priority so
-     * Android keeps their content process alive under memory pressure. This is
-     * what stops big games from being killed right before they finish loading.
-     */
     private fun setPriority(tab: BrowserTab, high: Boolean) {
         val session = tab.session
         if (!session.isOpen) return
@@ -589,8 +642,6 @@ class TabManager @Inject constructor(
         runCatching { session.setPriorityHint(hint) }
     }
 
-    // -------------------------------------------------- incognito auto-wipe
-
     private fun restartAutoWipeTimer() {
         autoWipeJob?.cancel()
         val minutes = settings.incognitoAutoWipe.minutes
@@ -601,21 +652,18 @@ class TabManager @Inject constructor(
         }
     }
 
-    /** Any incognito interaction resets the idle countdown. */
     private fun touchIncognitoActivity() {
         if (_isIncognitoMode.value) restartAutoWipeTimer()
     }
 
-    // ------------------------------------------------------ context menu
-
     fun dismissContextMenu() { _contextMenu.value = null }
 
-    // ------------------------------------------------------------ callbacks
-
     private val callbacks = object : TabCallbacks {
+        override fun onPageChanged(tab: BrowserTab) {
+            if (!tab.isIncognito || settings.keepIncognitoTabs) schedulePersist()
+        }
+
         override fun onNewSessionRequested(tab: BrowserTab, uri: String): GeckoSession? {
-            // Inherit the parent's mode and container so a popup from an
-            // incognito tab can never escape into the persistent profile.
             val child = createTab(tab.isIncognito, open = false, inheritedContextId = tab.contextId)
             if (uri.isNotBlank()) child.updateUrl(uri)
             child.touch()
@@ -631,7 +679,6 @@ class TabManager @Inject constructor(
             val active = tab.id == _activeTabId.value
             tab.markUnloaded()
             if (!active) return
-            // Free memory for the page that just died before bringing it back.
             runCatching { evictBackgroundTabs() }
             if (crashed) return
             val now = android.os.SystemClock.elapsedRealtime()
@@ -639,7 +686,6 @@ class TabManager @Inject constructor(
             lastKilledTabId = tab.id
             lastKilledAt = now
             if (looping) {
-                // Do not reload forever: show a message with a Reload button instead.
                 tab.updateInterstitial(
                     Interstitial.Network(
                         tab.url.value,
@@ -665,8 +711,6 @@ class TabManager @Inject constructor(
         override fun onCloseRequested(tab: BrowserTab) = closeTab(tab.id)
 
         override fun onContextMenu(target: ContextMenuTarget) {
-            // No link/image menu while a game or video is in full screen: holding a
-            // finger on a virtual joystick must never pop a menu over the game.
             val owner = tab(target.tabId)
             if (_manualFullScreen.value || owner?.isFullScreen?.value == true) return
             _contextMenu.value = target
@@ -676,7 +720,6 @@ class TabManager @Inject constructor(
             val delta = scrollY - lastScrollY
             lastScrollY = scrollY
             if (!settings.hideToolbarOnScroll) {
-                // Never resize the page during a gesture unless the user asked for it.
                 if (!_toolbarVisible.value) _toolbarVisible.value = true
                 return
             }
@@ -690,3 +733,11 @@ class TabManager @Inject constructor(
         }
     }
 }
+
+private class PendingIncognito(
+    val url: String,
+    val title: String,
+    val state: GeckoSession.SessionState?,
+    val active: Boolean,
+    val pinned: Boolean
+)

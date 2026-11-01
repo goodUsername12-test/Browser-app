@@ -25,7 +25,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
-/** One level of the bookmark tree, filtered by the current search query. */
 data class BookmarksUiState(
     val folders: List<BookmarkFolder> = emptyList(),
     val bookmarks: List<Bookmark> = emptyList()
@@ -37,8 +36,6 @@ class BookmarksViewModel @Inject constructor(
     private val repository: BookmarkRepository,
     private val activityBridge: ActivityBridge
 ) : ViewModel() {
-
-    /** null = root folder. */
     private val _currentFolder = MutableStateFlow<BookmarkFolder?>(null)
     val currentFolder: StateFlow<BookmarkFolder?> = _currentFolder.asStateFlow()
 
@@ -97,7 +94,6 @@ class BookmarksViewModel @Inject constructor(
         viewModelScope.launch { repository.delete(bookmark) }
     }
 
-    /** Netscape-format export written to a user-chosen document. */
     fun export(destination: Uri) {
         viewModelScope.launch {
             val all = repository.allBookmarks().first()
@@ -115,7 +111,6 @@ class BookmarksViewModel @Inject constructor(
         }
     }
 
-    /** Import a bookmarks HTML file exported by any browser. */
     fun import(source: Uri) {
         viewModelScope.launch {
             val parsed = withContext(Dispatchers.IO) {

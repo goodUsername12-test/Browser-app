@@ -27,6 +27,8 @@ import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SwipeToDismissBox
@@ -57,14 +59,6 @@ import com.fable.browser.engine.BrowserTab
 import com.fable.browser.ui.browser.BrowserViewModel
 import com.fable.browser.util.UrlUtils
 
-/**
- * Grid tab switcher with two visually distinct trays.
- *
- * Incognito previews come from [BrowserTab.thumbnail], which only ever exists
- * in RAM — there is no thumbnail cache on disk for either mode, and the
- * incognito tray is drawn in the violet private palette so the two can never
- * be confused.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TabsScreen(
@@ -101,8 +95,6 @@ fun TabsScreen(
                                     "Every open tab will be closed."
                                 },
                                 confirmLabel = "Close all",
-                                // "Close all incognito" takes the panic path: tabs
-                                // closed, containers dropped, identity reset.
                                 onConfirm = {
                                     if (showIncognito) viewModel.panicWipe()
                                     else viewModel.closeAll(false)
@@ -166,7 +158,8 @@ fun TabsScreen(
                             viewModel.selectTab(tab.id)
                             onClose()
                         },
-                        onClose = { viewModel.closeTab(tab.id) }
+                        onClose = { viewModel.closeTab(tab.id) },
+                        onToggleKeepLoaded = { viewModel.setPinned(tab.id, !tab.isPinned.value) }
                     )
                 }
             }
@@ -180,8 +173,11 @@ private fun TabCard(
     tab: BrowserTab,
     isActive: Boolean,
     onSelect: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onToggleKeepLoaded: () -> Unit
 ) {
+    val pinned by tab.isPinned.collectAsStateWithLifecycle()
+    val sleeping by tab.isUnloaded.collectAsStateWithLifecycle()
     val title by tab.title.collectAsStateWithLifecycle()
     val url by tab.url.collectAsStateWithLifecycle()
     val thumbnail by tab.thumbnail.collectAsStateWithLifecycle()
@@ -258,11 +254,24 @@ private fun TabCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = UrlUtils.displayHost(url),
+                        text = when {
+                            pinned -> "Instant · " + UrlUtils.displayHost(url)
+                            sleeping && !isActive -> "Sleeping · " + UrlUtils.displayHost(url)
+                            else -> UrlUtils.displayHost(url)
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(onClick = onToggleKeepLoaded, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        if (pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
+                        contentDescription = if (pinned) "Stop keeping loaded" else "Keep loaded (instant switch)",
+                        modifier = Modifier.size(16.dp),
+                        tint = if (pinned) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {

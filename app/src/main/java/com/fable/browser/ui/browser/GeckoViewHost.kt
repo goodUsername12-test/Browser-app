@@ -15,6 +15,8 @@ import kotlinx.coroutines.delay
 import org.mozilla.geckoview.GeckoView
 
 class GeckoCaptureHandle {
+    @Volatile var thumbnailWidth: Int = THUMBNAIL_WIDTH
+
     internal var view: GeckoView? = null
 
     fun capture(onDone: (Bitmap?) -> Unit) {
@@ -40,7 +42,7 @@ class GeckoCaptureHandle {
     }
 
     private fun shrink(source: Bitmap): Bitmap? = runCatching {
-        val width = THUMBNAIL_WIDTH.coerceAtMost(source.width)
+        val width = thumbnailWidth.coerceAtMost(source.width)
         val height = (source.height * width.toFloat() / source.width).toInt().coerceAtLeast(1)
         val scaled = Bitmap.createScaledBitmap(source, width, height, true)
         val compact = scaled.copy(Bitmap.Config.RGB_565, false) ?: scaled

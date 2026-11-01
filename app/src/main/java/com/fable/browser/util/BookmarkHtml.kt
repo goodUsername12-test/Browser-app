@@ -2,11 +2,7 @@ package com.fable.browser.util
 
 import com.fable.browser.data.model.Bookmark
 
-/**
- * Netscape bookmark HTML import/export (the de-facto format every browser uses).
- */
 object BookmarkHtml {
-
     fun export(bookmarks: List<Bookmark>): String = buildString {
         appendLine("<!DOCTYPE NETSCAPE-Bookmark-file-1>")
         appendLine("<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">")

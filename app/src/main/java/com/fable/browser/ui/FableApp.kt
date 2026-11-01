@@ -33,7 +33,6 @@ import com.fable.browser.ui.settings.SiteSettingsScreen
 import com.fable.browser.ui.tabs.TabsScreen
 import com.fable.browser.ui.theme.FableTheme
 
-/** Every destination in the app. Single Activity, single NavHost. */
 object Routes {
     const val BROWSER = "browser"
     const val TABS = "tabs"
@@ -51,11 +50,6 @@ object Routes {
     const val SETTINGS_PERFORMANCE = "settings/performance"
 }
 
-/**
- * Root composable. The theme lives here so that switching into incognito
- * repaints the entire app — including every settings sub-screen — with the
- * violet private palette, making the mode impossible to mistake.
- */
 @Composable
 fun FableApp() {
     val viewModel: BrowserViewModel = hiltViewModel()

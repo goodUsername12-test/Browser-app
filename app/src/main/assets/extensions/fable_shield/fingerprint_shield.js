@@ -1,26 +1,8 @@
-/*
- * Fable Shield — content script, injected at document_start.
- *
- * Adds deterministic-per-origin noise to the fingerprinting surfaces that
- * Gecko's resistFingerprinting does not fully cover, plus a reader-mode
- * transform driven from the native side.
- *
- * Design rules:
- *  - Noise is seeded from (origin + session) so a single page reading canvas
- *    twice gets a *consistent* answer (inconsistency is itself a signal),
- *    while a different origin or a new session gets a different answer.
- *  - Only active in private (incognito) documents; normal tabs keep full
- *    compatibility. The native side reports `fingerprintShield`.
- *  - Everything is installed before page scripts run, and the patched
- *    functions keep native toString() output so trivial tamper checks pass.
- */
-
 (() => {
   "use strict";
 
   const IS_PRIVATE = (() => {
     try {
-      // Gecko exposes private browsing to content scripts via this API.
       return browser.extension.inIncognitoContext === true;
     } catch (e) {
       return false;
@@ -28,10 +10,6 @@
   })();
 
   let blockedCount = 0;
-
-  /* ---------------------------------------------------------------- *
-   * Seeded PRNG — stable per (origin, session)
-   * ---------------------------------------------------------------- */
 
   function hashString(str) {
     let h = 2166136261 >>> 0;
@@ -58,10 +36,6 @@
 
   const rng = makeRng(SEED);
 
-  /* ---------------------------------------------------------------- *
-   * Patch helper that preserves native-looking toString()
-   * ---------------------------------------------------------------- */
-
   function patch(target, name, factory) {
     try {
       const original = target[name];
@@ -75,7 +49,6 @@
       });
       target[name] = replacement;
     } catch (e) {
-      /* frozen prototype; skip */
     }
   }
 
@@ -86,16 +59,11 @@
         configurable: true,
       });
     } catch (e) {
-      /* ignore */
     }
   }
 
-  /* ---------------------------------------------------------------- *
-   * 1. Canvas — subtle per-origin pixel noise
-   * ---------------------------------------------------------------- */
-
   function shieldCanvas() {
-    const noise = () => Math.floor(rng() * 3) - 1; // -1, 0, +1
+    const noise = () => Math.floor(rng() * 3) - 1;
 
     patch(HTMLCanvasElement.prototype, "toDataURL", (orig) =>
       function (...args) {
@@ -116,7 +84,6 @@
         const data = orig.apply(this, args);
         const px = data.data;
         for (let i = 0; i < px.length; i += 4) {
-          // Touch a sparse subset so visual output stays identical to the eye.
           if ((i >> 2) % 977 === 0) {
             px[i] = clamp(px[i] + noise());
             px[i + 1] = clamp(px[i + 1] + noise());
@@ -137,26 +104,20 @@
         if (!ctx || canvas.width === 0 || canvas.height === 0) return;
         const x = Math.floor(rng() * canvas.width);
         const y = Math.floor(rng() * canvas.height);
-        // Near-invisible single-pixel alpha tweak.
         ctx.save();
         ctx.globalAlpha = 0.01;
         ctx.fillStyle = "rgb(" + Math.floor(rng() * 256) + ",0,0)";
         ctx.fillRect(x, y, 1, 1);
         ctx.restore();
       } catch (e) {
-        /* tainted or non-2d canvas */
       }
     }
   }
 
-  /* ---------------------------------------------------------------- *
-   * 2. WebGL — generic vendor/renderer + noised readPixels
-   * ---------------------------------------------------------------- */
-
   function shieldWebGl() {
     const SPOOF = {
-      37445: "Mozilla", // UNMASKED_VENDOR_WEBGL
-      37446: "Mozilla", // UNMASKED_RENDERER_WEBGL
+      37445: "Mozilla",
+      37446: "Mozilla",
     };
 
     const contexts = [
@@ -175,7 +136,6 @@
       patch(Ctx.prototype, "getSupportedExtensions", (orig) =>
         function () {
           const list = orig.call(this) || [];
-          // Hide the debug extension used to unmask the real GPU.
           return list.filter((e) => e !== "WEBGL_debug_renderer_info");
         }
       );
@@ -194,10 +154,6 @@
       );
     }
   }
-
-  /* ---------------------------------------------------------------- *
-   * 3. AudioContext — noised analyser/float output
-   * ---------------------------------------------------------------- */
 
   function shieldAudio() {
     if (typeof AnalyserNode !== "undefined") {
@@ -223,12 +179,7 @@
     }
   }
 
-  /* ---------------------------------------------------------------- *
-   * 4. Screen letterboxing + device metrics
-   * ---------------------------------------------------------------- */
-
   function shieldScreen() {
-    // Round to a 100x100 bucket so exact pixel dimensions stop being unique.
     const bucket = (v) => Math.max(100, Math.round(v / 100) * 100);
     const w = bucket(window.innerWidth || 1280);
     const h = bucket(window.innerHeight || 720);
@@ -241,7 +192,6 @@
     defineValue(screen, "pixelDepth", 24);
     defineValue(window, "devicePixelRatio", 2);
 
-    // Common, high-population values.
     defineValue(navigator, "hardwareConcurrency", 8);
     if ("deviceMemory" in navigator) defineValue(navigator, "deviceMemory", 8);
     defineValue(navigator, "maxTouchPoints", 5);
@@ -250,15 +200,12 @@
     defineValue(navigator, "languages", ["en-US", "en"]);
     defineValue(navigator, "language", "en-US");
 
-    // Empty plugin/mimeType lists (matches the modern baseline).
     try {
       defineValue(navigator, "plugins", Object.freeze([]));
       defineValue(navigator, "mimeTypes", Object.freeze([]));
     } catch (e) {
-      /* ignore */
     }
 
-    // Battery status is a stable cross-site identifier while charging.
     if (navigator.getBattery) {
       patch(navigator, "getBattery", () =>
         function () {
@@ -274,10 +221,6 @@
       );
     }
   }
-
-  /* ---------------------------------------------------------------- *
-   * 5. Timezone / locale pinned to UTC
-   * ---------------------------------------------------------------- */
 
   function shieldTimezone() {
     patch(Date.prototype, "getTimezoneOffset", () =>
@@ -297,27 +240,17 @@
       try {
         Intl.DateTimeFormat = Patched;
       } catch (e) {
-        /* ignore */
       }
     }
   }
 
-  /* ---------------------------------------------------------------- *
-   * 6. Timer precision — blunt high-resolution timing attacks
-   * ---------------------------------------------------------------- */
-
   function shieldTimers() {
     patch(Performance.prototype, "now", (orig) =>
       function () {
-        // Clamp to 100 microseconds.
         return Math.floor(orig.call(this) * 10) / 10;
       }
     );
   }
-
-  /* ---------------------------------------------------------------- *
-   * 7. WebRTC — block local IP leakage via ICE candidates
-   * ---------------------------------------------------------------- */
 
   function shieldWebRtc() {
     const Ctors = ["RTCPeerConnection", "webkitRTCPeerConnection", "mozRTCPeerConnection"];
@@ -325,13 +258,11 @@
       if (typeof window[name] !== "function") continue;
       const Orig = window[name];
       function Guarded(cfg, ...rest) {
-        // Strip any TURN/STUN server that could enumerate local interfaces.
         const safe = Object.assign({}, cfg, {
           iceServers: [],
           iceTransportPolicy: "relay",
         });
         const pc = new Orig(safe, ...rest);
-        // Drop host/srflx candidates that carry private addresses.
         const origAdd = pc.addIceCandidate.bind(pc);
         pc.addIceCandidate = function (candidate, ...args) {
           const text = candidate && (candidate.candidate || "");
@@ -346,14 +277,9 @@
       try {
         window[name] = Guarded;
       } catch (e) {
-        /* ignore */
       }
     }
   }
-
-  /* ---------------------------------------------------------------- *
-   * 8. Reader mode
-   * ---------------------------------------------------------------- */
 
   let readerActive = false;
   let savedBodyHtml = null;
@@ -407,10 +333,6 @@
     readerActive = true;
   }
 
-  /* ---------------------------------------------------------------- *
-   * Wire up
-   * ---------------------------------------------------------------- */
-
   browser.runtime.onMessage.addListener((msg) => {
     if (!msg) return;
     if (msg.type === "reader-toggle") {
@@ -424,8 +346,6 @@
     .sendMessage({ type: "fable-get-config" })
     .then((cfg) => {
       if (!cfg) return;
-      // Fingerprint spoofing is scoped to incognito so normal browsing keeps
-      // full site compatibility.
       if (cfg.fingerprintShield && (IS_PRIVATE || cfg.normalTabShield)) {
         shieldCanvas();
         shieldWebGl();

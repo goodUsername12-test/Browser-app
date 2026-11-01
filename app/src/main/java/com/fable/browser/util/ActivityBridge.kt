@@ -20,11 +20,6 @@ import java.lang.ref.WeakReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * The only place that needs an Activity: file pickers, share sheets, external
- * intents, home-screen shortcuts and the biometric prompt. Held weakly so a
- * destroyed Activity cannot leak through the singleton engine layer.
- */
 @Singleton
 class ActivityBridge @Inject constructor(
     @ApplicationContext private val appContext: Context
@@ -35,12 +30,14 @@ class ActivityBridge @Inject constructor(
     private var permissionRequester: ActivityResultLauncher<Array<String>>? = null
     private var pendingPermissionResult: ((Boolean) -> Unit)? = null
 
+    @Volatile
+    var externalPickerOpen: Boolean = false
+        private set
+
     fun activity(): ComponentActivity? = activityRef?.get()
 
-    /** Context for engine callbacks that need one (file prompts, intents). */
     fun context(): Context = activityRef?.get() ?: appContext
 
-    /** Called from MainActivity.onCreate, before setContent. */
     fun bind(activity: ComponentActivity) {
         activityRef = WeakReference(activity)
         filePicker = activity.registerForActivityResult(
@@ -48,6 +45,7 @@ class ActivityBridge @Inject constructor(
         ) { result ->
             val callback = pendingFileResult
             pendingFileResult = null
+            externalPickerOpen = false
             val data = result.data
             val uris = when {
                 data == null -> emptyList()
@@ -74,13 +72,10 @@ class ActivityBridge @Inject constructor(
             permissionRequester = null
             pendingFileResult = null
             pendingPermissionResult = null
+            externalPickerOpen = false
         }
     }
 
-    /**
-     * OS-level runtime permission request, triggered only when a site asks for
-     * the matching capability and the user approved it in the site prompt.
-     */
     fun requestAndroidPermissions(permissions: Array<String>, onResult: (Boolean) -> Unit) {
         val launcher = permissionRequester
         if (launcher == null || permissions.isEmpty()) {
@@ -101,7 +96,6 @@ class ActivityBridge @Inject constructor(
         }
     }
 
-    /** Web page file upload (`<input type="file">`). */
     fun requestFiles(
         mimeTypes: Array<String>,
         allowMultiple: Boolean,
@@ -113,24 +107,22 @@ class ActivityBridge @Inject constructor(
             return
         }
         pendingFileResult = onResult
+        externalPickerOpen = true
         fun pickerIntent(action: String) = Intent(action).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            // Several accepted types: "*/*" + the list, otherwise some pickers
-            // only show the first type.
             type = if (mimeTypes.size == 1) mimeTypes[0].ifBlank { "*/*" } else "*/*"
             if (mimeTypes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes)
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
         }
-        // Prefer the system document picker; fall back to any file app.
         val launched = runCatching { launcher.launch(pickerIntent(Intent.ACTION_OPEN_DOCUMENT)) }.isSuccess ||
             runCatching { launcher.launch(pickerIntent(Intent.ACTION_GET_CONTENT)) }.isSuccess
         if (!launched) {
             pendingFileResult = null
+            externalPickerOpen = false
             onResult(emptyList())
         }
     }
 
-    /** Hand intent://, mailto:, tel:, market:, geo: … to the OS. */
     fun openExternal(url: String): Boolean {
         val intent = runCatching {
             if (url.startsWith("intent:")) {
@@ -144,7 +136,6 @@ class ActivityBridge @Inject constructor(
             (activity() ?: appContext).startActivity(intent)
             true
         } catch (e: ActivityNotFoundException) {
-            // intent:// URLs can carry a browser fallback URL
             val fallback = intent.getStringExtra("browser_fallback_url")
             if (fallback != null) openExternal(fallback) else {
                 toast(appContext.getString(R.string.no_app_for_link))
@@ -172,7 +163,6 @@ class ActivityBridge @Inject constructor(
             .onFailure { toast(appContext.getString(R.string.cannot_open_file)) }
     }
 
-    /** "Add to home screen" — a launcher shortcut that deep-links back into Fable. */
     fun addToHomeScreen(title: String, url: String, favicon: Bitmap?) {
         if (!ShortcutManagerCompat.isRequestPinShortcutSupported(appContext)) {
             toast(appContext.getString(R.string.shortcut_unsupported))

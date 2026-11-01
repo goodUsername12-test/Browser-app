@@ -31,10 +31,6 @@ import com.fable.browser.data.model.SitePermission
 import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.SectionHeader
 
-/**
- * Per-site permissions. Rows only exist for sites the user actually answered a
- * prompt for; incognito decisions are session-scoped and never reach this list.
- */
 @Composable
 fun SiteSettingsScreen(
     onBack: () -> Unit,

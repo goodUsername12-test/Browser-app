@@ -5,13 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Filter-engine tests. [ContentBlocker.parse] and [ContentBlocker.shouldBlock]
- * are pure companion functions precisely so they can be tested on the JVM
- * without an emulator or a GeckoRuntime.
- */
 class ContentBlockerTest {
-
     private val list = """
         [Adblock Plus 2.0]
         ! Title: test list
@@ -65,12 +59,9 @@ class ContentBlockerTest {
     @Test
     fun `first-party requests to a listed domain are not blocked`() {
         val f = filters()
-        // Visiting ads.example.com directly must still work; only third-party
-        // subresource loads are cancelled.
         assertFalse(
             ContentBlocker.shouldBlock(f, "https://ads.example.com/a.gif", "ads.example.com")
         )
-        // A subdomain of the document host counts as same-site too.
         assertFalse(
             ContentBlocker.shouldBlock(f, "https://static.ads.example.com/a.gif", "ads.example.com")
         )
@@ -98,7 +89,6 @@ class ContentBlockerTest {
     @Test
     fun `cosmetic and comment lines are ignored`() {
         val f = filters()
-        // The list has 4 domain-ish rules; the cosmetic and comment lines add none.
         assertEquals(3, f.blockedDomains.size)
         assertTrue(f.blockedDomains.contains("doubleclick.net"))
         assertTrue(f.blockedDomains.contains("ads.example.com"))

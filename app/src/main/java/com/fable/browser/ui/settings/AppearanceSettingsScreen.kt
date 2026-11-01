@@ -20,7 +20,6 @@ import com.fable.browser.ui.components.SettingRow
 import com.fable.browser.ui.components.SliderRow
 import com.fable.browser.ui.components.SwitchRow
 
-/** Theme, forced-dark web content, and text zoom. */
 @Composable
 fun AppearanceSettingsScreen(
     onBack: () -> Unit,

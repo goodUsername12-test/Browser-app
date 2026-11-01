@@ -31,10 +31,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
-/**
- * Thumb-reachable bottom controls. The incognito button doubles as the panic
- * button: a long-press wipes every private tab immediately.
- */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BottomToolbar(
@@ -131,20 +127,22 @@ fun BottomToolbar(
     }
 }
 
-/** Thin determinate loading line drawn above the toolbar. */
 @Composable
 fun PageProgress(progress: Int, loading: Boolean, modifier: Modifier = Modifier) {
-    if (!loading || progress <= 0 || progress >= 100) return
+    val show = loading && progress in 1..99
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .height(2.dp)
+            .then(if (show) Modifier.background(MaterialTheme.colorScheme.surfaceVariant) else Modifier)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(progress / 100f)
-                .height(2.dp)
-                .background(MaterialTheme.colorScheme.primary)
-        )
+        if (show) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(progress / 100f)
+                    .height(2.dp)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
     }
 }

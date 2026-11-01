@@ -6,6 +6,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fable.browser.data.model.PerformanceProfile
 import com.fable.browser.data.model.TabUnloadMode
+import com.fable.browser.data.model.MemoryMode
+import com.fable.browser.ui.components.SettingRow
 import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.RadioGroup
 import com.fable.browser.ui.components.SectionHeader
@@ -39,7 +41,7 @@ fun PerformanceSettingsScreen(
         SectionHeader("Profile switches")
         SwitchRow(
             title = "Filter-list blocking in normal tabs",
-            subtitle = "Incognito tabs always use it",
+            subtitle = "Incognito tabs have their own switch in Settings > Incognito",
             checked = settings.adBlockEnabled,
             onCheckedChange = viewModel::setAdBlockEnabled
         )
@@ -57,23 +59,70 @@ fun PerformanceSettingsScreen(
         )
         ListDivider()
 
-        SectionHeader("Background tabs")
+        SectionHeader("Memory & speed")
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val autoInfo = androidx.compose.runtime.remember { viewModel.autoMemoryInfo(context) }
         RadioGroup(
-            options = TabUnloadMode.entries.toList(),
-            selected = settings.tabUnloadMode,
-            label = { it.label },
+            options = MemoryMode.entries.toList(),
+            selected = settings.memoryMode,
+            label = {
+                if (it == MemoryMode.AUTO) "Automatic (now: ${autoInfo.first.label}, ${(autoInfo.second + 512) / 1024} GB RAM)"
+                else it.label
+            },
             description = { it.summary },
-            onSelect = viewModel::setTabUnloadMode
+            onSelect = viewModel::setMemoryMode
         )
-        if (settings.tabUnloadMode == TabUnloadMode.SMART) {
+        if (settings.memoryMode == MemoryMode.CUSTOM) {
+            RadioGroup(
+                options = TabUnloadMode.entries.toList(),
+                selected = settings.tabUnloadMode,
+                label = { it.label },
+                description = { it.summary },
+                onSelect = viewModel::setTabUnloadMode
+            )
+            if (settings.tabUnloadMode == TabUnloadMode.SMART) {
+                SliderRow(
+                    title = "Recent tabs kept loaded",
+                    value = settings.keepLoadedTabs,
+                    range = 1f..8f,
+                    steps = 6,
+                    onValueChange = viewModel::setKeepLoadedTabs
+                )
+            }
             SliderRow(
-                title = "Recent tabs kept loaded",
-                value = settings.keepLoadedTabs,
-                range = 1f..8f,
-                steps = 6,
-                onValueChange = viewModel::setKeepLoadedTabs
+                title = "Unused tabs sleep after (0 = never)",
+                value = settings.idleTabMinutes,
+                range = 0f..60f,
+                steps = 11,
+                suffix = " min",
+                onValueChange = viewModel::setIdleTabMinutes
+            )
+            SwitchRow(
+                title = "Use more memory for speed",
+                subtitle = "Bigger caches and instant Back/Forward. Best with 6 GB RAM or more",
+                checked = settings.speedMemory,
+                onCheckedChange = viewModel::setSpeedMemory
             )
         }
+        SettingRow(
+            title = "Keep a tab always instant",
+            subtitle = "In the tab list, tap the pin on a tab. Pinned tabs never go to sleep, so switching to them is instant. Sleeping tabs reload when you open them"
+        )
+        ListDivider()
+
+        SectionHeader("Faster loading")
+        SwitchRow(
+            title = "Connect early to your search engine",
+            subtitle = "Opens the connection when you tap the address bar, so results appear sooner. Normal tabs only",
+            checked = settings.preconnectSearch,
+            onCheckedChange = viewModel::setPreconnectSearch
+        )
+        SwitchRow(
+            title = "Connect early to typed addresses",
+            subtitle = "Connects to a site while you are still typing its address. Faster, but the site sees a connection even if you do not open it",
+            checked = settings.preconnectTyped,
+            onCheckedChange = viewModel::setPreconnectTyped
+        )
         ListDivider()
 
         SectionHeader("Gaming")
@@ -82,6 +131,12 @@ fun PerformanceSettingsScreen(
             subtitle = "Gives the game all free memory and top priority so it does not crash while loading",
             checked = settings.gameMode,
             onCheckedChange = viewModel::setGameMode
+        )
+        SwitchRow(
+            title = "Fix touch controls in games",
+            subtitle = "Joystick + camera at the same time: each finger is measured on its own, and the browser never zooms or scrolls a game canvas. Fixes camera turning too fast or not at all",
+            checked = settings.gameTouchFix,
+            onCheckedChange = viewModel::setGameTouchFix
         )
         SwitchRow(
             title = "Highest screen refresh rate",
@@ -95,11 +150,20 @@ fun PerformanceSettingsScreen(
             checked = settings.vibrationApi,
             onCheckedChange = viewModel::setVibrationApi
         )
+        ListDivider()
+
+        SectionHeader("Stability")
         SwitchRow(
-            title = "Use more memory for speed",
-            subtitle = "Bigger caches and instant Back/Forward. Best on phones with 6 GB RAM or more. Restart the app to apply",
-            checked = settings.speedMemory,
-            onCheckedChange = viewModel::setSpeedMemory
+            title = "Separate graphics process",
+            subtitle = "Off (recommended): no freezes when switching apps or opening the keyboard on some phones (Xiaomi), and less RAM. On: a graphics driver crash only blanks the page instead of closing the app. Restart the app to apply",
+            checked = settings.gpuProcess,
+            onCheckedChange = viewModel::setGpuProcess
+        )
+        SwitchRow(
+            title = "Freeze detector",
+            subtitle = "If the screen is stuck for more than 2.5 seconds, saves what it was waiting for and shows it in the next crash report",
+            checked = settings.freezeDetector,
+            onCheckedChange = viewModel::setFreezeDetector
         )
         ListDivider()
 

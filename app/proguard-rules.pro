@@ -1,12 +1,7 @@
-# ============ Fable Browser R8 / ProGuard rules ============
-
-# --- GeckoView ---
-# GeckoView uses JNI extensively; keep all of it.
 -keep class org.mozilla.geckoview.** { *; }
 -keep class org.mozilla.gecko.** { *; }
 -dontwarn org.mozilla.geckoview.**
 -dontwarn org.mozilla.gecko.**
-# Keep classes annotated for WrapForJNI
 -keepclasseswithmembers class * {
     @org.mozilla.gecko.annotation.WrapForJNI <methods>;
 }
@@ -14,30 +9,23 @@
     @org.mozilla.gecko.annotation.WrapForJNI <fields>;
 }
 
-# --- Room ---
 -keep class * extends androidx.room.RoomDatabase
 -dontwarn androidx.room.paging.**
 
-# --- Hilt / Dagger (mostly handled by the plugin, belt-and-suspenders) ---
 -dontwarn com.google.dagger.**
 -keep class dagger.hilt.** { *; }
 -keep class javax.inject.** { *; }
 
-# --- Kotlin coroutines ---
 -dontwarn kotlinx.coroutines.**
 
-# --- Keep data models used in Room / serialization ---
 -keep class com.fable.browser.data.model.** { *; }
 -keep class com.fable.browser.data.db.** { *; }
 
-# --- Compose (handled by AGP, kept for safety) ---
 -dontwarn androidx.compose.**
 
 -dontwarn java.beans.**
 -dontwarn org.yaml.snakeyaml.**
 
-# Annotation-only and optional dependencies referenced by libraries but not
-# shipped at runtime. Without these R8 stops with "Missing class" errors.
 -dontwarn javax.annotation.**
 -dontwarn javax.lang.model.**
 -dontwarn com.google.errorprone.annotations.**
@@ -51,10 +39,7 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
 -dontwarn com.google.android.exoplayer2.**
-# GeckoView's repackaged ExoPlayer (used for HLS video) is reached from native code.
 -keep class org.mozilla.thirdparty.** { *; }
 -dontwarn org.mozilla.thirdparty.**
 
-# GeckoView reads its start-up preferences (geckoview-config.yaml) with SnakeYAML,
-# which works through reflection. Keep it intact so release builds can parse it.
 -keep class org.yaml.snakeyaml.** { *; }

@@ -17,11 +17,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
-/**
- * Safety question before anything that deletes data. With [requireTick] the
- * delete button only works after ticking "I understand", so one accidental
- * tap can never wipe everything.
- */
 @Composable
 fun ConfirmDialog(
     title: String,

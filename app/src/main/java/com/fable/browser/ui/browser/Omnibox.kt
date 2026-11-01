@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -49,11 +52,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fable.browser.util.UrlUtils
 
-/**
- * The omnibox. Collapsed it shows the host, the lock state, the blocked-tracker
- * count and (in incognito) the private badge. Focused it becomes a text field
- * with suggestions — which are only ever sourced in normal mode.
- */
 @Composable
 fun Omnibox(
     url: String,
@@ -84,7 +82,9 @@ fun Omnibox(
     ) {
         if (focused) {
             Row(
-                modifier = Modifier.padding(start = 8.dp, end = 4.dp),
+                modifier = Modifier
+                    .height(48.dp)
+                    .padding(start = 8.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
@@ -93,11 +93,12 @@ fun Omnibox(
                     modifier = Modifier.size(20.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                TextField(
+                BasicTextField(
                     value = text,
                     onValueChange = onTextChange,
                     modifier = Modifier
                         .weight(1f)
+                        .padding(horizontal = 10.dp)
                         .focusRequester(focusRequester)
                         .onFocusChanged { state ->
                             if (state.isFocused) {
@@ -108,19 +109,29 @@ fun Omnibox(
                             }
                         },
                     singleLine = true,
-                    placeholder = { Text("Search $engineLabel or type a URL") },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Uri,
                         imeAction = ImeAction.Go,
                         autoCorrectEnabled = false
                     ),
                     keyboardActions = KeyboardActions(onGo = { onSubmit() }),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    )
+                    decorationBox = { inner ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (text.isEmpty()) {
+                                Text(
+                                    "Search $engineLabel or type a URL",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1
+                                )
+                            }
+                            inner()
+                        }
+                    }
                 )
                 IconButton(onClick = { onTextChange("") }) {
                     Icon(Icons.Filled.Close, contentDescription = "Clear")
@@ -130,7 +141,7 @@ fun Omnibox(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 48.dp)
+                    .height(48.dp)
                     .clickable(onClick = onStartEditing)
                     .padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -203,7 +214,6 @@ private fun NotSecureChip() {
     }
 }
 
-/** Bookmark + history suggestions. Never shown in incognito. */
 @Composable
 fun SuggestionList(
     suggestions: List<Suggestion>,

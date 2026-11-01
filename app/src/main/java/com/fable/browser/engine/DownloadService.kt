@@ -15,15 +15,8 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/**
- * Keeps the process alive while files are being written. It owns no download
- * logic — [Downloader] does the IO and this service simply mirrors its
- * [Downloader.activeCount] into a foreground notification, stopping itself as
- * soon as the queue drains.
- */
 @AndroidEntryPoint
 class DownloadService : Service() {
-
     @Inject lateinit var downloader: Downloader
     @Inject lateinit var notifier: DownloadNotifier
 
@@ -47,7 +40,6 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (watcher == null) {
             watcher = scope.launch {
-                // drop(1) so we do not stop before the first download registers.
                 downloader.activeCount.drop(1).collect { active ->
                     if (active == 0) {
                         ServiceCompat.stopForeground(

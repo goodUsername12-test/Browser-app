@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.SliderRow
 
-/** Everything the toolbar does not have room for. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MenuSheet(

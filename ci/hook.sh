@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Automatic start-up test on an Android emulator. Called by .github/workflows/build-apk.yml
-# after the APKs are built. It installs an x86_64 debug build, starts the browser, opens a
-# few pages, and reports crashes, screenshots and engine errors to issue #2.
 set -uo pipefail
 
 VERSION="$(cat .fable-version 2>/dev/null || echo unknown)"
@@ -94,7 +91,6 @@ timeout 90 adb shell am start -W -n "$ACT" > "$ART/start.txt" 2>&1
 sleep 20; step "cold start (new tab page)"; shot 1-start
 
 tap_desc() {
-  # Tap the on-screen control whose accessibility label is $1 (Compose exposes it).
   adb shell uiautomator dump /sdcard/fable-ui.xml > "$ART/uidump.txt" 2>&1
   adb pull /sdcard/fable-ui.xml "$ART/ui.xml" >/dev/null 2>&1 || return 1
   local b
@@ -148,6 +144,58 @@ adb shell input keyevent KEYCODE_BACK; sleep 3; step "leave full screen after ba
 adb shell am force-stop "$PKG"; sleep 2
 timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 20; step "restart after force-stop (session restore)"; shot 3-restore
 
+tap_text() {
+  adb shell uiautomator dump /sdcard/fable-ui.xml > "$ART/uidump.txt" 2>&1
+  adb pull /sdcard/fable-ui.xml "$ART/ui.xml" >/dev/null 2>&1 || return 1
+  local b
+  b="$(python3 - "$1" "$ART/ui.xml" <<'PY'
+import re, sys
+want, path = sys.argv[1], sys.argv[2]
+xml = open(path, encoding="utf-8", errors="ignore").read()
+for node in re.findall(r"<node [^>]*>", xml):
+    m = re.search(r' text="([^"]*)"', node)
+    if m and want in m.group(1):
+        b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
+        if b:
+            x1, y1, x2, y2 = map(int, b.groups())
+            print((x1 + x2) // 2, (y1 + y2) // 2)
+            break
+PY
+)"
+  [ -n "$b" ] || return 1
+  adb shell input tap $b
+}
+
+log "Typing in the address bar, then switching apps with the keyboard open"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com" -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 12
+if tap_text "example.com"; then
+  sleep 2
+  for w in fable browser typing speed test; do
+    adb shell input text "$w"; adb shell input keyevent KEYCODE_SPACE
+  done
+  sleep 2; step "typing in the address bar"; shot 6-typing
+  for n in 1 2 3; do
+    adb shell input keyevent KEYCODE_HOME; sleep 4
+    timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 4
+    adb shell input text "x"
+  done
+  step "switch apps x3 while typing"; shot 7-after-typing-switch
+  adb shell input keyevent KEYCODE_BACK; sleep 2
+  adb shell input keyevent KEYCODE_BACK; sleep 2
+  step "close keyboard and address bar"
+else
+  STEPS="$STEPS"$'\n'"- typing test: address bar not found"
+fi
+
+log "Fast app switching x5"
+for n in 1 2 3 4 5; do
+  adb shell input keyevent KEYCODE_HOME; sleep 1
+  timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 1
+done
+sleep 5; step "fast app switching x5"
+FREEZE="$(adb shell run-as "$PKG" cat files/freeze_report.txt 2>/dev/null | head -c 6000)"
+
 adb logcat -d -v brief > "$ART/logcat.txt" 2>/dev/null
 adb logcat -d -b events -v brief 2>/dev/null | grep -E "am_anr|am_crash|am_proc_died.*fable" > "$ART/events.txt" || true
 {
@@ -168,6 +216,10 @@ adb logcat -d -b events -v brief 2>/dev/null | grep -E "am_anr|am_crash|am_proc_
   echo "am start output:"
   echo '```'
   grep -E "Status|LaunchState|TotalTime|Error" "$ART/start.txt" | head -n 20
+  echo '```'
+  echo "Freeze detector:"
+  echo '```'
+  if [ -n "$FREEZE" ]; then echo "$FREEZE"; else echo "no freeze recorded"; fi
   echo '```'
   echo "Problems found in logcat ($(wc -l < "$ART/problems.txt") lines):"
   echo '```'

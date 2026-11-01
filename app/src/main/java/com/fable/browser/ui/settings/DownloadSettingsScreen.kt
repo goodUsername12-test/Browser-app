@@ -13,11 +13,6 @@ import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
 
-/**
- * Download policy. The location is fixed to Downloads/Fable: on API 29+ Fable
- * writes through MediaStore, which needs no storage permission at all, and a
- * user-chosen folder would have required one.
- */
 @Composable
 fun DownloadSettingsScreen(
     onBack: () -> Unit,

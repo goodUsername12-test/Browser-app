@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.fable.browser.ui.browser
 
 import androidx.activity.compose.BackHandler
@@ -14,12 +16,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.imeAnimationTarget
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,13 +42,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fable.browser.engine.BrowserTab
 import com.fable.browser.util.UrlUtils
 
-/**
- * The browsing surface: engine view, omnibox, bottom toolbar, and every
- * overlay (interstitials, find bar, prompts, long-press menu, incognito lock).
- *
- * The toolbar is bottom-anchored and collapses as the page scrolls; in
- * fullscreen (video) it is removed entirely.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen(
@@ -59,7 +58,7 @@ fun BrowserScreen(
     val toolbarVisible by viewModel.toolbarVisible.collectAsStateWithLifecycle()
     val locked by viewModel.incognitoLocked.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val omniboxText by viewModel.omniboxText.collectAsStateWithLifecycle()
+    val omniboxText = viewModel.omniboxValue
     val omniboxFocused by viewModel.omniboxFocused.collectAsStateWithLifecycle()
     val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
     val findQuery by viewModel.findQuery.collectAsStateWithLifecycle()
@@ -68,6 +67,7 @@ fun BrowserScreen(
     val showDisclosure by viewModel.showDisclosure.collectAsStateWithLifecycle()
     val topSites by viewModel.topSites.collectAsStateWithLifecycle()
     val captureHandle = remember { GeckoCaptureHandle() }
+    captureHandle.thumbnailWidth = if (settings.memoryMode == com.fable.browser.data.model.MemoryMode.LOW) 240 else 360
 
     val tab: BrowserTab? = remember(tabs, activeTabId) { tabs.firstOrNull { it.id == activeTabId } }
     val clipboard = LocalClipboardManager.current
@@ -86,18 +86,14 @@ fun BrowserScreen(
     val webFullScreen = tab?.isFullScreen?.collectAsStateWithLifecycle()?.value ?: false
     val manualFullScreen by viewModel.manualFullScreen.collectAsStateWithLifecycle()
     val fullScreen = webFullScreen || manualFullScreen
-    // Toolbars hide/show instantly when entering or leaving full screen: animating
-    // them would resize the page surface ~20 times in a row, which is slow on
-    // games and was part of the full-screen crash.
     val fullScreenChangedAt = remember(fullScreen) { SystemClock.uptimeMillis() }
-    val instantBars = fullScreen || SystemClock.uptimeMillis() - fullScreenChangedAt < 700L
+    val instantBars = true
     val interstitial = tab?.interstitial?.collectAsStateWithLifecycle()?.value
     val findMatch = tab?.findMatch?.collectAsStateWithLifecycle()?.value
     val keepLoaded = tab?.isPinned?.collectAsStateWithLifecycle()?.value ?: false
     val bookmarkFlow = remember(url) { viewModel.isBookmarked(url) }
     val bookmarked by bookmarkFlow.collectAsStateWithLifecycle(initialValue = false)
 
-    // Hardware / gesture back: close overlays, then walk page history, then exit.
     BackHandler(enabled = fullScreen || omniboxFocused || findQuery != null || canGoBack || interstitial != null) {
         when {
             fullScreen -> viewModel.exitFullScreen()
@@ -109,12 +105,13 @@ fun BrowserScreen(
 
     val toolbarAtTop = settings.toolbarAtTop
     val showToolbar = !fullScreen && (toolbarVisible || omniboxFocused || findQuery != null)
-    // The page only needs to keep clear of the status bar when no top toolbar covers it.
+    val imeTarget = WindowInsets.imeAnimationTarget
+    val pageIme = if (omniboxFocused) Modifier else Modifier.windowInsetsPadding(imeTarget)
     val pageInsets = when {
         fullScreen -> Modifier
         toolbarAtTop -> (if (showToolbar) Modifier else Modifier.statusBarsPadding())
             .navigationBarsPadding()
-            .imePadding()
+            .then(pageIme)
         else -> Modifier.statusBarsPadding()
             .then(if (showToolbar) Modifier else Modifier.navigationBarsPadding())
     }
@@ -126,7 +123,7 @@ fun BrowserScreen(
                 .background(MaterialTheme.colorScheme.surfaceContainer)
                 .then(
                     if (toolbarAtTop) Modifier.statusBarsPadding()
-                    else Modifier.navigationBarsPadding().imePadding()
+                    else Modifier.navigationBarsPadding().windowInsetsPadding(imeTarget)
                 )
         ) {
             if (!toolbarAtTop) PageProgress(progress = progress, loading = loading)
@@ -198,36 +195,38 @@ fun BrowserScreen(
                     .fillMaxWidth()
                     .then(pageInsets)
             ) {
-                when {
-                    locked && incognito -> IncognitoLockScreen(
-                        onUnlock = { viewModel.unlockIncognito() },
-                        onLeaveIncognito = { viewModel.setIncognitoMode(false) }
-                    )
-
-                    interstitial != null -> InterstitialScreen(
-                        interstitial = interstitial,
-                        onProceed = { viewModel.proceedOverHttp(it) },
-                        onRetry = { viewModel.reload() },
-                        onBack = { viewModel.goBack() },
+                if (tab != null) {
+                    GeckoViewHost(
+                        tab = tab,
+                        captureHandle = captureHandle,
                         modifier = Modifier.fillMaxSize()
                     )
-
-                    tab != null -> {
-                        // The page view gets touch input directly, with no gesture
-                        // handlers around it, so multi-touch games work as in Chrome.
-                        GeckoViewHost(
-                            tab = tab,
-                            captureHandle = captureHandle,
+                    if (url == "about:blank" && !incognito && !loading && !fullScreen && interstitial == null) {
+                        NewTabPage(
+                            topSites = topSites,
+                            onSearch = { viewModel.startEditing() },
+                            onOpen = { viewModel.load(it) },
                             modifier = Modifier.fillMaxSize()
                         )
-                        if (url == "about:blank" && !incognito && !loading && !fullScreen) {
-                            NewTabPage(
-                                topSites = topSites,
-                                onSearch = { viewModel.startEditing() },
-                                onOpen = { viewModel.load(it) },
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
+                    }
+                }
+                if (interstitial != null && !(locked && incognito)) {
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                        InterstitialScreen(
+                            interstitial = interstitial,
+                            onProceed = { viewModel.proceedOverHttp(it) },
+                            onRetry = { viewModel.reload() },
+                            onBack = { viewModel.goBack() },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+                if (locked && incognito) {
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                        IncognitoLockScreen(
+                            onUnlock = { viewModel.unlockIncognito() },
+                            onLeaveIncognito = { viewModel.setIncognitoMode(false) }
+                        )
                     }
                 }
             }
@@ -241,7 +240,6 @@ fun BrowserScreen(
             }
         }
 
-        // Omnibox suggestions float above the page, next to the address bar.
         if (omniboxFocused && suggestions.isNotEmpty()) {
             SuggestionList(
                 suggestions = suggestions,
@@ -256,7 +254,7 @@ fun BrowserScreen(
                     Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .imePadding()
+                        .windowInsetsPadding(imeTarget)
                         .padding(bottom = 132.dp)
                         .padding(horizontal = 8.dp)
                 }

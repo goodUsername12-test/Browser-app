@@ -20,7 +20,6 @@ import org.mozilla.geckoview.WebResponse
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** What the long-press context menu was opened on. */
 data class ContextMenuTarget(
     val tabId: String,
     val linkUri: String?,
@@ -29,38 +28,24 @@ data class ContextMenuTarget(
     val isIncognito: Boolean
 )
 
-/** Callbacks the delegates need from the tab layer. */
 interface TabCallbacks {
-    /** A page asked for a new window/tab (target=_blank, window.open). */
     fun onNewSessionRequested(tab: BrowserTab, uri: String): GeckoSession?
 
-    /** window.close() on a tab we opened. */
     fun onCloseRequested(tab: BrowserTab)
 
     fun onContextMenu(target: ContextMenuTarget)
 
-    /** Vertical scroll delta, used to collapse/expand the bottom toolbar. */
     fun onScroll(tab: BrowserTab, scrollY: Int)
 
     fun onSessionLost(tab: BrowserTab, crashed: Boolean)
 
     fun onMediaStateChanged(tab: BrowserTab, playing: Boolean)
 
-    /** The page entered or left HTML5 full screen (games, videos). */
     fun onFullScreenChanged(tab: BrowserTab, fullScreen: Boolean)
+
+    fun onPageChanged(tab: BrowserTab) {}
 }
 
-/**
- * Wires every GeckoSession delegate for a tab.
- *
- * Privacy rules enforced here:
- *  - tracking query parameters are stripped before the request leaves;
- *  - HTTPS-only mode refuses plain HTTP and shows a Compose interstitial;
- *  - history is recorded through [HistoryRepository] for normal tabs only —
- *    incognito tabs never reach that call;
- *  - blocked-request counting for the shield badge;
- *  - downloads in incognito require per-file confirmation.
- */
 @Singleton
 class SessionDelegateFactory @Inject constructor(
     private val historyRepository: HistoryRepository,
@@ -70,7 +55,6 @@ class SessionDelegateFactory @Inject constructor(
     private val contentBlocker: ContentBlocker,
     private val activityBridge: ActivityBridge
 ) {
-
     fun attach(
         tab: BrowserTab,
         scope: CoroutineScope,
@@ -96,15 +80,12 @@ class SessionDelegateFactory @Inject constructor(
         }
     }
 
-    // ---------------- navigation ----------------
-
     private fun navigationDelegate(
         tab: BrowserTab,
         scope: CoroutineScope,
         settings: () -> Settings,
         callbacks: TabCallbacks
     ) = object : GeckoSession.NavigationDelegate {
-
         override fun onLocationChange(
             session: GeckoSession,
             url: String?,
@@ -116,6 +97,7 @@ class SessionDelegateFactory @Inject constructor(
                 tab.updateSecure(!UrlUtils.isInsecure(it))
                 tab.updateReaderMode(false)
                 if (tab.interstitial.value?.url != it) tab.updateInterstitial(null)
+                callbacks.onPageChanged(tab)
             }
         }
 
@@ -134,14 +116,12 @@ class SessionDelegateFactory @Inject constructor(
             val current = settings()
             val uri = request.uri
 
-            // Non-web schemes (intent://, mailto:, tel:, market:, geo:) go to the OS.
             if (!UrlUtils.isWebScheme(uri)) {
                 if (UrlUtils.isExternalScheme(uri)) activityBridge.openExternal(uri)
                 return GeckoResult.deny()
             }
 
-            // HTTPS-only mode: refuse plain HTTP unless the user allowed this host.
-            val httpsOnly = current.httpsOnly || (tab.isIncognito && current.incognitoHttpsOnly)
+            val httpsOnly = if (tab.isIncognito) current.incognitoHttpsOnly else current.httpsOnly
             if (httpsOnly && UrlUtils.isInsecure(uri) &&
                 !tab.isHttpAllowed(UrlUtils.host(uri))
             ) {
@@ -150,8 +130,7 @@ class SessionDelegateFactory @Inject constructor(
                 return GeckoResult.deny()
             }
 
-            // Strip tracking parameters; reload the clean URL instead.
-            if (current.stripTrackingParams) {
+            if (if (tab.isIncognito) current.incognitoStripParams else current.stripTrackingParams) {
                 val stripped = UrlUtils.stripTrackingParams(uri)
                 if (stripped != uri) {
                     session.load(GeckoSession.Loader().uri(stripped))
@@ -159,8 +138,7 @@ class SessionDelegateFactory @Inject constructor(
                 }
             }
 
-            // Top-level document check against the filter lists.
-            if (current.adBlockEnabled &&
+            if ((if (tab.isIncognito) current.incognitoAdBlock else current.adBlockEnabled) &&
                 request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW &&
                 contentBlocker.shouldBlock(uri, UrlUtils.host(tab.url.value))
             ) {
@@ -192,7 +170,6 @@ class SessionDelegateFactory @Inject constructor(
                 else ->
                     tab.updateInterstitial(Interstitial.Network(target, reason))
             }
-            // Suppress Gecko's own error page; Compose draws the interstitial.
             return GeckoResult.fromValue("about:blank")
         }
     }
@@ -211,8 +188,6 @@ class SessionDelegateFactory @Inject constructor(
             "The configured proxy refused the connection. Check the incognito proxy settings."
         else -> "The page could not be loaded."
     }
-
-    // ---------------- progress ----------------
 
     private fun progressDelegate(tab: BrowserTab) = object : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
@@ -262,14 +237,11 @@ class SessionDelegateFactory @Inject constructor(
             }
         }
 
-    // ---------------- content ----------------
-
     private fun contentDelegate(
         tab: BrowserTab,
         settings: () -> Settings,
         callbacks: TabCallbacks
     ) = object : GeckoSession.ContentDelegate {
-
         override fun onTitleChange(session: GeckoSession, title: String?) {
             tab.updateTitle(title.orEmpty())
         }
@@ -311,7 +283,6 @@ class SessionDelegateFactory @Inject constructor(
                 ?: response.uri.substringAfterLast('/').substringBefore('?')
 
             if (tab.isIncognito) {
-                // Never write to disk from incognito without explicit consent.
                 promptBridge.show(
                     FablePrompt.IncognitoDownload(
                         title = "Save this file?",
@@ -342,11 +313,8 @@ class SessionDelegateFactory @Inject constructor(
         }
     }
 
-    // ---------------- permissions ----------------
-
     private fun permissionDelegate(tab: BrowserTab, scope: CoroutineScope) =
         object : GeckoSession.PermissionDelegate {
-
             override fun onAndroidPermissionsRequest(
                 session: GeckoSession,
                 permissions: Array<out String>?,
@@ -377,7 +345,6 @@ class SessionDelegateFactory @Inject constructor(
                 }
                 val origin = UrlUtils.origin(perm.uri)
                 scope.launch {
-                    // Incognito never persists a decision; it always asks.
                     val stored = if (tab.isIncognito) PermissionDecision.ASK
                     else sitePermissionRepository.decisionFor(origin, kind)
                     when (stored) {
@@ -452,8 +419,6 @@ class SessionDelegateFactory @Inject constructor(
             }
         }
 
-    // ---------------- history ----------------
-
     private fun historyDelegate(tab: BrowserTab, scope: CoroutineScope) =
         object : GeckoSession.HistoryDelegate {
             override fun onVisited(
@@ -462,7 +427,6 @@ class SessionDelegateFactory @Inject constructor(
                 lastVisitedURL: String?,
                 flags: Int
             ): GeckoResult<Boolean> {
-                // Incognito: no history, ever. Not written, not even read back.
                 if (tab.isIncognito) return GeckoResult.fromValue(false)
                 if (!url.startsWith("http", ignoreCase = true)) {
                     return GeckoResult.fromValue(false)

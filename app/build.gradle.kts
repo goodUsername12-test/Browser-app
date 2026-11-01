@@ -9,7 +9,6 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
-// Optional release signing: create signing.properties at project root (see README)
 val signingProps = Properties().apply {
     val f = rootProject.file("signing.properties")
     if (f.exists()) load(FileInputStream(f))
@@ -20,25 +19,20 @@ val ciKeystoreFile: File? = ciKeystorePath?.let { File(it) }?.takeIf { it.isFile
 
 android {
     namespace = "com.fable.browser"
-    // GeckoView 144 pulls in androidx.core 1.17, which must be compiled against API 36.
     compileSdk = 36
 
     defaultConfig {
         applicationId = "com.fable.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.7.0"
+        versionCode = 4
+        versionName = "1.8.0"
 
         testInstrumentationRunner = "com.fable.browser.HiltTestRunner"
         vectorDrawables { useSupportLibrary = true }
     }
 
     signingConfigs {
-        // A fixed, intentionally public debug key is kept in the repository so
-        // every GitHub Actions build is signed with the same key. Without it each
-        // CI runner generates a random debug key and Android refuses to update
-        // the installed app ("App not installed") until you uninstall it.
         getByName("debug") {
             storeFile = file("debug.keystore")
             storePassword = "android"
@@ -90,8 +84,6 @@ android {
         abi {
             isEnable = true
             reset()
-            // Phones get the 64-bit ARM APK. CI can pass -Pfable.abis=x86_64 to build an
-            // extra APK for the Android emulator used by the automatic start-up test.
             val abis = (project.findProperty("fable.abis") as String?)
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
                 ?: listOf("arm64-v8a")
@@ -109,8 +101,6 @@ android {
         buildConfig = true
     }
     lint {
-        // Lint is not needed to produce the APK; skipping the release-time lint
-        // check keeps CI fast and stops style warnings from blocking the build.
         checkReleaseBuilds = false
         abortOnError = false
     }
@@ -130,12 +120,11 @@ android {
             )
         }
         jniLibs {
-            useLegacyPackaging = true // GeckoView requires extracted native libs
+            useLegacyPackaging = true
         }
     }
 }
 
-// Kotlin 2.2 removed the old `kotlinOptions {}` block; compiler options live here now.
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)

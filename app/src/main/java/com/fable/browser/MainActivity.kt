@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.Choreographer
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,6 +16,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.fable.browser.util.FreezeWatchdog
 import com.fable.browser.data.prefs.SettingsStore
 import com.fable.browser.engine.TabManager
 import com.fable.browser.ui.CrashReportDialog
@@ -32,7 +34,6 @@ import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
-
     @Inject lateinit var tabManager: TabManager
     @Inject lateinit var activityBridge: ActivityBridge
     @Inject lateinit var settingsStore: SettingsStore
@@ -42,17 +43,11 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Must happen before setContent: registers the file picker and the
-        // runtime-permission launcher the engine layer calls into.
         activityBridge.bind(this)
 
-        // Singleton TabManager survives configuration changes, so only restore
-        // when the process really is starting cold.
         if (tabManager.tabs.value.isEmpty()) tabManager.restoreOrCreate()
         handleIntent(intent)
 
-        // FLAG_SECURE while in incognito: blocks screenshots, screen recording,
-        // and blanks the app-switcher thumbnail. Also hide title from Recents.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.CREATED) {
                 tabManager.isIncognitoMode.collect { incognito ->
@@ -71,8 +66,13 @@ class MainActivity : FragmentActivity() {
 
         observeFullScreen()
         observeRefreshRate()
+        lifecycleScope.launch {
+            settingsStore.settings
+                .map { it.freezeDetector }
+                .distinctUntilChanged()
+                .collect { FreezeWatchdog.setEnabled(it) }
+        }
 
-        // FableApp owns the theme so that entering incognito repaints everything.
         setContent {
             FableApp()
             CrashReportDialog()
@@ -92,7 +92,6 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    /** Run the screen at its highest refresh rate (90/120 Hz panels) for smooth games. */
     private fun observeRefreshRate() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -129,7 +128,6 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun applyFullScreen(fullScreen: Boolean) {
-        // Never let a window/inset quirk on some phones take the app down.
         runCatching { applyFullScreenUnsafe(fullScreen) }
     }
 
@@ -148,7 +146,6 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    /** Use the whole screen, including the camera notch area, while in full screen. */
     private fun setCutoutMode(fullScreen: Boolean) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
         val mode = if (fullScreen) {
@@ -189,29 +186,31 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
+        FreezeWatchdog.onForeground()
         tabManager.onAppForegrounded()
     }
 
     override fun onResume() {
         super.onResume()
-        tabManager.onAppResumed()
+        Choreographer.getInstance().postFrameCallback {
+            window.decorView.post {
+                if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) tabManager.onAppResumed()
+            }
+        }
     }
 
     override fun onPause() {
-        // Stop page rendering before Android removes the drawing surface; this
-        // prevents the false "Fable Browser isn't responding" when switching apps.
         tabManager.onAppPaused()
         super.onPause()
     }
 
     override fun onStop() {
         super.onStop()
-        // Persist normal tabs; if the incognito lock is on, arm it for next resume.
-        tabManager.onAppBackgrounded()
+        tabManager.onAppBackgrounded(temporary = activityBridge.externalPickerOpen)
+        FreezeWatchdog.onBackground()
     }
 
     override fun onDestroy() {
-        // Drop the Activity reference so the singleton engine layer cannot leak it.
         activityBridge.unbind(this)
         if (isFinishing) tabManager.onAppExit()
         super.onDestroy()

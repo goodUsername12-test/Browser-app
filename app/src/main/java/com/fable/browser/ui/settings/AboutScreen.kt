@@ -20,7 +20,6 @@ import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
 
-/** Version, the explicit no-telemetry statement, and third-party licenses. */
 @Composable
 fun AboutScreen(
     onBack: () -> Unit,

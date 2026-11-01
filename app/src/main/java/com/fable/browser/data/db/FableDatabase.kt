@@ -23,10 +23,6 @@ class EnumConverters {
     @TypeConverter fun toPermissionDecision(v: String): PermissionDecision = PermissionDecision.valueOf(v)
 }
 
-/**
- * Normal-mode persistence only. Incognito sessions never write to this database:
- * the incognito code paths simply have no reference to the history/tab DAOs.
- */
 @Database(
     entities = [
         Bookmark::class,

@@ -35,10 +35,6 @@ import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.SettingRow
 import kotlinx.coroutines.flow.MutableStateFlow
 
-/**
- * Shared chrome for every settings page: back arrow, scrolling body, and a
- * snackbar host fed by [SettingsViewModel.message].
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsPage(
@@ -83,7 +79,6 @@ fun SettingsPage(
     }
 }
 
-/** Settings root: one row per category. */
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,

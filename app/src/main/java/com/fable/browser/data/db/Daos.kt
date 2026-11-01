@@ -50,7 +50,6 @@ interface BookmarkDao {
     @Query("DELETE FROM bookmarks WHERE url = :url")
     suspend fun deleteByUrl(url: String)
 
-    // Folders
     @Query("SELECT * FROM bookmark_folders WHERE parentId IS :parentId ORDER BY name")
     fun foldersIn(parentId: Long?): Flow<List<BookmarkFolder>>
 

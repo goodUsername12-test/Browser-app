@@ -16,11 +16,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Download progress notifications. Notifications are the only thing Fable ever
- * posts, and only for downloads the user started (plus web push the user
- * explicitly granted per site).
- */
 @Singleton
 class DownloadNotifier @Inject constructor(
     @ApplicationContext private val context: Context
@@ -47,7 +42,6 @@ class DownloadNotifier @Inject constructor(
                 android.Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
 
-    /** The notification that keeps [DownloadService] in the foreground. */
     fun foregroundNotification(): Notification =
         NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)

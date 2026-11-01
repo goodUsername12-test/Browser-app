@@ -26,10 +26,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.fable.browser.engine.FablePrompt
 
-/**
- * Renders whatever the page (or the engine) is asking for. Everything is drawn
- * with app-owned typography so page-controlled text cannot impersonate system UI.
- */
 @Composable
 fun PromptHost(prompt: FablePrompt) {
     when (prompt) {

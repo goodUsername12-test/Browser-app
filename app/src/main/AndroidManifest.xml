@@ -1,16 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Permission justification:
-  - INTERNET: core function, loading web pages.
-  - ACCESS_NETWORK_STATE: detect offline state to show the "no connection" page.
-  - POST_NOTIFICATIONS (runtime, API 33+): download progress notifications and
-    web push notifications that the user explicitly grants per-site.
-  - CAMERA / RECORD_AUDIO / ACCESS_FINE_LOCATION (runtime): only requested when a
-    website asks for the corresponding capability and the user approves it.
-  - FOREGROUND_SERVICE + FOREGROUND_SERVICE_DATA_SYNC: keep downloads alive.
-  - USE_BIOMETRIC: optional biometric lock for incognito mode.
-  No other permissions. No ad SDK, no analytics, no telemetry.
--->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
@@ -25,7 +13,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
-    <!-- Legacy downloads only: API 29+ writes through MediaStore with no permission at all. -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
@@ -58,7 +45,6 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Handle http/https links when set as default browser -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -66,7 +52,6 @@
                 <data android:scheme="http" />
                 <data android:scheme="https" />
             </intent-filter>
-            <!-- Web search intents -->
             <intent-filter>
                 <action android:name="android.intent.action.WEB_SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />

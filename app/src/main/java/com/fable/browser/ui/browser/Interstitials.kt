@@ -41,10 +41,6 @@ import com.fable.browser.engine.FindMatch
 import com.fable.browser.engine.Interstitial
 import com.fable.browser.util.UrlUtils
 
-/**
- * Full-page blocking screens drawn by Compose rather than by web content, so a
- * hostile page can never paint a fake error page over the app chrome.
- */
 @Composable
 fun InterstitialScreen(
     interstitial: Interstitial,
@@ -148,7 +144,6 @@ private fun InterstitialBody(
     }
 }
 
-/** Find-in-page bar with match counter and prev/next. */
 @Composable
 fun FindBar(
     query: String,

@@ -45,7 +45,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Searchable normal-mode history with single-entry delete and range clearing. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(

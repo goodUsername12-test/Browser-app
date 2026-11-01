@@ -32,17 +32,6 @@ import java.net.URLDecoder
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Saves files to Downloads/Fable.
- *
- * API 29+ uses MediaStore (no storage permission needed); API 26–28 writes to
- * the public Downloads directory with the legacy WRITE_EXTERNAL_STORAGE
- * permission declared with maxSdkVersion="28".
- *
- * Incognito: nothing is written until the user confirms this specific file
- * (see [needsIncognitoConfirmation]); temp files are never used, the stream is
- * piped straight to its destination.
- */
 @Singleton
 class Downloader @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -55,7 +44,6 @@ class Downloader @Inject constructor(
     private val _activeCount = MutableStateFlow(0)
     val activeCount: StateFlow<Int> = _activeCount.asStateFlow()
 
-    /** Start a download for a response Gecko decided it cannot render. */
     fun enqueue(response: WebResponse, fromIncognito: Boolean) {
         val fileName = fileNameOf(response)
         val mime = response.headers["Content-Type"]?.substringBefore(';')?.trim()
@@ -72,7 +60,6 @@ class Downloader @Inject constructor(
         }
     }
 
-    /** Context-menu "Download image" / "Download link". */
     fun enqueueUrl(url: String, suggestedName: String?, fromIncognito: Boolean) {
         scope.launch {
             var connection: HttpURLConnection? = null
@@ -100,7 +87,6 @@ class Downloader @Inject constructor(
         }
     }
 
-    /** Save an already-open stream (used by "Save as PDF"). */
     fun savePdf(stream: InputStream, fileName: String, fromIncognito: Boolean) {
         scope.launch {
             runDownload(
@@ -184,7 +170,6 @@ class Downloader @Inject constructor(
         }
     }
 
-    /** Open a finished download with the OS. */
     suspend fun open(entry: DownloadEntry) {
         val uri = withContext(Dispatchers.IO) { resolveUri(entry) } ?: run {
             activityBridge.toast(context.getString(R.string.cannot_open_file))
@@ -199,8 +184,6 @@ class Downloader @Inject constructor(
         if (!file.exists()) return null
         return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
     }
-
-    // ---- destinations ----
 
     private interface Target {
         val displayPath: String
@@ -284,8 +267,6 @@ class Downloader @Inject constructor(
         }
         return candidate
     }
-
-    // ---- naming ----
 
     private fun fileNameOf(response: WebResponse): String {
         val disposition = response.headers["Content-Disposition"]

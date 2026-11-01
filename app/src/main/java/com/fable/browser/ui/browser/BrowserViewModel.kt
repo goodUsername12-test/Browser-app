@@ -24,20 +24,16 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import com.fable.browser.data.model.TopSite
 import javax.inject.Inject
 
-/** One omnibox suggestion. [isBookmark] drives the icon. */
 data class Suggestion(val title: String, val url: String, val isBookmark: Boolean)
 
-/**
- * The single ViewModel behind the browser chrome. It owns no engine state
- * itself — [TabManager] does — so a configuration change or a screen rotation
- * never rebuilds a session (and never resurrects an incognito one).
- */
 @HiltViewModel
 class BrowserViewModel @Inject constructor(
     private val tabManager: TabManager,
@@ -50,7 +46,6 @@ class BrowserViewModel @Inject constructor(
     private val activityBridge: ActivityBridge,
     private val biometricGate: BiometricGate
 ) : ViewModel() {
-
     val tabs: StateFlow<List<BrowserTab>> = tabManager.tabs
     val activeTabId: StateFlow<String?> = tabManager.activeTabId
     val isIncognito: StateFlow<Boolean> = tabManager.isIncognitoMode
@@ -65,9 +60,16 @@ class BrowserViewModel @Inject constructor(
     val settings: StateFlow<Settings> = settingsStore.settings
         .stateIn(viewModelScope, SharingStarted.Eagerly, Settings())
 
-    /** Omnibox editing state. */
     private val _omniboxText = MutableStateFlow("")
     val omniboxText: StateFlow<String> = _omniboxText.asStateFlow()
+
+    var omniboxValue by androidx.compose.runtime.mutableStateOf("")
+        private set
+
+    private fun setOmnibox(value: String) {
+        omniboxValue = value
+        _omniboxText.value = value
+    }
 
     private val _omniboxFocused = MutableStateFlow(false)
     val omniboxFocused: StateFlow<Boolean> = _omniboxFocused.asStateFlow()
@@ -78,7 +80,6 @@ class BrowserViewModel @Inject constructor(
     private val _findQuery = MutableStateFlow<String?>(null)
     val findQuery: StateFlow<String?> = _findQuery.asStateFlow()
 
-    /** First-run incognito disclosure card. */
     private val _showDisclosure = MutableStateFlow(false)
     val showDisclosure: StateFlow<Boolean> = _showDisclosure.asStateFlow()
 
@@ -89,26 +90,43 @@ class BrowserViewModel @Inject constructor(
             @OptIn(FlowPreview::class)
             _omniboxText.debounce(120).collect { query -> refreshSuggestions(query) }
         }
+        viewModelScope.launch {
+            @OptIn(FlowPreview::class)
+            _omniboxText.debounce(400).collect { query ->
+                val s = settings.value
+                val q = query.trim()
+                if (s.preconnectTyped && !isIncognito.value && _omniboxFocused.value &&
+                    q.length > 3 && UrlUtils.isLikelyUrl(q)
+                ) {
+                    engineManager.speculativeConnect(UrlUtils.toUrlOrSearch(q, s.searchEngine))
+                }
+            }
+        }
     }
 
-    // ------------------------------------------------------------- omnibox
-
-    fun onOmniboxChange(value: String) { _omniboxText.value = value }
+    fun onOmniboxChange(value: String) = setOmnibox(value)
 
     fun onOmniboxFocus(focused: Boolean) {
         _omniboxFocused.value = focused
         if (!focused) _suggestions.value = emptyList()
+        if (focused) preconnectSearch()
+    }
+
+    private fun preconnectSearch() {
+        val s = settings.value
+        if (!s.preconnectSearch || isIncognito.value) return
+        val home = s.searchEngine.queryUrl.substringBefore("?").substringBeforeLast("/") + "/"
+        engineManager.speculativeConnect(home)
     }
 
     fun startEditing() {
-        _omniboxText.value = activeTab?.url?.value?.takeIf { it != "about:blank" }.orEmpty()
+        setOmnibox(activeTab?.url?.value?.takeIf { it != "about:blank" }.orEmpty())
         _omniboxFocused.value = true
+        preconnectSearch()
     }
 
     private suspend fun refreshSuggestions(query: String) {
         val trimmed = query.trim()
-        // Incognito never reads history or bookmarks back into the omnibox, so a
-        // private session cannot be reconstructed from what it suggests.
         if (trimmed.length < 2 || isIncognito.value || !_omniboxFocused.value) {
             _suggestions.value = emptyList()
             return
@@ -120,7 +138,6 @@ class BrowserViewModel @Inject constructor(
         _suggestions.value = (bookmarks + history).distinctBy { it.url }.take(8)
     }
 
-    /** Enter pressed, or a suggestion tapped. */
     fun submit(input: String = _omniboxText.value) {
         if (input.isBlank()) return
         tabManager.loadInActive(input)
@@ -130,10 +147,7 @@ class BrowserViewModel @Inject constructor(
 
     fun searchEngine(): SearchEngine = settings.value.searchEngine
 
-    /** True when the typed text will be treated as a URL rather than a search. */
     fun willNavigate(input: String): Boolean = UrlUtils.isLikelyUrl(input)
-
-    // ---------------------------------------------------------- navigation
 
     fun reload() = tabManager.reload()
     fun stop() = tabManager.stop()
@@ -156,8 +170,6 @@ class BrowserViewModel @Inject constructor(
     fun toggleDesktopMode() = tabManager.toggleDesktopMode()
     fun toggleReaderMode() = tabManager.toggleReaderMode()
 
-    // ---------------------------------------------------------------- tabs
-
     fun openTab(url: String? = null, incognito: Boolean = isIncognito.value) {
         maybeShowDisclosure(incognito)
         tabManager.openTab(url, incognito)
@@ -165,6 +177,7 @@ class BrowserViewModel @Inject constructor(
 
     fun selectTab(id: String) = tabManager.selectTab(id)
     fun closeTab(id: String) = tabManager.closeTab(id)
+    fun setPinned(id: String, pinned: Boolean) = tabManager.setPinned(id, pinned)
     fun closeAll(incognito: Boolean) = tabManager.closeAllTabs(incognito)
 
     fun setIncognitoMode(enabled: Boolean) {
@@ -185,9 +198,6 @@ class BrowserViewModel @Inject constructor(
         viewModelScope.launch { settingsStore.setIncognitoDisclosureShown(true) }
     }
 
-    // ------------------------------------------------------ incognito guard
-
-    /** Panic button: long-press the incognito icon. */
     fun panicWipe() {
         tabManager.wipeIncognito()
         engineManager.clearAllBrowsingData()
@@ -204,8 +214,6 @@ class BrowserViewModel @Inject constructor(
     fun openFingerprintTest() =
         tabManager.openTab(FingerprintShield.FINGERPRINT_TEST_URL, incognito = true)
 
-    // -------------------------------------------------------- find in page
-
     fun openFind() { _findQuery.value = "" }
 
     fun onFindQuery(value: String) {
@@ -221,8 +229,6 @@ class BrowserViewModel @Inject constructor(
         _findQuery.value = null
         tabManager.clearFind()
     }
-
-    // --------------------------------------------------------- page actions
 
     fun toggleBookmark() {
         val tab = activeTab ?: return
@@ -243,11 +249,6 @@ class BrowserViewModel @Inject constructor(
         activityBridge.addToHomeScreen(tab.title.value, tab.url.value, tab.thumbnail.value)
     }
 
-    /**
-     * "Print / Save as PDF": Gecko renders the page to a PDF stream which we
-     * write into Downloads/Fable and hand to the system viewer, where the OS
-     * print dialog is available.
-     */
     fun saveAsPdf() {
         val tab = activeTab ?: return
         val name = (tab.title.value.ifBlank { UrlUtils.displayHost(tab.url.value) })
@@ -261,8 +262,6 @@ class BrowserViewModel @Inject constructor(
             }
         }
     }
-
-    // --------------------------------------------------- long-press actions
 
     fun handleContextAction(action: ContentMenuAction) {
         val target = contextMenu.value ?: return
@@ -288,11 +287,8 @@ class BrowserViewModel @Inject constructor(
 
     fun toast(message: String) = activityBridge.toast(message)
 
-    // ------------------------------------------------------------ settings
-
     fun currentHomepage(): String = settings.value.homepage
 
-    /** Page zoom from the browser menu; persisted and applied to the engine. */
     fun setTextZoom(percent: Int) {
         viewModelScope.launch { settingsStore.setTextZoomPercent(percent) }
     }
@@ -300,8 +296,6 @@ class BrowserViewModel @Inject constructor(
     suspend fun settingsSnapshot(): Settings = settingsStore.settings.first()
 
     override fun onCleared() {
-        // The engine sessions themselves are owned by the singleton TabManager,
-        // but any pending page prompt belongs to this UI and must not outlive it.
         promptBridge.dismissAll()
         super.onCleared()
     }

@@ -23,12 +23,6 @@ import com.fable.browser.ui.components.RadioGroup
 import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SwitchRow
 
-/**
- * General: default search engine, homepage / startup page, tab restore.
- *
- * Google is the default engine because it was requested explicitly; the
- * privacy-preserving alternatives are one tap away in the same list.
- */
 @Composable
 fun GeneralSettingsScreen(
     onBack: () -> Unit,

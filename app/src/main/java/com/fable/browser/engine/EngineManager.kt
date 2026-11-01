@@ -27,15 +27,6 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Owns the single GeckoRuntime for the process and applies global privacy
- * configuration: Enhanced Tracking Protection (strict), cookie policy,
- * Global Privacy Control, DNS-over-HTTPS, and the bundled Fable Shield
- * WebExtension (network-layer ad/tracker blocking + fingerprint shield).
- *
- * Zero telemetry: GeckoView's crash reporter and telemetry are never enabled
- * (they are opt-in and we do not opt in).
- */
 @Singleton
 class EngineManager @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -56,7 +47,7 @@ class EngineManager @Inject constructor(
 
     fun warmUp() {
         mainHandler.post {
-            runtime // touch to initialize on the main thread (Gecko requirement)
+            runtime
             scope.launch { applySettings(settingsStore.settings.first()) }
             observeSettings()
         }
@@ -79,7 +70,6 @@ class EngineManager @Inject constructor(
             .remoteDebuggingEnabled(false)
             .aboutConfigEnabled(false)
             .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM)
-            // Keep fast HTTP/2 + HTTP/3 connections alive longer: repeat visits load faster.
             .largeKeepaliveFactor(4)
 
         writeEngineConfig()?.let { builder.configFilePath(it) }
@@ -97,15 +87,17 @@ class EngineManager @Inject constructor(
         file.absolutePath
     }.getOrNull()
 
+    private val webExecutor by lazy { org.mozilla.geckoview.GeckoWebExecutor(runtime) }
+
+    fun speculativeConnect(url: String) {
+        if (!url.startsWith("https://", true) && !url.startsWith("http://", true)) return
+        runCatching { webExecutor.speculativeConnect(url) }
+    }
+
     private val engineFlags by lazy {
         context.getSharedPreferences(ENGINE_FLAGS_FILE, Context.MODE_PRIVATE)
     }
 
-    /**
-     * Base engine prefs + the user's optional feature switches. The switches are
-     * cached in SharedPreferences so they are already correct at the very first
-     * page after a cold start (Gecko reads some of them only once per process).
-     */
     private fun buildEngineConfig(): String {
         val lines = ArrayList<String>()
         lines += "prefs:"
@@ -121,11 +113,8 @@ class EngineManager @Inject constructor(
         }
         stringPrefs(null).forEach { (k, default) ->
             val v = flags[k] as? String ?: default
-            // YAML single-quoted scalar: only ' needs escaping (doubled).
             lines += "  $k: '" + v.replace("'", "''") + "'"
         }
-        // Optional features are only written when switched on, so "off" always
-        // means the engine's own default.
         featurePrefs(null).forEach { (k, default) ->
             val v = flags[k] as? Boolean ?: default
             if (v) lines += "  $k: true"
@@ -133,29 +122,20 @@ class EngineManager @Inject constructor(
         return lines.joinToString(separator = "\n", postfix = "\n")
     }
 
-    /**
-     * Optional / privacy prefs driven by Settings. With s == null returns the
-     * defaults used before settings have been read.
-     */
     private fun privacyPrefs(s: Settings?): List<Pair<String, Boolean>> {
         val d = s ?: Settings()
         return listOf(
-            // WebRTC: never reveal the local (LAN / Wi-Fi) IP address.
             "media.peerconnection.ice.no_host" to d.hideLocalIp,
             "media.peerconnection.ice.default_address_only" to d.hideLocalIp,
-            // Firefox's own tracking-parameter stripping (fbclid, gclid, ...).
             "privacy.query_stripping.enabled" to d.stripTrackingParams,
-            "privacy.query_stripping.enabled.pbmode" to d.stripTrackingParams,
-            // The GPU name is now hidden per site by fingerprint protection
-            // (WebGLRenderInfo), so the global switch stays on.
+            "privacy.query_stripping.enabled.pbmode" to d.incognitoStripParams,
+            "privacy.globalprivacycontrol.pbmode.enabled" to d.incognitoGpc,
+            "layers.gpu-process.enabled" to d.gpuProcess,
             "webgl.enable-debug-renderer-info" to true,
-            // WebRTC: relay only through the proxy / switch off completely.
             "media.peerconnection.ice.proxy_only" to d.webRtcProxyOnly,
             "media.peerconnection.enabled" to !d.webRtcDisabled,
-            // No silent connections to sites you have not opened.
             "network.prefetch-next" to !d.blockPrefetch,
             "network.predictor.enabled" to !d.blockPrefetch,
-            // Security hardening: JavaScript without JIT compilers, WebAssembly off.
             "javascript.options.baselinejit" to !d.noJit,
             "javascript.options.ion" to !d.noJit,
             "javascript.options.native_regexp" to !d.noJit,
@@ -166,15 +146,14 @@ class EngineManager @Inject constructor(
 
     private fun intPrefs(s: Settings?): List<Pair<String, Int>> {
         val d = s ?: Settings()
+        val policy = MemoryPolicy.resolve(context, d)
         return listOf(
             "network.http.speculative-parallel-limit" to if (d.blockPrefetch) 0 else 6,
-            // Cross-site requests only get the site name as referrer, never the full address.
             "network.http.referer.XOriginTrimmingPolicy" to if (d.strictReferrer) 2 else 0,
             "privacy.bounceTrackingProtection.mode" to if (d.bounceTracking) 1 else 0,
-            // Speed: more RAM for caches and instant back/forward when the user allows it.
-            "browser.cache.memory.capacity" to if (d.speedMemory) 65536 else 16384,
-            "browser.sessionhistory.max_total_viewers" to if (d.speedMemory) 3 else 1,
-            "image.mem.surfacecache.max_size_kb" to if (d.speedMemory) 262144 else 131072
+            "browser.cache.memory.capacity" to policy.memoryCacheKb,
+            "browser.sessionhistory.max_total_viewers" to policy.backForwardPages,
+            "image.mem.surfacecache.max_size_kb" to policy.imageCacheKb
         )
     }
 
@@ -186,7 +165,6 @@ class EngineManager @Inject constructor(
         )
     }
 
-    /** Firefox fingerprinting-protection targets chosen in Settings > Privacy. */
     private fun fingerprintOverrides(d: Settings): String {
         val targets = listOf(
             d.fpCanvas to listOf("CanvasRandomization"),
@@ -208,13 +186,14 @@ class EngineManager @Inject constructor(
             d.fpSensors to listOf("DeviceSensors"),
             d.fpTimezone to listOf("JSDateTimeUTC"),
             d.fpLanguage to listOf("JSLocale"),
-            d.fpTimers to listOf("ReduceTimerPrecision")
+            d.fpTimers to listOf("ReduceTimerPrecision", "FrameRate"),
+            d.fpTouch to listOf("TouchEvents", "PointerEvents", "MaxTouchPoints", "CSSPointerCapabilities"),
+            false to listOf("WindowDevicePixelRatio")
         )
         return targets.flatMap { (on, names) -> names.map { (if (on) "+" else "-") + it } }
             .joinToString(",")
     }
 
-    /** Trusted sites (games etc.) get no fingerprinting protection at all. */
     private fun trustedSitesJson(d: Settings): String {
         val hosts = d.fpTrustedSites.split(',').map { it.trim() }.filter { it.isNotEmpty() }
         if (hosts.isEmpty()) return "[]"
@@ -223,7 +202,6 @@ class EngineManager @Inject constructor(
         }
     }
 
-    /** Optional web platform features. Only applied when switched on. */
     private fun featurePrefs(s: Settings?): List<Pair<String, Boolean>> {
         val d = s ?: Settings()
         return listOf(
@@ -238,7 +216,6 @@ class EngineManager @Inject constructor(
         )
     }
 
-    /** Apply the optional prefs live (new pages see them at once) and cache them for the next start. */
     private fun applyOptionalPrefs(s: Settings) {
         val privacy = privacyPrefs(s)
         val features = featurePrefs(s)
@@ -299,13 +276,6 @@ class EngineManager @Inject constructor(
         }
     }
 
-    /**
-     * The Fable Shield extension does two jobs, both inside Gecko's network stack:
-     * 1. blocker.js — blocking webRequest listener fed by bundled EasyList +
-     *    EasyPrivacy rules (real network-layer request cancellation).
-     * 2. fingerprint_shield.js — document_start content script that spoofs and
-     *    noises fingerprinting surfaces, active only in private (incognito) tabs.
-     */
     private fun installShieldExtension(runtime: GeckoRuntime) {
         runtime.webExtensionController
             .ensureBuiltIn("resource://android/assets/extensions/fable_shield/", SHIELD_ID)
@@ -314,7 +284,7 @@ class EngineManager @Inject constructor(
                     shieldExtension = ext
                     ext?.let { proxyConfig.attach(it) }
                 },
-                { /* extension failed to load; ETP still active */ }
+                {}
             )
     }
 
@@ -328,7 +298,6 @@ class EngineManager @Inject constructor(
         val rt = _runtime ?: return
         proxyConfig.update(s)
 
-        // DNS over HTTPS
         val dohUrl = when (s.dohProvider) {
             DohProvider.OFF -> null
             DohProvider.CUSTOM -> s.dohCustomUrl.ifBlank { null }
@@ -341,29 +310,21 @@ class EngineManager @Inject constructor(
             rt.settings.setTrustedRecursiveResolverMode(GeckoRuntimeSettings.TRR_MODE_OFF)
         }
 
-        // Global Privacy Control
         rt.settings.setGlobalPrivacyControl(s.sendGpc)
 
-        // Fingerprinting: Firefox's protections. Baseline everywhere (safe for
-        // sites and games), full protection always in incognito, and in normal
-        // tabs when the user turns it on.
         runCatching {
             rt.settings.setBaselineFingerprintingProtection(true)
-            rt.settings.setFingerprintingProtectionPrivateBrowsing(true)
+            rt.settings.setFingerprintingProtectionPrivateBrowsing(s.incognitoFingerprintProtection)
             rt.settings.setFingerprintingProtection(s.fingerprintProtectionAll)
-            // Incognito: third-party cookies fully blocked if chosen, else isolated per site.
             rt.settings.contentBlocking.setCookieBehaviorPrivateMode(
                 if (s.incognitoBlockThirdPartyCookies) ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY
                 else ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS
             )
         }
-        // Speed: honour <img fetchpriority="high"> etc. so important resources load first.
         runCatching { rt.settings.setFetchPriorityEnabled(true) }
 
-        // WebRTC leak protection, optional web features, query stripping.
         applyOptionalPrefs(s)
 
-        // Appearance: page zoom and forced-dark web content
         rt.settings.setAutomaticFontSizeAdjustment(false)
         rt.settings.setFontSizeFactor(s.textZoomPercent / 100f)
         rt.settings.setPreferredColorScheme(
@@ -371,7 +332,6 @@ class EngineManager @Inject constructor(
             else GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM
         )
 
-        // Cookie policy
         rt.settings.contentBlocking.setCookieBehavior(
             if (s.blockThirdPartyCookies)
                 ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS
@@ -399,7 +359,6 @@ class EngineManager @Inject constructor(
         }
     }
 
-    /** Wipe every Gecko data type. Called by clear-on-exit and the incognito panic path. */
     fun clearAllBrowsingData(onDone: (() -> Unit)? = null) {
         val rt = _runtime ?: return
         rt.storageController.clearData(org.mozilla.geckoview.StorageController.ClearFlags.ALL)
@@ -417,10 +376,6 @@ class EngineManager @Inject constructor(
                 org.mozilla.geckoview.StorageController.ClearFlags.IMAGE_CACHE)
     }
 
-    /**
-     * Wipe all data belonging to one incognito container (contextId).
-     * Used by per-tab isolation teardown and the panic button.
-     */
     fun clearContainer(contextId: String) {
         _runtime?.storageController?.clearDataForSessionContext(contextId)
     }
@@ -447,17 +402,11 @@ class EngineManager @Inject constructor(
                 ContentBlocking.AntiTracking.FINGERPRINTING or
                 ContentBlocking.AntiTracking.CRYPTOMINING
 
-        /** Engine prefs that are always on. Values are written as YAML scalars. */
         private val BASE_PREFS: List<Pair<String, Any>> = listOf(
-            // Memory (unchanged from v5)
             "dom.ipc.processPrelaunch.enabled" to false,
-            // Privacy: hide host candidates behind mDNS names if any are gathered,
-            // and send WebRTC through the proxy when one is set.
             "media.peerconnection.ice.obfuscate_host_addresses" to true,
             "media.peerconnection.ice.proxy_only_if_behind_proxy" to true,
-            // Security: show look-alike (homograph) domains as punycode.
             "network.IDN_show_punycode" to true,
-            // Speed: more parallel connections, fewer artificial delays, longer DNS cache.
             "network.http.max-persistent-connections-per-server" to 10,
             "network.http.max-urgent-start-excessive-connections-per-host" to 5,
             "network.http.pacing.requests.enabled" to false,
@@ -465,7 +414,6 @@ class EngineManager @Inject constructor(
             "network.dnsCacheExpiration" to 3600,
             "network.ssl_tokens_cache_capacity" to 10240,
             "content.notify.interval" to 100000,
-            // Gaming: GPU-accelerated 2D canvas (driver blocklist still applies).
             "gfx.canvas.accelerated" to true,
             "dom.gamepad.enabled" to true
         )

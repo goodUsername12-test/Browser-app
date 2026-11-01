@@ -37,10 +37,6 @@ import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
 import com.fable.browser.ui.components.SwitchRow
 
-/**
- * Privacy & Security. Every toggle here applies to BOTH normal and incognito
- * mode — incognito only ever adds protection, never removes it.
- */
 @Composable
 fun PrivacySettingsScreen(
     onBack: () -> Unit,

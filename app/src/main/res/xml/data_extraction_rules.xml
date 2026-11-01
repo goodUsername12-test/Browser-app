@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Nothing is backed up to the cloud. Browsing data never leaves the device. -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="root" />

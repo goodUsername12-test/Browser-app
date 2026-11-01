@@ -12,6 +12,7 @@ import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.VpnLock
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -37,11 +38,6 @@ import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
 import com.fable.browser.ui.components.SwitchRow
 
-/**
- * The incognito control panel. Everything here is ON by default except the
- * biometric lock and the proxy, which need hardware or a server the user has to
- * supply. Nothing on this screen can be used to weaken normal-mode privacy.
- */
 @Composable
 fun IncognitoSettingsScreen(
     onBack: () -> Unit,
@@ -55,6 +51,8 @@ fun IncognitoSettingsScreen(
     var proxyPort by remember(settings.incognitoProxyPort) {
         mutableStateOf(settings.incognitoProxyPort.toString())
     }
+    var showCopyConfirm by remember { mutableStateOf(false) }
+    var showKeepWarning by remember { mutableStateOf(false) }
 
     SettingsPage(title = "Incognito", onBack = onBack, viewModel = viewModel) {
         Card(
@@ -125,7 +123,10 @@ fun IncognitoSettingsScreen(
 
         SectionHeader("Auto-wipe after inactivity")
         Text(
-            "Incognito is always wiped when the last private tab closes or the process dies. This adds an idle timer on top.",
+            if (settings.keepIncognitoTabs)
+                "Incognito site data is wiped when the last private tab closes or the app closes. This adds an idle timer on top."
+            else
+                "Incognito is always wiped when the last private tab closes or the process dies. This adds an idle timer on top.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
@@ -213,28 +214,126 @@ fun IncognitoSettingsScreen(
         ListDivider()
 
         SectionHeader("Incognito protection")
+        Text(
+            "Incognito tabs have their own value for every switch below. Normal tabs are not affected.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+        )
         SwitchRow(
-            title = "JavaScript in incognito",
+            title = "Block ads and trackers (filter lists)",
+            subtitle = "Uses the same filter lists as normal tabs",
+            checked = settings.incognitoAdBlock,
+            onCheckedChange = viewModel::setIncognitoAdBlock
+        )
+        SwitchRow(
+            title = "Tracking protection",
+            subtitle = "Firefox Enhanced Tracking Protection. Applies to new incognito tabs",
+            checked = settings.incognitoTrackingProtection,
+            onCheckedChange = viewModel::setIncognitoTrackingProtection
+        )
+        SwitchRow(
+            title = "HTTPS-only",
+            subtitle = "Never load unencrypted pages in incognito",
+            checked = settings.incognitoHttpsOnly,
+            onCheckedChange = viewModel::setIncognitoHttpsOnly
+        )
+        SwitchRow(
+            title = "Remove tracking parameters from links",
+            subtitle = "Strips fbclid, gclid, utm_ and similar from addresses",
+            checked = settings.incognitoStripParams,
+            onCheckedChange = viewModel::setIncognitoStripParams
+        )
+        SwitchRow(
+            title = "Tell sites not to sell or share my data",
+            subtitle = "Sends Global Privacy Control. Restart the app to apply",
+            checked = settings.incognitoGpc,
+            onCheckedChange = viewModel::setIncognitoGpc
+        )
+        SwitchRow(
+            title = "Firefox fingerprinting protection",
+            subtitle = "Uses the protections chosen in Privacy > Fingerprint protection. Turn off only if a site or game does not work",
+            checked = settings.incognitoFingerprintProtection,
+            onCheckedChange = viewModel::setIncognitoFingerprintProtection
+        )
+        SwitchRow(
+            title = "JavaScript",
             subtitle = "Turn off for the most private and secure browsing. Most sites and all games need it. Applies to new incognito tabs",
             checked = settings.incognitoJavascript,
             onCheckedChange = viewModel::setIncognitoJavascript
         )
         SwitchRow(
-            title = "HTTPS-only in incognito",
-            subtitle = "Never load unencrypted pages in incognito, even if HTTPS-only is off for normal tabs",
-            checked = settings.incognitoHttpsOnly,
-            onCheckedChange = viewModel::setIncognitoHttpsOnly
-        )
-        SwitchRow(
-            title = "Block all third-party cookies in incognito",
+            title = "Block all third-party cookies",
             subtitle = "Stronger than the default per-site isolation. Can stop logins and games embedded in other sites (like itch.io) from saving",
             checked = settings.incognitoBlockThirdPartyCookies,
             onCheckedChange = viewModel::setIncognitoBlockThirdPartyCookies
         )
         SettingRow(
-            title = "Fingerprint protection is always on in incognito",
-            subtitle = "Uses the protections chosen in Privacy > Fingerprint protection, plus a separate identity per incognito session"
+            title = "Copy settings from normal tabs",
+            subtitle = "Sets every switch above to the value used in normal tabs",
+            onClick = { showCopyConfirm = true }
         )
         ListDivider()
+
+        SectionHeader("When the app is closed")
+        SwitchRow(
+            title = "Keep incognito tabs after closing",
+            subtitle = "Open incognito tabs come back the next time you start the app",
+            checked = settings.keepIncognitoTabs,
+            onCheckedChange = { on ->
+                if (on) {
+                    showKeepWarning = true
+                } else {
+                    viewModel.setKeepIncognitoTabs(false)
+                }
+            }
+        )
+        if (settings.keepIncognitoTabs) {
+            Text(
+                "On: the addresses and back/forward history of open incognito tabs are saved encrypted on this phone. Cookies, logins and site data are still deleted when the app closes. Closing all incognito tabs or the panic button deletes the saved tabs too.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+            )
+        }
+        ListDivider()
+    }
+
+    if (showCopyConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCopyConfirm = false },
+            title = { Text("Copy from normal tabs?") },
+            text = { Text("Every incognito protection switch will be set to the value used in normal tabs.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showCopyConfirm = false
+                    viewModel.copyIncognitoFromNormal()
+                }) { Text("Copy") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCopyConfirm = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showKeepWarning) {
+        AlertDialog(
+            onDismissRequest = { showKeepWarning = false },
+            title = { Text("Keep incognito tabs?") },
+            text = {
+                Text(
+                    "The addresses and history of your open incognito tabs will be saved encrypted on this phone until you close them, so they come back after the app is closed. Cookies, logins and site data are still deleted."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showKeepWarning = false
+                    viewModel.setKeepIncognitoTabs(true)
+                }) { Text("Keep tabs") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showKeepWarning = false }) { Text("Cancel") }
+            }
+        )
     }
 }

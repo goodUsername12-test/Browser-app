@@ -7,35 +7,22 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.mozilla.geckoview.GeckoSession
 import java.util.UUID
 
-/** A full-page blocking screen drawn by Compose instead of by web content. */
 sealed interface Interstitial {
     val url: String
 
-    /** HTTPS-only mode refused a plain-HTTP navigation. */
     data class HttpsOnly(override val url: String) : Interstitial
 
-    /** Certificate / TLS failure. */
     data class Ssl(override val url: String, val reason: String) : Interstitial
 
-    /** DNS failure, offline, connection refused, unknown host … */
     data class Network(override val url: String, val reason: String) : Interstitial
 }
 
-/** Find-in-page result for the find bar. */
 data class FindMatch(val current: Int, val total: Int)
 
-/**
- * One browser tab. Wraps a GeckoSession and exposes observable UI state.
- *
- * Incognito tabs: [isIncognito] = true, backed by a private-mode session with
- * its own [contextId] storage partition. The [thumbnail] bitmap lives only in
- * this object in RAM and is nulled on close — it is never written to disk.
- */
 class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
     val isIncognito: Boolean,
     initialSession: GeckoSession,
-    /** Storage/cookie partition key; null for normal tabs. */
     val contextId: String? = null
 ) {
     private val _session = MutableStateFlow(initialSession)
@@ -99,15 +86,12 @@ class BrowserTab(
     private val _findMatch = MutableStateFlow<FindMatch?>(null)
     val findMatch: StateFlow<FindMatch?> = _findMatch.asStateFlow()
 
-    /** Hosts the user explicitly allowed over plain HTTP, for this tab only. */
     private val httpExceptions = mutableSetOf<String>()
 
-    /** True when the session was suspended for low-memory eviction. */
     var isEvicted: Boolean
         get() = _isUnloaded.value
         internal set(value) { _isUnloaded.value = value }
 
-    /** Where an evicted tab should resume from. */
     internal var evictedUrl: String? = null
 
     internal fun updateUrl(v: String) { _url.value = v }
@@ -150,7 +134,6 @@ class BrowserTab(
         updateFindMatch(null)
     }
 
-    /** Release the engine session and every in-memory artifact of this tab. */
     fun close() {
         updateThumbnail(null)
         updateFindMatch(null)

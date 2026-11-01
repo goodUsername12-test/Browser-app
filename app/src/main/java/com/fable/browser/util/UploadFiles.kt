@@ -7,24 +7,11 @@ import android.webkit.MimeTypeMap
 import java.io.File
 import java.util.Locale
 
-/**
- * File uploads (<input type="file">).
- *
- * The engine can only upload real files, not the content:// links Android's
- * file picker returns, so the picked files are copied into a private cache
- * folder first (this is exactly what Firefox for Android does). Old copies are
- * deleted automatically after a day.
- */
 object UploadFiles {
     private const val DIR = "uploads"
     private const val MAX_AGE_MS = 24L * 60L * 60L * 1000L
     private val UNSAFE_NAME_CHARS = Regex("""[\\/:*?"<>|\u0000-\u001f]""")
 
-    /**
-     * Turns the page's accept list (".pdf", "image/png", "PNG", ...) into
-     * MIME types Android's picker understands. Unknown entries are ignored;
-     * nothing usable means "any file".
-     */
     fun normalizeMimeTypes(raw: Array<out String?>?): Array<String> {
         val map = MimeTypeMap.getSingleton()
         val out = LinkedHashSet<String>()
@@ -41,7 +28,6 @@ object UploadFiles {
         return if (out.isEmpty()) arrayOf("*/*") else out.toTypedArray()
     }
 
-    /** Copies one picked file into the private upload cache. Call off the main thread. */
     fun copyToUploads(context: Context, uri: Uri): Uri? = runCatching {
         if (uri.scheme == "file") return@runCatching uri
         val name = displayName(context, uri)

@@ -30,11 +30,6 @@ import com.fable.browser.engine.ContentMenuAction
 import com.fable.browser.engine.ContextMenuTarget
 import com.fable.browser.ui.components.ListDivider
 
-/**
- * Long-press menu for links and images. "Open in new incognito tab" is offered
- * from normal tabs too; the reverse (escaping incognito into a normal tab) is
- * deliberately not offered, so a private navigation cannot leak by accident.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContextMenuSheet(

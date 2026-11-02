@@ -212,6 +212,7 @@ class SettingsViewModel @Inject constructor(
                 ContentBlocker.DEFAULT_EASYPRIVACY_URL
             )
             _updatingFilters.value = false
+            result.onSuccess { engineManager.refreshFilterRules() }
             _message.value = result.fold(
                 onSuccess = { "Filter lists updated — $it rules" },
                 onFailure = { "Could not reach the filter list server" }
@@ -277,6 +278,10 @@ class SettingsViewModel @Inject constructor(
     fun setSuperDeviceRange(v: SuperDeviceRange) = edit { store.setSuperDeviceRange(v) }
     fun setSuperRandomTimezone(v: Boolean) = edit { store.setSuperRandomTimezone(v) }
     fun setSuperHidden(item: String, hidden: Boolean) = edit { store.setSuperHidden(item, hidden) }
+    fun setSuperGameMode(v: Boolean) = edit { store.setSuperGameMode(v) }
+    fun setSuperGpu(v: String) = edit { store.setSuperGpu(v) }
+    fun setAutoClearCache(v: Boolean) = edit { store.setAutoClearCache(v) }
+    fun gpuChoices(): List<Pair<String, String>> = SuperIdentityFactory.gpuChoices()
     fun setKeepSuperTabs(v: Boolean) = edit { store.setKeepSuperTabs(v) }
     fun setSuperProxyEnabled(v: Boolean) = edit { store.setSuperProxyEnabled(v) }
     fun setSuperProxyType(v: SuperProxyType) = edit { store.setSuperProxyType(v) }

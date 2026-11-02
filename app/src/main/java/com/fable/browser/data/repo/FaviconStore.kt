@@ -28,6 +28,7 @@ import javax.inject.Singleton
 
 class SiteIconImage(val bitmap: Bitmap, val fullBleed: Boolean)
 
+// favicons
 @Singleton
 class FaviconStore @Inject constructor(
     @ApplicationContext private val context: Context
@@ -66,13 +67,16 @@ class FaviconStore @Inject constructor(
 
     fun onPageIcons(pageUrl: String, icons: List<String>) {
         val k = key(pageUrl) ?: return
-        val file = fileFor(k)
-        if (file.exists() && System.currentTimeMillis() - file.lastModified() < REFRESH_MS) return
-        val candidates = icons.filter { it.startsWith("https://") || it.startsWith("http://") || it.startsWith("data:image/") }
+        val candidates = icons.filter {
+            it.startsWith("https://") || it.startsWith("http://") ||
+                (it.startsWith("data:image/") && it.length <= MAX_DATA_URI)
+        }
         if (candidates.isEmpty()) return
         if (!inFlight.add(k)) return
         scope.launch {
             try {
+                val file = fileFor(k)
+                if (file.exists() && System.currentTimeMillis() - file.lastModified() < REFRESH_MS) return@launch
                 limiter.withPermit {
                     for (c in candidates) {
                         val image = download(c) ?: continue
@@ -84,6 +88,11 @@ class FaviconStore @Inject constructor(
                 inFlight.remove(k)
             }
         }
+    }
+
+    fun prune(maxAgeMs: Long = PRUNE_MS) {
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        runCatching { dir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() } }
     }
 
     fun clear() {
@@ -229,6 +238,8 @@ class FaviconStore @Inject constructor(
         private const val MAX_BYTES = 600_000
         private const val MISS_MS = 12L * 60 * 60 * 1000
         private const val REFRESH_MS = 5L * 24 * 60 * 60 * 1000
+        private const val PRUNE_MS = 60L * 24 * 60 * 60 * 1000
+        private const val MAX_DATA_URI = 800_000
         private const val USER_AGENT = "Mozilla/5.0 (Android; Mobile) FableBrowser"
     }
 }

@@ -20,6 +20,7 @@ import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// talks to the fable_shield extension
 @Singleton
 class ProxyConfig @Inject constructor(
     private val contentBlocker: ContentBlocker,
@@ -88,7 +89,18 @@ class ProxyConfig @Inject constructor(
         val s = current
         val supers = JSONArray()
         val reveal = s?.superReveal ?: emptySet()
-        superIncognito.identity.value?.let { supers.put(it.toJson().put("hide", SuperIdentity.hideJson(reveal))) }
+        val gameMode = s?.superGameMode == true
+        val gpu = s?.superGpu.orEmpty()
+        superIncognito.identity.value?.let { identity ->
+            val o = identity.toJson().put("hide", SuperIdentity.hideJson(reveal, gameMode))
+            if (gpu.isNotEmpty()) {
+                SuperIdentityFactory.gpuChoices().firstOrNull { it.second == gpu }?.let {
+                    o.put("glVendor", it.first)
+                    o.put("glRenderer", it.second)
+                }
+            }
+            supers.put(o)
+        }
         val superProxyOn = (s?.superProxyEnabled ?: false) && !s?.superProxyHost.isNullOrBlank()
         return JSONObject().apply {
             put("type", "config")

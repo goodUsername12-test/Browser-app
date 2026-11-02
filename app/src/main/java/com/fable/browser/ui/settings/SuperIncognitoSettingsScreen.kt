@@ -58,7 +58,10 @@ private val superHideItems: List<Triple<String, String, String>> = listOf(
     Triple("cpu", "CPU cores", "Fake number of processor cores"),
     Triple("touch", "Touch points", "Fake number of touch points"),
     Triple("languages", "Languages", "Fake languages sent to websites"),
-    Triple("graphics", "Graphics card", "Fake WebGL graphics card and WebGL noise"),
+    Triple("graphics", "WebGL", "Master switch for everything WebGL below"),
+    Triple("webglName", "WebGL card name", "Show a fake graphics card name"),
+    Triple("webglLimits", "WebGL limits", "Report smaller fake WebGL size limits"),
+    Triple("webglNoise", "WebGL image noise", "Tiny changes to pixels read back from WebGL"),
     Triple("fonts", "Fonts", "Fake list of installed fonts"),
     Triple("canvas", "Canvas noise", "Random noise in canvas drawings"),
     Triple("audio", "Audio noise", "Random noise in audio checks"),
@@ -67,6 +70,8 @@ private val superHideItems: List<Triple<String, String, String>> = listOf(
     Triple("dnt", "Do Not Track", "Random Do Not Track signal"),
     Triple("webrtc", "Local IP address", "Hides your IP address from WebRTC")
 )
+
+private val gameModeKeys = setOf("screen", "webglLimits", "webglNoise", "canvas", "audio", "rects")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -78,6 +83,7 @@ fun SuperIncognitoSettingsScreen(
     val identity by viewModel.superIdentity.collectAsStateWithLifecycle()
     var showRange by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
+    var showGpus by remember { mutableStateOf(false) }
     var showKeepWarning by remember { mutableStateOf(false) }
     var showNewConfirm by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<SuperIdentity?>(null) }
@@ -164,10 +170,12 @@ fun SuperIncognitoSettingsScreen(
 
         SectionHeader("What super incognito hides")
         superHideItems.forEach { (key, title, subtitle) ->
+            val lockedByGames = settings.superGameMode && key in gameModeKeys
             SwitchRow(
                 title = title,
-                subtitle = subtitle,
-                checked = key !in settings.superReveal,
+                subtitle = if (lockedByGames) "Off while game mode is on" else subtitle,
+                checked = key !in settings.superReveal && !lockedByGames,
+                enabled = !lockedByGames,
                 onCheckedChange = { on -> viewModel.setSuperHidden(key, on) }
             )
         }
@@ -177,6 +185,21 @@ fun SuperIncognitoSettingsScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+        )
+        ListDivider()
+
+        SectionHeader("Games")
+        SwitchRow(
+            title = "Game mode",
+            subtitle = "For WebGL and canvas games. Turns off WebGL limits and noise, canvas, audio, layout " +
+                "and screen spoofing, and keeps JIT and WebAssembly on",
+            checked = settings.superGameMode,
+            onCheckedChange = viewModel::setSuperGameMode
+        )
+        SettingRow(
+            title = "WebGL graphics card",
+            subtitle = settings.superGpu.ifBlank { "Same as the fake device" },
+            onClick = { showGpus = true }
         )
         ListDivider()
 
@@ -307,6 +330,39 @@ fun SuperIncognitoSettingsScreen(
                 )
             },
             confirmButton = { TextButton(onClick = { showRange = false }) { Text("Close") } }
+        )
+    }
+
+    if (showGpus) {
+        val gpus = remember { viewModel.gpuChoices() }
+        AlertDialog(
+            onDismissRequest = { showGpus = false },
+            title = { Text("WebGL graphics card") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 460.dp)) {
+                    item {
+                        DeviceOption(
+                            label = "Same as the fake device",
+                            selected = settings.superGpu.isBlank(),
+                            onClick = {
+                                viewModel.setSuperGpu("")
+                                showGpus = false
+                            }
+                        )
+                    }
+                    items(gpus) { gpu ->
+                        DeviceOption(
+                            label = gpu.second,
+                            selected = settings.superGpu == gpu.second,
+                            onClick = {
+                                viewModel.setSuperGpu(gpu.second)
+                                showGpus = false
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showGpus = false }) { Text("Close") } }
         )
     }
 

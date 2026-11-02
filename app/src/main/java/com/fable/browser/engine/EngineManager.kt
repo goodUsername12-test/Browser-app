@@ -31,6 +31,7 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// engine
 @Singleton
 class EngineManager @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -49,7 +50,10 @@ class EngineManager @Inject constructor(
             _runtime ?: createRuntime().also { _runtime = it }
         }
 
+    private val warmedUp = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun warmUp() {
+        if (!warmedUp.compareAndSet(false, true)) return
         mainHandler.post {
             runtime
             scope.launch { applySettings(settingsStore.settings.first()) }
@@ -165,6 +169,7 @@ class EngineManager @Inject constructor(
         }
     }
 
+    // some vpns report themselves as metered, check what is underneath
     private fun meteredOf(caps: NetworkCapabilities): Boolean {
         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
@@ -198,11 +203,11 @@ class EngineManager @Inject constructor(
             "media.peerconnection.enabled" to !d.webRtcDisabled,
             "network.prefetch-next" to !quiet,
             "network.predictor.enabled" to !quiet,
-            "javascript.options.baselinejit" to !d.noJit,
-            "javascript.options.ion" to !d.noJit,
-            "javascript.options.native_regexp" to !d.noJit,
-            "javascript.options.wasm_optimizingjit" to !d.noJit,
-            "javascript.options.wasm" to !d.disableWasm
+            "javascript.options.baselinejit" to (!d.noJit || d.superGameMode),
+            "javascript.options.ion" to (!d.noJit || d.superGameMode),
+            "javascript.options.native_regexp" to (!d.noJit || d.superGameMode),
+            "javascript.options.wasm_optimizingjit" to (!d.noJit || d.superGameMode),
+            "javascript.options.wasm" to (!d.disableWasm || d.superGameMode)
         )
     }
 
@@ -236,7 +241,7 @@ class EngineManager @Inject constructor(
             d.fpCanvasThirdParty to listOf("CanvasExtractionFromThirdPartiesIsBlocked"),
             d.fpFonts to listOf("FontVisibilityBaseSystem", "FontVisibilityLangPack"),
             d.hideGpuModel to listOf("WebGLRenderInfo"),
-            d.fpWebGlLimits to listOf("WebGLRenderCapability"),
+            (d.fpWebGlLimits && !d.superGameMode) to listOf("WebGLRenderCapability"),
             d.fpUserAgent to listOf(
                 "NavigatorUserAgent", "HttpUserAgent", "NavigatorAppVersion",
                 "NavigatorOscpu", "NavigatorPlatform", "NavigatorBuildID"
@@ -251,7 +256,7 @@ class EngineManager @Inject constructor(
             d.fpSensors to listOf("DeviceSensors"),
             d.fpTimezone to listOf("JSDateTimeUTC"),
             d.fpLanguage to listOf("JSLocale"),
-            d.fpTimers to listOf("ReduceTimerPrecision", "FrameRate"),
+            (d.fpTimers && !d.superGameMode) to listOf("ReduceTimerPrecision", "FrameRate"),
             d.fpTouch to listOf("TouchEvents", "PointerEvents", "MaxTouchPoints", "CSSPointerCapabilities"),
             false to listOf("WindowDevicePixelRatio")
         )
@@ -281,11 +286,16 @@ class EngineManager @Inject constructor(
         )
     }
 
+    @Volatile private var appliedPrefs: List<Any>? = null
+
     private fun applyOptionalPrefs(s: Settings) {
         val privacy = privacyPrefs(s)
         val features = featurePrefs(s)
         val ints = intPrefs(s)
         val strings = stringPrefs(s)
+        val signature = listOf(privacy, features, ints, strings)
+        if (signature == appliedPrefs) return
+        appliedPrefs = signature
         runCatching {
             val editor = engineFlags.edit()
             (privacy + features).forEach { (k, v) -> editor.putBoolean(k, v) }
@@ -458,6 +468,8 @@ class EngineManager @Inject constructor(
                 org.mozilla.geckoview.StorageController.ClearFlags.IMAGE_CACHE)
     }
 
+    fun refreshFilterRules() = proxyConfig.pushRules()
+
     fun clearContainer(contextId: String) {
         _runtime?.storageController?.clearDataForSessionContext(contextId)
     }
@@ -486,6 +498,8 @@ class EngineManager @Inject constructor(
 
         private val BASE_PREFS: List<Pair<String, Any>> = listOf(
             "dom.ipc.processPrelaunch.enabled" to false,
+            "browser.cache.disk.smart_size.enabled" to false,
+            "browser.cache.disk.capacity" to 262144,
             "media.peerconnection.ice.obfuscate_host_addresses" to true,
             "media.peerconnection.ice.proxy_only_if_behind_proxy" to true,
             "network.IDN_show_punycode" to true,

@@ -20,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.mozilla.geckoview.WebResponse
@@ -123,7 +124,7 @@ class Downloader @Inject constructor(
                 fromIncognito = fromIncognito
             )
         )
-        _activeCount.value = _activeCount.value + 1
+        _activeCount.update { it + 1 }
         DownloadService.start(context)
         notifications.showProgress(id, fileName, 0, totalBytes)
 
@@ -131,7 +132,7 @@ class Downloader @Inject constructor(
         if (input == null) {
             repository.setStatus(id, DownloadStatus.FAILED)
             notifications.showFailure(fileName)
-            _activeCount.value = (_activeCount.value - 1).coerceAtLeast(0)
+            _activeCount.update { (it - 1).coerceAtLeast(0) }
             return@withContext
         }
 
@@ -157,7 +158,7 @@ class Downloader @Inject constructor(
             }
         }
         target.finish()
-        _activeCount.value = (_activeCount.value - 1).coerceAtLeast(0)
+        _activeCount.update { (it - 1).coerceAtLeast(0) }
 
         if (result.isSuccess) {
             repository.updateProgress(id, written, if (totalBytes > 0) totalBytes else written)

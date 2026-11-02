@@ -7,6 +7,7 @@ import org.mozilla.geckoview.GeckoSession
 import java.security.SecureRandom
 import java.util.UUID
 
+// one fake device per super incognito session
 data class SuperIdentity(
     val id: String,
     val label: String,
@@ -114,12 +115,15 @@ data class SuperIdentity(
         const val HIDE_BROWSER = "browser"
 
         val HIDE_KEYS: List<String> = listOf(
-            HIDE_BROWSER, "screen", "cpu", "touch", "languages", "graphics", "fonts",
-            "canvas", "audio", "rects", "voices", "dnt", "webrtc"
+            HIDE_BROWSER, "screen", "cpu", "touch", "languages", "graphics", "webglName",
+            "webglLimits", "webglNoise", "fonts", "canvas", "audio", "rects", "voices", "dnt", "webrtc"
         )
 
-        fun hideJson(reveal: Set<String>): JSONObject = JSONObject().apply {
-            HIDE_KEYS.forEach { put(it, it !in reveal) }
+        // turned off by game mode
+        private val GAME_KEYS = setOf("screen", "webglLimits", "webglNoise", "canvas", "audio", "rects")
+
+        fun hideJson(reveal: Set<String>, gameMode: Boolean = false): JSONObject = JSONObject().apply {
+            HIDE_KEYS.forEach { put(it, it !in reveal && !(gameMode && it in GAME_KEYS)) }
         }
 
         fun fromJson(o: JSONObject): SuperIdentity? = runCatching {
@@ -165,6 +169,9 @@ data class SuperIdentity(
 
 object SuperIdentityFactory {
     private val rnd = SecureRandom()
+
+    fun gpuChoices(): List<Pair<String, String>> =
+        devices.map { it.glVendor to it.glRenderer }.distinct().sortedBy { it.second }
 
     private fun <T> List<T>.pick(): T = this[rnd.nextInt(size)]
 

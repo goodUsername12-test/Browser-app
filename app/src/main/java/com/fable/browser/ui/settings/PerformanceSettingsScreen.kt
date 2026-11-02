@@ -110,6 +110,15 @@ fun PerformanceSettingsScreen(
         )
         ListDivider()
 
+        SectionHeader("Cache")
+        SwitchRow(
+            title = "Clear cache automatically",
+            subtitle = "Once a day when you leave the app, or sooner if it grows past 300 MB",
+            checked = settings.autoClearCache,
+            onCheckedChange = viewModel::setAutoClearCache
+        )
+        ListDivider()
+
         SectionHeader("Faster loading")
         SwitchRow(
             title = "Connect early to your search engine",

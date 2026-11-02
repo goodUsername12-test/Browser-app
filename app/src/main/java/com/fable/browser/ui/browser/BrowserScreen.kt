@@ -75,7 +75,6 @@ fun BrowserScreen(
 
     val url = tab?.url?.collectAsStateWithLifecycle()?.value ?: "about:blank"
     val title = tab?.title?.collectAsStateWithLifecycle()?.value ?: ""
-    val progress = tab?.progress?.collectAsStateWithLifecycle()?.value ?: 0
     val loading = tab?.isLoading?.collectAsStateWithLifecycle()?.value ?: false
     val canGoBack = tab?.canGoBack?.collectAsStateWithLifecycle()?.value ?: false
     val canGoForward = tab?.canGoForward?.collectAsStateWithLifecycle()?.value ?: false
@@ -126,7 +125,7 @@ fun BrowserScreen(
                     else Modifier.navigationBarsPadding().windowInsetsPadding(imeTarget)
                 )
         ) {
-            if (!toolbarAtTop) PageProgress(progress = progress, loading = loading)
+            if (!toolbarAtTop) TabProgress(tab = tab, loading = loading)
             if (findQuery != null) {
                 FindBar(
                     query = findQuery.orEmpty(),
@@ -175,7 +174,7 @@ fun BrowserScreen(
                 onPanic = viewModel::panicWipe,
                 onMenu = { menuOpen = true }
             )
-            if (toolbarAtTop) PageProgress(progress = progress, loading = loading)
+            if (toolbarAtTop) TabProgress(tab = tab, loading = loading)
         }
     }
 
@@ -311,4 +310,11 @@ fun BrowserScreen(
     if (showDisclosure) {
         IncognitoDisclosure(onAcknowledge = viewModel::acknowledgeDisclosure)
     }
+}
+
+// own scope so progress ticks don't redraw the whole screen
+@Composable
+private fun TabProgress(tab: BrowserTab?, loading: Boolean) {
+    val progress = tab?.progress?.collectAsStateWithLifecycle()?.value ?: 0
+    PageProgress(progress = progress, loading = loading)
 }

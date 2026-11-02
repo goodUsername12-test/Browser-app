@@ -18,6 +18,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.fable.browser.util.FreezeWatchdog
 import com.fable.browser.data.prefs.SettingsStore
+import com.fable.browser.engine.CacheCleaner
 import com.fable.browser.engine.TabManager
 import com.fable.browser.ui.CrashReportDialog
 import com.fable.browser.ui.FableApp
@@ -37,6 +38,7 @@ class MainActivity : FragmentActivity() {
     @Inject lateinit var tabManager: TabManager
     @Inject lateinit var activityBridge: ActivityBridge
     @Inject lateinit var settingsStore: SettingsStore
+    @Inject lateinit var cacheCleaner: CacheCleaner
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -211,6 +213,7 @@ class MainActivity : FragmentActivity() {
     override fun onStop() {
         super.onStop()
         tabManager.onAppBackgrounded(temporary = activityBridge.externalPickerOpen)
+        if (!activityBridge.externalPickerOpen) cacheCleaner.onAppBackgrounded()
         FreezeWatchdog.onBackground()
     }
 

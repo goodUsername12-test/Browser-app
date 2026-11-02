@@ -1,3 +1,4 @@
+// background script: ad blocking, header cleanup, proxy routing and the native port
 const NATIVE_APP = "fable";
 
 let config = {
@@ -138,10 +139,45 @@ function superProxyInfo() {
 
 let rules = {
   blockedDomains: new Set(),
-  blockedSubstrings: [],
+  blockedSubstrings: indexSubstrings([]),
   exceptionDomains: new Set(),
-  exceptionSubstrings: [],
+  exceptionSubstrings: indexSubstrings([]),
 };
+
+// big lists get bucketed by their first two chars so we don't scan every rule per request
+function indexSubstrings(list) {
+  const all = Array.isArray(list) ? list.filter((s) => typeof s === "string" && s.length > 0) : [];
+  if (all.length < 64) return { all, map: null, short: all };
+  const map = new Map();
+  const short = [];
+  for (const s of all) {
+    if (s.length < 2) {
+      short.push(s);
+      continue;
+    }
+    const key = s.slice(0, 2);
+    const bucket = map.get(key);
+    if (bucket) bucket.push(s);
+    else map.set(key, [s]);
+  }
+  return { all, map, short };
+}
+
+function containsAny(url, index) {
+  for (const s of index.short) {
+    if (url.includes(s)) return true;
+  }
+  const map = index.map;
+  if (!map) return false;
+  for (let i = 0; i < url.length - 1; i++) {
+    const bucket = map.get(url.slice(i, i + 2));
+    if (!bucket) continue;
+    for (const s of bucket) {
+      if (url.startsWith(s, i)) return true;
+    }
+  }
+  return false;
+}
 
 let port = null;
 
@@ -169,9 +205,9 @@ function onNativeMessage(msg) {
   } else if (msg.type === "rules") {
     rules = {
       blockedDomains: new Set(msg.blockedDomains || []),
-      blockedSubstrings: msg.blockedSubstrings || [],
+      blockedSubstrings: indexSubstrings(msg.blockedSubstrings),
       exceptionDomains: new Set(msg.exceptionDomains || []),
-      exceptionSubstrings: msg.exceptionSubstrings || [],
+      exceptionSubstrings: indexSubstrings(msg.exceptionSubstrings),
     };
   } else if (msg.type === "reader-toggle") {
     broadcastToActiveTab({ type: "reader-toggle" });
@@ -217,19 +253,14 @@ function shouldBlock(url, documentUrl) {
   if (!host) return false;
 
   if (matchesDomain(host, rules.exceptionDomains)) return false;
-  for (const s of rules.exceptionSubstrings) {
-    if (url.includes(s)) return false;
-  }
+  if (containsAny(url, rules.exceptionSubstrings)) return false;
 
   const docHost = documentUrl ? hostOf(documentUrl) : null;
   if (matchesDomain(host, rules.blockedDomains)) {
     if (isSameSite(host, docHost)) return false;
     return true;
   }
-  for (const s of rules.blockedSubstrings) {
-    if (url.includes(s)) return true;
-  }
-  return false;
+  return containsAny(url, rules.blockedSubstrings);
 }
 
 function onBeforeRequest(details) {

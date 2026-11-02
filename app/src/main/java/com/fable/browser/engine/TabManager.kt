@@ -23,6 +23,7 @@ import org.mozilla.geckoview.GeckoSessionSettings
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// tab manager
 @Singleton
 class TabManager @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
@@ -408,7 +409,9 @@ class TabManager @Inject constructor(
             }
         }
         if (tab.isIncognito) {
-            if (!tab.isSuper) tab.contextId?.let { engineManager.clearContainer(it) }
+            if (!tab.isSuper && remaining.none { it.contextId == tab.contextId }) {
+                tab.contextId?.let { engineManager.clearContainer(it) }
+            }
             if (remaining.none { it.isIncognito }) {
                 sharedIncognitoContext = null
                 fingerprintShield.resetSession()
@@ -459,10 +462,8 @@ class TabManager @Inject constructor(
             fingerprintShield.resetSession()
             return
         }
-        incognitoTabs.forEach { tab ->
-            tab.contextId?.let { engineManager.clearContainer(it) }
-            tab.close()
-        }
+        incognitoTabs.mapNotNull { it.contextId }.distinct().forEach { engineManager.clearContainer(it) }
+        incognitoTabs.forEach { it.close() }
         _tabs.value = _tabs.value.filter { !it.isIncognito }
         sharedIncognitoContext = null
         fingerprintShield.resetSession()

@@ -9,6 +9,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+// main thread freeze detection
 object FreezeWatchdog {
     private const val PING_MS = 1_000L
     private const val FREEZE_MS = 2_500L

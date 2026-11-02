@@ -1,3 +1,4 @@
+// fingerprint shield, injected at document_start into every frame
 (() => {
   if (globalThis.__fableShieldRan) return;
   globalThis.__fableShieldRan = true;
@@ -307,7 +308,8 @@
       }
     }
 
-    function shieldWebGl(vendor, renderer, limits) {
+    // webgl: name, limits and readPixels noise can each be turned off for games
+    function shieldWebGl(vendor, renderer, limits, noise) {
       const caps = {
         0x0d33: "maxTexture",
         0x84e8: "maxRenderbuffer",
@@ -321,12 +323,12 @@
         const P = proto(name);
         if (!P) continue;
         const orig = desc(P, "getParameter") && desc(P, "getParameter").value;
-        if (orig) {
+        if (orig && (vendor !== null || renderer !== null || limits)) {
           defValue(P, "getParameter", function (pname) {
             const value = orig.apply(this, arguments);
             try {
-              if (pname === 0x9245) return vendor;
-              if (pname === 0x9246) return renderer;
+              if (pname === 0x9245 && vendor !== null) return vendor;
+              if (pname === 0x9246 && renderer !== null) return renderer;
               if (limits) {
                 const key = caps[pname];
                 if (key && typeof value === "number" && limits[key]) return Math.min(value, limits[key]);
@@ -341,7 +343,7 @@
           });
         }
         const origRead = desc(P, "readPixels") && desc(P, "readPixels").value;
-        if (origRead) {
+        if (origRead && noise !== false) {
           defValue(P, "readPixels", function () {
             const r = origRead.apply(this, arguments);
             try {
@@ -352,7 +354,7 @@
                   const h = mix(SEED, k + 31);
                   const i = (h % Math.floor(out.length / 4)) * 4 + ((h >>> 9) % 3);
                   const v = out[i];
-                  if (typeof v === "number" && v > 0 && v < 255) out[i] = v + ((h >>> 14) & 1 ? 1 : -1);
+                  if (typeof v === "number" && v > 1 && v < 255 && (v | 0) === v) out[i] = v + ((h >>> 14) & 1 ? 1 : -1);
                 }
               }
             } catch (e) {
@@ -873,7 +875,15 @@
           constant(W, "devicePixelRatio", S.pixelRatio);
         }
         if (hiding("canvas")) shieldCanvas();
-        if (hiding("graphics")) shieldWebGl(S.glVendor, S.glRenderer, S.glLimits || null);
+        if (hiding("graphics")) {
+          const named = hiding("webglName");
+          shieldWebGl(
+            named ? S.glVendor : null,
+            named ? S.glRenderer : null,
+            hiding("webglLimits") ? S.glLimits || null : null,
+            hiding("webglNoise")
+          );
+        }
         if (hiding("audio")) shieldAudio();
         if (hiding("fonts")) shieldFonts();
         if (hiding("rects") && S.rectNoise) shieldRects();
@@ -902,7 +912,7 @@
         constant(NP, "language", "en-US");
         defGet(NP, "languages", () => frozen);
         shieldCanvas();
-        shieldWebGl("Mozilla", "Mozilla", null);
+        shieldWebGl("Mozilla", "Mozilla", null, true);
         shieldAudio();
         shieldWebRtc();
         if (TIME_ZONE) shieldTimeZone(TIME_ZONE);

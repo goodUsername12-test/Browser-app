@@ -21,6 +21,7 @@ import com.fable.browser.data.model.TabUnloadMode
 import com.fable.browser.data.model.ThemeMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -108,6 +109,9 @@ data class Settings(
     val superDevicePick: String = "",
     val superRandomTimezone: Boolean = true,
     val superReveal: Set<String> = emptySet(),
+    val superGameMode: Boolean = false,
+    val superGpu: String = "",
+    val autoClearCache: Boolean = true,
     val keepSuperTabs: Boolean = false,
     val superProxyEnabled: Boolean = false,
     val superProxyType: SuperProxyType = SuperProxyType.SOCKS5,
@@ -134,6 +138,7 @@ data class Settings(
 
 @Singleton
 class SettingsStore @Inject constructor(@ApplicationContext private val context: Context) {
+    // don't rename keys, people would lose their settings
     private object Keys {
         val SEARCH_ENGINE = stringPreferencesKey("search_engine")
         val HOMEPAGE = stringPreferencesKey("homepage")
@@ -214,6 +219,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val SUPER_DEVICE_RANGE = stringPreferencesKey("super_device_range")
         val SUPER_RANDOM_TZ = booleanPreferencesKey("super_random_tz")
         val SUPER_REVEAL = stringSetPreferencesKey("super_reveal")
+        val SUPER_GAME_MODE = booleanPreferencesKey("super_game_mode")
+        val SUPER_GPU = stringPreferencesKey("super_gpu")
+        val AUTO_CLEAR_CACHE = booleanPreferencesKey("auto_clear_cache")
         val KEEP_SUPER_TABS = booleanPreferencesKey("keep_super_tabs")
         val SUPER_PROXY_ENABLED = booleanPreferencesKey("super_proxy_enabled")
         val SUPER_PROXY_TYPE = stringPreferencesKey("super_proxy_type")
@@ -313,6 +321,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             superDevicePick = p[Keys.SUPER_DEVICE_PICK] ?: "",
             superRandomTimezone = p[Keys.SUPER_RANDOM_TZ] ?: true,
             superReveal = p[Keys.SUPER_REVEAL] ?: emptySet(),
+            superGameMode = p[Keys.SUPER_GAME_MODE] ?: false,
+            superGpu = p[Keys.SUPER_GPU] ?: "",
+            autoClearCache = p[Keys.AUTO_CLEAR_CACHE] ?: true,
             keepSuperTabs = p[Keys.KEEP_SUPER_TABS] ?: false,
             superProxyEnabled = p[Keys.SUPER_PROXY_ENABLED] ?: false,
             superProxyType = enum(p[Keys.SUPER_PROXY_TYPE], SuperProxyType.SOCKS5),
@@ -328,7 +339,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             gameTouchFix = p[Keys.GAME_TOUCH_FIX] ?: true,
             fpTouch = p[Keys.FP_TOUCH] ?: false
         )
-    }
+    }.distinctUntilChanged()
 
     private inline fun <reified T : Enum<T>> enum(name: String?, default: T): T =
         name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
@@ -411,6 +422,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setKeepIncognitoTabs(v: Boolean) = set(Keys.KEEP_INCOGNITO_TABS, v)
     suspend fun setSuperDeviceRange(v: SuperDeviceRange) = set(Keys.SUPER_DEVICE_RANGE, v.name)
     suspend fun setSuperRandomTimezone(v: Boolean) = set(Keys.SUPER_RANDOM_TZ, v)
+    suspend fun setSuperGameMode(v: Boolean) = set(Keys.SUPER_GAME_MODE, v)
+    suspend fun setSuperGpu(v: String) = set(Keys.SUPER_GPU, v)
+    suspend fun setAutoClearCache(v: Boolean) = set(Keys.AUTO_CLEAR_CACHE, v)
     suspend fun setSuperHidden(item: String, hidden: Boolean) {
         context.dataStore.edit {
             val now = it[Keys.SUPER_REVEAL] ?: emptySet()

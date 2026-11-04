@@ -1,0 +1,130 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'desktop-v*' ]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/build-windows.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  PROJECT: desktop/src/FableBrowser/FableBrowser.csproj
+  SELFTEST: desktop/tests/FableBrowser.SelfTest/FableBrowser.SelfTest.csproj
+
+jobs:
+  check:
+    name: Build and self-test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore desktop/FableBrowser.slnx
+
+      - name: Build
+        run: dotnet build desktop/FableBrowser.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Self-test
+        run: dotnet run --project ${{ env.SELFTEST }} -c Release --no-build
+
+  publish:
+    name: Publish ${{ matrix.arch }}
+    needs: check
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ x64, arm64 ]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          $ref = '${{ github.ref }}'
+          $version = if ($ref -like 'refs/tags/desktop-v*') { '${{ github.ref_name }}'.Substring(9) } else { '1.0.${{ github.run_number }}' }
+          $rid = 'win-${{ matrix.arch }}'
+          $common = @(
+            '${{ env.PROJECT }}', '-c', 'Release', '-r', $rid,
+            "-p:Version=$version",
+            '-p:PublishSingleFile=true',
+            '-p:PublishReadyToRun=true',
+            '-p:DebugType=none',
+            '-p:ContinuousIntegrationBuild=true'
+          )
+          dotnet publish @common --self-contained false -o "dist/FableBrowser-$rid"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish @common --self-contained true -o "dist/FableBrowser-$rid-standalone"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($dir in Get-ChildItem dist -Directory) {
+            $files = @(Get-ChildItem $dir.FullName -File)
+            if (-not ($files | Where-Object Name -eq 'FableBrowser.exe')) { throw "FableBrowser.exe missing in $($dir.Name)" }
+            $lines = $files | Get-FileHash -Algorithm SHA256 | ForEach-Object { '{0}  {1}' -f $_.Hash.ToLowerInvariant(), (Split-Path $_.Path -Leaf) }
+            Set-Content -Path (Join-Path $dir.FullName 'SHA256SUMS.txt') -Value $lines
+            $size = ($files | Measure-Object Length -Sum).Sum / 1MB
+            Write-Host ('{0}: {1:N1} MB in {2} files' -f $dir.Name, $size, $files.Count)
+          }
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: FableBrowser-win-${{ matrix.arch }}
+          path: dist/FableBrowser-win-${{ matrix.arch }}
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: FableBrowser-win-${{ matrix.arch }}-standalone
+          path: dist/FableBrowser-win-${{ matrix.arch }}-standalone
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p upload
+          for dir in artifacts/*/; do
+            name="$(basename "$dir")"
+            (cd "$dir" && zip -qr "$GITHUB_WORKSPACE/upload/$name.zip" .)
+          done
+          cd upload
+          sha256sum *.zip > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" *.zip SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Fable Browser for Windows ${GITHUB_REF_NAME#desktop-v}" \
+            --notes "FableBrowser-win-x64 needs the .NET 10 Desktop Runtime. The -standalone builds need nothing extra. All builds use the Microsoft Edge WebView2 Runtime that ships with Windows 10 and 11."

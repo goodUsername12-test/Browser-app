@@ -1,0 +1,20 @@
+:root { --bg: #141218; --card: #1f1b24; --card-hover: #2a2531; --text: #ece6f0; --muted: #a59cb0; --accent: #a57bff; --ring: #6d36c2; }
+@media (prefers-color-scheme: light) {
+  :root { --bg: #fdf8fd; --card: #f1ecf4; --card-hover: #e6dfea; --text: #1d1b20; --muted: #625b71; --accent: #6d36c2; --ring: #a57bff; }
+}
+body.incognito { --bg: #121016; --card: #1d1824; --card-hover: #282031; --accent: #b794ff; }
+body.super { --bg: #0f0c14; --card: #1b1424; --card-hover: #271c35; --accent: #ff7417; --ring: #ff2e7e; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 15px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; display: flex; align-items: flex-start; justify-content: center; }
+main { width: min(720px, 92vw); margin-top: 12vh; text-align: center; }
+.logo { width: 96px; height: 96px; border-radius: 22px; box-shadow: 0 8px 40px rgba(109, 54, 194, 0.35); }
+h1 { font-weight: 600; font-size: 28px; margin: 18px 0 6px; letter-spacing: 0.2px; }
+#note { color: var(--muted); margin: 0 auto 22px; max-width: 520px; line-height: 1.45; min-height: 1px; }
+#query { width: 100%; padding: 15px 22px; border-radius: 28px; border: 1px solid transparent; outline: none; background: var(--card); color: var(--text); font: inherit; font-size: 16px; transition: border-color 0.15s, background 0.15s; }
+#query:focus { border-color: var(--ring); background: var(--card-hover); }
+#tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 12px; margin-top: 30px; }
+.tile { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 8px; border-radius: 16px; background: var(--card); color: var(--text); text-decoration: none; transition: background 0.15s, transform 0.15s; }
+.tile:hover { background: var(--card-hover); transform: translateY(-1px); }
+.badge { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; font-size: 18px; color: #fff; }
+.label { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }

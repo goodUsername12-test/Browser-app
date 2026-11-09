@@ -23,7 +23,10 @@ jobs:
   apply:
     if: >-
       github.event.issue.number == 2 &&
-      github.event.comment.user.login == github.repository_owner &&
+      (
+        github.event.comment.user.login == github.repository_owner ||
+        github.event.comment.user.login == 'dust-agent[bot]'
+      ) &&
       startsWith(github.event.comment.body, 'FABLE-APPLY ')
     runs-on: ubuntu-24.04
     timeout-minutes: 10

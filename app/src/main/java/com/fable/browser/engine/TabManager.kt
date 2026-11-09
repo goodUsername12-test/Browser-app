@@ -37,7 +37,8 @@ class TabManager @Inject constructor(
     private val tabPersistence: TabPersistenceRepository,
     private val historyRepository: com.fable.browser.data.repo.HistoryRepository,
     private val promptBridge: PromptBridge,
-    private val settingsStore: SettingsStore
+    private val settingsStore: SettingsStore,
+    private val passwordManager: PasswordManager
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -80,6 +81,7 @@ class TabManager @Inject constructor(
 
     private companion object {
         const val SUPER_WAIT_MS = 6000L
+        const val UNDO_WINDOW_MS = 5000L
         const val TRIM_RUNNING_LOW = 10
         const val TRIM_RUNNING_CRITICAL = 15
         const val KILL_LOOP_WINDOW_MS = 60_000L
@@ -164,6 +166,30 @@ class TabManager @Inject constructor(
         }
         if (settings.incognitoLock) _incognitoLocked.value = true
         toSelect?.let { selectTab(it.id) }
+    }
+
+    fun exportNormalTabs(): List<SavedTab> {
+        val activeId = _activeTabId.value
+        return _tabs.value.filter { !it.isIncognito }.mapIndexed { index, tab ->
+            SavedTab(url = tab.url.value, title = tab.title.value, position = index, isActive = tab.id == activeId)
+        }.filter { it.url.startsWith("http", ignoreCase = true) }
+    }
+
+    fun importTabs(entries: List<SavedTab>): Int {
+        val existing = _tabs.value.filter { !it.isIncognito }.map { it.url.value }.toHashSet()
+        var count = 0
+        entries.sortedBy { it.position }.forEach { entry ->
+            if (!entry.url.startsWith("http", ignoreCase = true) || entry.url in existing) return@forEach
+            val tab = createTab(incognito = false, open = false)
+            tab.updateTitle(entry.title)
+            tab.updateUrl(entry.url)
+            tab.markUnloaded()
+            tab.lastAccessed = System.currentTimeMillis() - 60_000L
+            existing.add(entry.url)
+            count++
+        }
+        if (count > 0) schedulePersist()
+        return count
     }
 
     fun persist() {
@@ -362,6 +388,7 @@ class TabManager @Inject constructor(
         tab.touch()
         _activeTabId.value = tab.id
         _isIncognitoMode.value = tab.isIncognito
+        passwordManager.privateActive = tab.isIncognito
         if (tab.session.isOpen) {
             tab.session.setActive(true)
             setPriority(tab, high = true)
@@ -397,10 +424,17 @@ class TabManager @Inject constructor(
     }
 
     fun closeTab(id: String) {
+        commitPendingClose()
         val tab = tab(id) ?: return
         val remaining = _tabs.value.filter { it.id != id }
         _tabs.value = remaining
+        releaseClosed(tab)
+        selectAfterClose(tab, remaining)
+        if (remaining.isEmpty()) openTab(incognito = false)
+    }
 
+    private fun releaseClosed(tab: BrowserTab) {
+        val remaining = _tabs.value
         if (tab.isSuper) {
             if (remaining.none { it.contextId == tab.contextId }) tab.contextId?.let { engineManager.clearContainer(it) }
             if (remaining.none { it.isSuper }) {
@@ -419,8 +453,10 @@ class TabManager @Inject constructor(
         }
         tab.close()
         schedulePersist()
+    }
 
-        if (_activeTabId.value == id) {
+    private fun selectAfterClose(tab: BrowserTab, remaining: List<BrowserTab>) {
+        if (_activeTabId.value == tab.id) {
             val sameMode = remaining.filter { it.isIncognito == tab.isIncognito }
             val next = sameMode.maxByOrNull { it.lastAccessed } ?: remaining.maxByOrNull { it.lastAccessed }
             if (next != null) {
@@ -431,7 +467,71 @@ class TabManager @Inject constructor(
                 _isIncognitoMode.value = false
             }
         }
-        if (remaining.isEmpty()) openTab(incognito = false)
+    }
+
+    data class ClosedTab(
+        val tab: BrowserTab,
+        val index: Int,
+        val wasActive: Boolean,
+        val replacementId: String?
+    )
+
+    private val _recentlyClosed = MutableStateFlow<ClosedTab?>(null)
+    val recentlyClosed: StateFlow<ClosedTab?> = _recentlyClosed.asStateFlow()
+    private var undoJob: Job? = null
+
+    fun closeTabWithUndo(id: String) {
+        commitPendingClose()
+        val tab = tab(id) ?: return
+        val index = _tabs.value.indexOfFirst { it.id == id }
+        val wasActive = _activeTabId.value == id
+        val remaining = _tabs.value.filter { it.id != id }
+        _tabs.value = remaining
+        if (tab.session.isOpen) runCatching { tab.session.setActive(false) }
+        selectAfterClose(tab, remaining)
+        val replacement = if (remaining.isEmpty()) openTab(incognito = false).id else null
+        schedulePersist()
+        _recentlyClosed.value = ClosedTab(tab, index, wasActive, replacement)
+        undoJob?.cancel()
+        undoJob = scope.launch {
+            delay(UNDO_WINDOW_MS)
+            commitPendingClose()
+        }
+    }
+
+    fun undoClose(): Boolean {
+        val closed = _recentlyClosed.value ?: return false
+        undoJob?.cancel()
+        undoJob = null
+        _recentlyClosed.value = null
+        val list = _tabs.value.toMutableList()
+        list.add(closed.index.coerceIn(0, list.size), closed.tab)
+        _tabs.value = list
+        if (closed.wasActive || activeTab == null) {
+            activate(closed.tab)
+            resumeIfEvicted(closed.tab)
+        }
+        closed.replacementId?.let { rid ->
+            val extra = tab(rid)
+            if (extra != null && (extra.url.value.isBlank() || extra.url.value.startsWith("about:"))) {
+                _tabs.value = _tabs.value.filter { it.id != rid }
+                extra.close()
+            }
+        }
+        schedulePersist()
+        return true
+    }
+
+    fun dismissUndo() {
+        commitPendingClose()
+    }
+
+    private fun commitPendingClose() {
+        val closed = _recentlyClosed.value ?: return
+        undoJob?.cancel()
+        undoJob = null
+        _recentlyClosed.value = null
+        releaseClosed(closed.tab)
     }
 
     fun closeAllTabs(incognito: Boolean) {
@@ -449,6 +549,7 @@ class TabManager @Inject constructor(
     }
 
     fun wipeIncognito() {
+        commitPendingClose()
         promptBridge.dismissAll()
         _incognitoLocked.value = false
         autoWipeJob?.cancel()

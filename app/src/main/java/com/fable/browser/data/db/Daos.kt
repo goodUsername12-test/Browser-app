@@ -26,6 +26,12 @@ interface BookmarkDao {
     @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
     fun allBookmarks(): Flow<List<Bookmark>>
 
+    @Query("SELECT * FROM bookmarks ORDER BY createdAt ASC")
+    suspend fun allBookmarksOnce(): List<Bookmark>
+
+    @Query("SELECT * FROM bookmark_folders ORDER BY id ASC")
+    suspend fun allFoldersOnce(): List<BookmarkFolder>
+
     @Query("SELECT * FROM bookmarks WHERE title LIKE '%' || :query || '%' OR url LIKE '%' || :query || '%' ORDER BY createdAt DESC")
     fun search(query: String): Flow<List<Bookmark>>
 
@@ -92,6 +98,12 @@ interface HistoryDao {
     @Query("DELETE FROM history")
     suspend fun clearAll()
 
+    @Query("SELECT * FROM history ORDER BY visitedAt ASC")
+    suspend fun allOnce(): List<HistoryEntry>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM history WHERE url = :url AND visitedAt = :visitedAt)")
+    suspend fun hasVisit(url: String, visitedAt: Long): Boolean
+
     @Query("SELECT * FROM history WHERE url = :url ORDER BY visitedAt DESC LIMIT 1")
     suspend fun lastVisitOf(url: String): HistoryEntry?
 
@@ -121,6 +133,12 @@ interface DownloadDao {
 
     @Query("SELECT * FROM downloads WHERE id = :id")
     suspend fun byId(id: Long): DownloadEntry?
+
+    @Query("SELECT * FROM downloads ORDER BY startedAt ASC")
+    suspend fun allOnce(): List<DownloadEntry>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM downloads WHERE url = :url AND startedAt = :startedAt)")
+    suspend fun hasEntry(url: String, startedAt: Long): Boolean
 }
 
 @Dao
@@ -139,6 +157,9 @@ interface SavedTabDao {
 interface SitePermissionDao {
     @Query("SELECT * FROM site_permissions ORDER BY origin")
     fun all(): Flow<List<SitePermission>>
+
+    @Query("SELECT * FROM site_permissions ORDER BY origin")
+    suspend fun allOnce(): List<SitePermission>
 
     @Query("SELECT * FROM site_permissions WHERE origin = :origin")
     suspend fun forOrigin(origin: String): List<SitePermission>

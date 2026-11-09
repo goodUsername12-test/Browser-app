@@ -15,6 +15,12 @@ let config = {
   isolateIncognitoTabs: true,
   sessionSeed: 1,
   supers: [],
+  incognitoUa: "",
+  trimReferrer: true,
+  stripClientHints: true,
+  sendDnt: true,
+  adBlockCosmetic: true,
+  adBlockAllow: [],
   superProxyEnabled: false,
   superProxyType: "socks5",
   superProxyHost: "",
@@ -44,6 +50,8 @@ function contentConfig() {
     utc: config.forceUtc !== false,
     sessionSeed: Number(config.sessionSeed) || 1,
     supers: Array.isArray(config.supers) ? config.supers : [],
+    incognitoUa: String(config.incognitoUa || ""),
+    dnt: config.sendDnt !== false,
     diag: config.diag === true,
   };
 }
@@ -104,7 +112,10 @@ function superFor(details) {
   const headers = details.requestHeaders;
   if (!headers) return null;
   for (const h of headers) {
-    if (h.name && h.name.toLowerCase() === "user-agent") return superByUa.get(h.value) || null;
+    if (h.name && h.name.toLowerCase() === "user-agent") {
+      if (config.incognitoUa && h.value === config.incognitoUa) return null;
+      return superByUa.get(h.value) || null;
+    }
   }
   return null;
 }
@@ -179,6 +190,101 @@ function containsAny(url, index) {
   return false;
 }
 
+let cosmetic = {
+  generic: [],
+  genericCss: "",
+  domains: new Map(),
+  exceptions: new Map(),
+  genericHide: new Set(),
+};
+let allowSites = new Set();
+
+function validSelector(sel) {
+  try {
+    document.createDocumentFragment().querySelector(sel);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function cssFor(selectors) {
+  const out = [];
+  for (let i = 0; i < selectors.length; i += 400) {
+    out.push(selectors.slice(i, i + 400).join(",\n") + "{display:none!important}");
+  }
+  return out.join("\n");
+}
+
+function buildCosmetic(msg) {
+  const generic = (Array.isArray(msg.cosmeticGeneric) ? msg.cosmeticGeneric : []).filter(
+    (s) => typeof s === "string" && validSelector(s)
+  );
+  const domains = new Map();
+  const rawDomains = msg.cosmeticDomains && typeof msg.cosmeticDomains === "object" ? msg.cosmeticDomains : {};
+  for (const d of Object.keys(rawDomains)) {
+    const list = Array.isArray(rawDomains[d]) ? rawDomains[d] : [];
+    if (list.length) domains.set(d, list);
+  }
+  const exceptions = new Map();
+  const rawExc = msg.cosmeticExceptions && typeof msg.cosmeticExceptions === "object" ? msg.cosmeticExceptions : {};
+  for (const d of Object.keys(rawExc)) {
+    if (Array.isArray(rawExc[d])) exceptions.set(d, new Set(rawExc[d]));
+  }
+  cosmetic = {
+    generic,
+    genericCss: cssFor(generic),
+    domains,
+    exceptions,
+    genericHide: new Set(Array.isArray(msg.genericHideDomains) ? msg.genericHideDomains : []),
+  };
+}
+
+function hostChain(host) {
+  const out = [];
+  let h = host;
+  while (h && h.indexOf(".") !== -1) {
+    out.push(h);
+    h = h.substring(h.indexOf(".") + 1);
+  }
+  return out;
+}
+
+function adBlockOn(incognito) {
+  return incognito ? config.adBlockIncognito !== false : config.adBlockEnabled !== false;
+}
+
+function siteAllowed(host) {
+  return !!host && allowSites.size > 0 && matchesDomain(host, allowSites);
+}
+
+function cosmeticCss(host, incognito, top) {
+  if (!host || config.adBlockCosmetic === false || !adBlockOn(incognito) || siteAllowed(host)) return "";
+  const chain = hostChain(host);
+  const excluded = new Set();
+  const specific = [];
+  for (const h of chain) {
+    const exc = cosmetic.exceptions.get(h);
+    if (exc) for (const x of exc) excluded.add(x);
+  }
+  for (const h of chain) {
+    const list = cosmetic.domains.get(h);
+    if (!list) continue;
+    for (const sel of list) {
+      if (!excluded.has(sel) && validSelector(sel)) specific.push(sel);
+    }
+  }
+  let css = specific.length ? cssFor(specific) : "";
+  if (top !== false && !matchesDomain(host, cosmetic.genericHide)) {
+    if (excluded.size === 0) css = css ? cosmetic.genericCss + "\n" + css : cosmetic.genericCss;
+    else {
+      const generic = cssFor(cosmetic.generic.filter((sel) => !excluded.has(sel)));
+      css = css ? generic + "\n" + css : generic;
+    }
+  }
+  return css;
+}
+
 let port = null;
 
 function connectNative() {
@@ -199,6 +305,7 @@ function onNativeMessage(msg) {
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "config") {
     config = Object.assign(config, msg);
+    allowSites = new Set((Array.isArray(config.adBlockAllow) ? config.adBlockAllow : []).map((h) => String(h).toLowerCase().replace(/^www\./, "")));
     rebuildSupers();
     registerListeners();
     applyContentScripts(false);
@@ -209,6 +316,11 @@ function onNativeMessage(msg) {
       exceptionDomains: new Set(msg.exceptionDomains || []),
       exceptionSubstrings: indexSubstrings(msg.exceptionSubstrings),
     };
+    try {
+      buildCosmetic(msg);
+    } catch (e) {
+      postNative({ type: "diag", text: "cosmetic build failed: " + e });
+    }
   } else if (msg.type === "reader-toggle") {
     broadcastToActiveTab({ type: "reader-toggle" });
   }
@@ -264,9 +376,14 @@ function shouldBlock(url, documentUrl) {
 }
 
 function onBeforeRequest(details) {
-  const on = details.incognito ? config.adBlockIncognito !== false : config.adBlockEnabled !== false;
-  if (!on) return {};
+  if (!adBlockOn(details.incognito)) return {};
   if (details.type === "main_frame") return {};
+  if (allowSites.size > 0) {
+    const top = details.frameAncestors && details.frameAncestors.length
+      ? details.frameAncestors[details.frameAncestors.length - 1].url
+      : details.documentUrl || details.originUrl;
+    if (siteAllowed(hostOf(top))) return {};
+  }
   if (shouldBlock(details.url, details.documentUrl || details.originUrl)) {
     if (details.tabId >= 0) {
       browser.tabs
@@ -309,7 +426,7 @@ function onBeforeSendHeaders(details) {
       continue;
     }
 
-    if (CLIENT_HINT_HEADERS.has(name)) continue;
+    if (CLIENT_HINT_HEADERS.has(name) && (sup ? hides(sup, "hints") : config.stripClientHints !== false)) continue;
     if (hides(sup, "browser") && name.startsWith("sec-ch-ua")) continue;
 
     if (hides(sup, "languages") && name === "accept-language") {
@@ -317,7 +434,7 @@ function onBeforeSendHeaders(details) {
       continue;
     }
 
-    if (name === "referer" && !isSameSite(target, docHost)) {
+    if (name === "referer" && (sup ? hides(sup, "referrer") : config.trimReferrer !== false) && !isSameSite(target, docHost)) {
       const origin = (() => {
         try {
           return new URL(header.value).origin + "/";
@@ -338,7 +455,7 @@ function onBeforeSendHeaders(details) {
 
   if (sup) {
     if (hides(sup, "dnt") && sup.doNotTrack && !sawDnt) headers.push({ name: "DNT", value: "1" });
-  } else if (shield && !sawDnt) {
+  } else if (shield && !sawDnt && config.sendDnt !== false) {
     headers.push({ name: "DNT", value: "1" });
   }
   if (saver && !sawSaver) headers.push({ name: "Save-Data", value: "on" });
@@ -484,6 +601,17 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === "fable-diag") {
     if (config.diag) postNative({ type: "diag", text: String(msg.text || "").slice(0, 600) });
     return undefined;
+  }
+  if (msg && msg.type === "fable-cosmetic") {
+    const tab = sender && sender.tab;
+    const host = String(msg.host || "").toLowerCase().replace(/^www\./, "");
+    let top = null;
+    try {
+      top = tab && tab.url ? hostOf(tab.url) : null;
+    } catch (e) {
+    }
+    if (top && siteAllowed(top)) return Promise.resolve({ css: "" });
+    return Promise.resolve({ css: cosmeticCss(host, !!(tab && tab.incognito), msg.top !== false) });
   }
   if (msg && msg.type === "fable-get-config") {
     return Promise.resolve({

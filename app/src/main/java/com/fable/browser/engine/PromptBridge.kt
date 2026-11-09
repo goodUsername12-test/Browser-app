@@ -58,6 +58,25 @@ sealed interface FablePrompt {
         override val onDismiss: () -> Unit
     ) : FablePrompt
 
+    data class SaveLogin(
+        override val title: String,
+        val host: String,
+        val username: String,
+        val password: String,
+        val update: Boolean,
+        val onSave: (username: String, password: String) -> Unit,
+        val onNever: () -> Unit,
+        override val onDismiss: () -> Unit
+    ) : FablePrompt
+
+    data class SelectLogin(
+        override val title: String,
+        val host: String,
+        val accounts: List<LoginChoice>,
+        val onPick: (Int) -> Unit,
+        override val onDismiss: () -> Unit
+    ) : FablePrompt
+
     data class IncognitoDownload(
         override val title: String,
         val fileName: String,
@@ -67,6 +86,8 @@ sealed interface FablePrompt {
 }
 
 data class ChoiceOption(val id: String, val label: String, val selected: Boolean)
+
+data class LoginChoice(val label: String, val detail: String)
 
 @Singleton
 class PromptBridge @Inject constructor() {

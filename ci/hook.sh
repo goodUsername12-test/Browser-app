@@ -195,6 +195,45 @@ timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://www.w
 sleep 20; step "second super incognito tab (wikipedia)"; shot 9-super-second
 adb logcat -d -v brief -s FableShield:* > "$ART/super.txt" 2>/dev/null || true
 
+log "dust.tt sign-in check in normal, incognito and super incognito"
+DUST=""
+adb logcat -d -v brief > "$ART/logcat-before-dust.txt" 2>/dev/null || true
+for mode in normal incognito super; do
+  extra=""
+  [ "$mode" = "incognito" ] && extra="--ez fable_incognito true"
+  [ "$mode" = "super" ] && extra="--ez fable_super true"
+  adb logcat -c
+  timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://dust.tt/" $extra -n "$ACT" >> "$ART/start.txt" 2>&1
+  sleep 30; shot "10-dust-$mode"
+  tapped="no"
+  for label in "Sign in" "Log in" "Try for free"; do
+    if tap_text "$label"; then tapped="$label"; break; fi
+  done
+  sleep 15; shot "11-dust-$mode-after-tap"
+  cp "$ART/ui.xml" "$ART/dust-$mode-ui.xml" 2>/dev/null || true
+  adb logcat -d -v brief > "$ART/dust-$mode.txt" 2>/dev/null || true
+  nav="$(grep -E "FableNav" "$ART/dust-$mode.txt" | sed -E 's/^.*FableNav[^:]*: //' | cut -c1-160 | tail -n 6 | tr '\n' ' ')"
+  errs="$(grep -E "GeckoConsole|JavaScript (Error|error)|JavaScript Warning: \"(TypeError|ReferenceError)" "$ART/dust-$mode.txt" | grep -viE "CSS|downloadable font|Content-Security" | sed -E 's/^[^:]*: //' | cut -c1-220 | sort -u | head -n 8)"
+  webnodes="$(grep -o 'text="[^"]*"' "$ART/dust-$mode-ui.xml" 2>/dev/null | grep -ciE 'sign in|try for free|log in')"
+  step "dust.tt $mode: tapped=$tapped, web text nodes=$webnodes"
+  DUST="$DUST"$'\n'"[$mode] tapped: $tapped | nav: $nav"$'\n'"$errs"
+done
+log "Close a tab and undo"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com/?undo=1" -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 12
+UNDO="tabs button not found"
+if tap_desc "Show tabs"; then
+  sleep 3
+  if tap_desc "Close tab"; then
+    sleep 1; shot 12-tab-closed
+    if tap_text "Undo"; then UNDO="undo bar shown and tapped"; else UNDO="undo bar not found"; fi
+    sleep 2; shot 13-after-undo
+  else
+    UNDO="close button not found"
+  fi
+  adb shell input keyevent KEYCODE_BACK; sleep 2
+fi
+step "close tab and undo: $UNDO"
 log "Fast app switching x5"
 for n in 1 2 3 4 5; do
   adb shell input keyevent KEYCODE_HOME; sleep 1
@@ -203,7 +242,7 @@ done
 sleep 5; step "fast app switching x5"
 FREEZE="$(adb shell run-as "$PKG" cat files/freeze_report.txt 2>/dev/null | head -c 6000)"
 
-adb logcat -d -v brief > "$ART/logcat.txt" 2>/dev/null
+{ cat "$ART/logcat-before-dust.txt" "$ART"/dust-*.txt 2>/dev/null; adb logcat -d -v brief 2>/dev/null; } > "$ART/logcat.txt"
 SUPERDIAG="$( { cat "$ART/super.txt" 2>/dev/null; grep -E "FableShield" "$ART/logcat.txt"; } | grep -E "FableShield" | sort -u | cut -c1-900 | head -n 24)"
 adb logcat -d -b events -v brief 2>/dev/null | grep -E "am_anr|am_crash|am_proc_died.*fable" > "$ART/events.txt" || true
 {
@@ -228,6 +267,10 @@ adb logcat -d -b events -v brief 2>/dev/null | grep -E "am_anr|am_crash|am_proc_
   echo "Freeze detector:"
   echo '```'
   if [ -n "$FREEZE" ]; then echo "$FREEZE"; else echo "no freeze recorded"; fi
+  echo '```'
+  echo "dust.tt check:"
+  echo '```'
+  echo "$DUST" | cut -c1-400 | head -n 60
   echo '```'
   echo "Super incognito diagnostics:"
   echo '```'

@@ -22,6 +22,7 @@ import com.fable.browser.data.model.ThemeMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -122,6 +123,18 @@ data class Settings(
     val incognitoAdBlock: Boolean = true,
     val incognitoTrackingProtection: Boolean = true,
     val incognitoStripParams: Boolean = true,
+    val incognitoRandomUserAgent: Boolean = false,
+    val incognitoTrimReferrer: Boolean = true,
+    val incognitoStripClientHints: Boolean = true,
+    val incognitoSendDnt: Boolean = true,
+    val passwordSave: Boolean = true,
+    val passwordAutofill: Boolean = true,
+    val passwordIncognito: Boolean = false,
+    val passwordNeverSites: Set<String> = emptySet(),
+    val optimizerEnabled: Boolean = true,
+    val adBlockCosmetic: Boolean = true,
+    val adBlockAutoUpdate: Boolean = true,
+    val adBlockAllowSites: Set<String> = emptySet(),
     val incognitoGpc: Boolean = true,
     val incognitoFingerprintProtection: Boolean = true,
     val gameTouchFix: Boolean = true,
@@ -233,6 +246,18 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val INCOGNITO_AD_BLOCK = booleanPreferencesKey("incognito_ad_block")
         val INCOGNITO_TP = booleanPreferencesKey("incognito_tracking_protection")
         val INCOGNITO_STRIP = booleanPreferencesKey("incognito_strip_params")
+        val INCOGNITO_RANDOM_UA = booleanPreferencesKey("incognito_random_ua")
+        val INCOGNITO_TRIM_REFERRER = booleanPreferencesKey("incognito_trim_referrer")
+        val INCOGNITO_STRIP_HINTS = booleanPreferencesKey("incognito_strip_client_hints")
+        val INCOGNITO_SEND_DNT = booleanPreferencesKey("incognito_send_dnt")
+        val PASSWORD_SAVE = booleanPreferencesKey("passwords_offer_save")
+        val PASSWORD_AUTOFILL = booleanPreferencesKey("passwords_autofill")
+        val PASSWORD_INCOGNITO = booleanPreferencesKey("passwords_incognito")
+        val PASSWORD_NEVER = stringSetPreferencesKey("passwords_never_sites")
+        val OPTIMIZER = booleanPreferencesKey("optimizer_enabled")
+        val AD_BLOCK_COSMETIC = booleanPreferencesKey("adblock_cosmetic")
+        val AD_BLOCK_AUTO_UPDATE = booleanPreferencesKey("adblock_auto_update")
+        val AD_BLOCK_ALLOW = stringSetPreferencesKey("adblock_allow_sites")
         val INCOGNITO_GPC = booleanPreferencesKey("incognito_gpc")
         val INCOGNITO_FPP = booleanPreferencesKey("incognito_fingerprint_protection")
         val GAME_TOUCH_FIX = booleanPreferencesKey("game_touch_fix")
@@ -334,6 +359,18 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             incognitoAdBlock = p[Keys.INCOGNITO_AD_BLOCK] ?: true,
             incognitoTrackingProtection = p[Keys.INCOGNITO_TP] ?: true,
             incognitoStripParams = p[Keys.INCOGNITO_STRIP] ?: true,
+            incognitoRandomUserAgent = p[Keys.INCOGNITO_RANDOM_UA] ?: false,
+            incognitoTrimReferrer = p[Keys.INCOGNITO_TRIM_REFERRER] ?: true,
+            incognitoStripClientHints = p[Keys.INCOGNITO_STRIP_HINTS] ?: true,
+            incognitoSendDnt = p[Keys.INCOGNITO_SEND_DNT] ?: true,
+            passwordSave = p[Keys.PASSWORD_SAVE] ?: true,
+            passwordAutofill = p[Keys.PASSWORD_AUTOFILL] ?: true,
+            passwordIncognito = p[Keys.PASSWORD_INCOGNITO] ?: false,
+            passwordNeverSites = p[Keys.PASSWORD_NEVER] ?: emptySet(),
+            optimizerEnabled = p[Keys.OPTIMIZER] ?: true,
+            adBlockCosmetic = p[Keys.AD_BLOCK_COSMETIC] ?: true,
+            adBlockAutoUpdate = p[Keys.AD_BLOCK_AUTO_UPDATE] ?: true,
+            adBlockAllowSites = p[Keys.AD_BLOCK_ALLOW] ?: emptySet(),
             incognitoGpc = p[Keys.INCOGNITO_GPC] ?: true,
             incognitoFingerprintProtection = p[Keys.INCOGNITO_FPP] ?: true,
             gameTouchFix = p[Keys.GAME_TOUCH_FIX] ?: true,
@@ -442,6 +479,73 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setIncognitoAdBlock(v: Boolean) = set(Keys.INCOGNITO_AD_BLOCK, v)
     suspend fun setIncognitoTrackingProtection(v: Boolean) = set(Keys.INCOGNITO_TP, v)
     suspend fun setIncognitoStripParams(v: Boolean) = set(Keys.INCOGNITO_STRIP, v)
+    suspend fun setIncognitoRandomUserAgent(v: Boolean) = set(Keys.INCOGNITO_RANDOM_UA, v)
+    suspend fun setIncognitoTrimReferrer(v: Boolean) = set(Keys.INCOGNITO_TRIM_REFERRER, v)
+    suspend fun setIncognitoStripClientHints(v: Boolean) = set(Keys.INCOGNITO_STRIP_HINTS, v)
+    suspend fun setIncognitoSendDnt(v: Boolean) = set(Keys.INCOGNITO_SEND_DNT, v)
+    suspend fun setPasswordSave(v: Boolean) = set(Keys.PASSWORD_SAVE, v)
+    suspend fun setPasswordAutofill(v: Boolean) = set(Keys.PASSWORD_AUTOFILL, v)
+    suspend fun setPasswordIncognito(v: Boolean) = set(Keys.PASSWORD_INCOGNITO, v)
+    suspend fun setOptimizerEnabled(v: Boolean) = set(Keys.OPTIMIZER, v)
+    suspend fun setAdBlockCosmetic(v: Boolean) = set(Keys.AD_BLOCK_COSMETIC, v)
+    suspend fun setAdBlockAutoUpdate(v: Boolean) = set(Keys.AD_BLOCK_AUTO_UPDATE, v)
+    suspend fun setAdBlockAllowed(site: String, allowed: Boolean) {
+        val host = site.trim().lowercase().removePrefix("https://").removePrefix("http://").substringBefore('/').removePrefix("www.")
+        if (host.isEmpty()) return
+        context.dataStore.edit { p ->
+            val current = p[Keys.AD_BLOCK_ALLOW] ?: emptySet()
+            p[Keys.AD_BLOCK_ALLOW] = if (allowed) current + host else current - host
+        }
+    }
+    suspend fun setPasswordNever(site: String, never: Boolean) {
+        context.dataStore.edit {
+            val now = it[Keys.PASSWORD_NEVER] ?: emptySet()
+            it[Keys.PASSWORD_NEVER] = if (never) now + site else now - site
+        }
+    }
+
+    suspend fun exportJson(): org.json.JSONObject {
+        val prefs = context.dataStore.data.first().asMap()
+        val out = org.json.JSONObject()
+        prefs.forEach { (key, value) ->
+            val entry = org.json.JSONObject()
+            when (value) {
+                is Boolean -> entry.put("t", "b").put("v", value)
+                is Int -> entry.put("t", "i").put("v", value)
+                is Long -> entry.put("t", "l").put("v", value)
+                is Float -> entry.put("t", "f").put("v", value.toDouble())
+                is Double -> entry.put("t", "d").put("v", value)
+                is String -> entry.put("t", "s").put("v", value)
+                is Set<*> -> entry.put("t", "ss").put("v", org.json.JSONArray(value.map { it.toString() }))
+                else -> return@forEach
+            }
+            out.put(key.name, entry)
+        }
+        return out
+    }
+
+    suspend fun importJson(data: org.json.JSONObject) {
+        context.dataStore.edit { prefs ->
+            prefs.clear()
+            data.keys().forEach { name ->
+                val entry = data.optJSONObject(name) ?: return@forEach
+                runCatching {
+                    when (entry.optString("t")) {
+                        "b" -> prefs[booleanPreferencesKey(name)] = entry.getBoolean("v")
+                        "i" -> prefs[androidx.datastore.preferences.core.intPreferencesKey(name)] = entry.getInt("v")
+                        "l" -> prefs[androidx.datastore.preferences.core.longPreferencesKey(name)] = entry.getLong("v")
+                        "f" -> prefs[androidx.datastore.preferences.core.floatPreferencesKey(name)] = entry.getDouble("v").toFloat()
+                        "d" -> prefs[androidx.datastore.preferences.core.doublePreferencesKey(name)] = entry.getDouble("v")
+                        "s" -> prefs[androidx.datastore.preferences.core.stringPreferencesKey(name)] = entry.getString("v")
+                        "ss" -> {
+                            val arr = entry.getJSONArray("v")
+                            prefs[stringSetPreferencesKey(name)] = (0 until arr.length()).map { arr.getString(it) }.toSet()
+                        }
+                    }
+                }
+            }
+        }
+    }
     suspend fun setIncognitoGpc(v: Boolean) = set(Keys.INCOGNITO_GPC, v)
     suspend fun setIncognitoFingerprintProtection(v: Boolean) = set(Keys.INCOGNITO_FPP, v)
     suspend fun setGameTouchFix(v: Boolean) = set(Keys.GAME_TOUCH_FIX, v)

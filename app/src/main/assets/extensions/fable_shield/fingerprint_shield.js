@@ -18,7 +18,7 @@
   } catch (e) {
   }
 
-  const SUPER = PRIVATE ? (CFG.supers || []).find((s) => s && s.ua === UA) || null : null;
+  const SUPER = PRIVATE && !(CFG.incognitoUa && UA === CFG.incognitoUa) ? (CFG.supers || []).find((s) => s && s.ua === UA) || null : null;
   const BASIC = !SUPER && CFG.shield === true && (PRIVATE || CFG.normal === true);
   if (!SUPER && !BASIC) return;
 
@@ -50,7 +50,7 @@
   const SEED = hash32(HOST, BASE_SEED) || 1;
   const CANVAS_LEVEL = SUPER ? Math.max(1, Math.min(3, SUPER.canvasNoise | 0)) : 2;
   const AUDIO_LEVEL = SUPER ? Math.max(1, Math.min(3, SUPER.audioNoise | 0)) : 2;
-  const TIME_ZONE = SUPER ? SUPER.timeZone || "" : CFG.utc ? "UTC" : "";
+  const TIME_ZONE = SUPER ? (SUPER.hide && SUPER.hide.timezone === false ? "" : SUPER.timeZone || "") : CFG.utc ? "UTC" : "";
   const HIDE = SUPER && SUPER.hide && typeof SUPER.hide === "object" ? SUPER.hide : {};
   function hiding(key) {
     return HIDE[key] !== false;
@@ -687,6 +687,17 @@
         } catch (e) {
           W.Date = RealDate;
         }
+        if (W.Date !== RealDate) {
+          try {
+            Object.defineProperty(RealDate.prototype, "constructor", {
+              value: W.Date,
+              writable: true,
+              enumerable: false,
+              configurable: true,
+            });
+          } catch (e) {
+          }
+        }
       } catch (e) {
       }
     }
@@ -908,7 +919,7 @@
         constant(SP, "pixelDepth", 24);
         constant(NP, "hardwareConcurrency", 8);
         constant(NP, "maxTouchPoints", 5);
-        constant(NP, "doNotTrack", "1");
+        if (CFG.dnt !== false) constant(NP, "doNotTrack", "1");
         constant(NP, "language", "en-US");
         defGet(NP, "languages", () => frozen);
         shieldCanvas();

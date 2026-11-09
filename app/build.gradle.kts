@@ -25,8 +25,8 @@ android {
         applicationId = "com.fable.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.11.0"
+        versionCode = 8
+        versionName = "1.12.0"
 
         testInstrumentationRunner = "com.fable.browser.HiltTestRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -122,6 +122,55 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
+    }
+}
+
+abstract class FetchFilterListsTask : DefaultTask() {
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun fetch() {
+        val dir = outputDir.get().dir("filters").asFile.apply { mkdirs() }
+        val lists = listOf(
+            "easylist.txt" to "https://easylist.to/easylist/easylist.txt",
+            "easyprivacy.txt" to "https://easylist.to/easylist/easyprivacy.txt",
+            "adguard_mobile.txt" to "https://filters.adtidy.org/extension/ublock/filters/11.txt",
+            "adguard_tracking.txt" to "https://filters.adtidy.org/extension/ublock/filters/3.txt",
+            "peterlowe.txt" to "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0&mimetype=plaintext"
+        )
+        if (System.getenv("FABLE_OFFLINE_FILTERS") == "1") return
+        lists.forEach { (name, url) ->
+            val dest = File(dir, name)
+            if (dest.length() > 1024) return@forEach
+            val tmp = File(dir, "$name.part")
+            try {
+                val conn = java.net.URI(url).toURL().openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 20_000
+                conn.readTimeout = 60_000
+                conn.instanceFollowRedirects = true
+                conn.setRequestProperty("User-Agent", "FableBrowser-Build")
+                conn.inputStream.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                conn.disconnect()
+                if (tmp.length() > 1024 && !tmp.readText().take(256).trimStart().startsWith("<")) {
+                    tmp.copyTo(dest, overwrite = true)
+                    logger.lifecycle("Bundled filter list $name (${dest.length() / 1024} KB)")
+                } else {
+                    logger.warn("Filter list $name looked invalid, skipped")
+                }
+            } catch (e: Exception) {
+                logger.warn("Filter list $name not bundled: ${e.message}")
+            } finally {
+                tmp.delete()
+            }
+        }
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        val fetch = tasks.register<FetchFilterListsTask>("fetch${variant.name.replaceFirstChar { it.uppercase() }}FilterLists")
+        variant.sources.assets?.addGeneratedSourceDirectory(fetch, FetchFilterListsTask::outputDir)
     }
 }
 

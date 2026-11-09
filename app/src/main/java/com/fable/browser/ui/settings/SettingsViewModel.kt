@@ -100,6 +100,21 @@ class SettingsViewModel @Inject constructor(
 
     fun filterRuleCount(): Int = contentBlocker.ruleCount()
 
+    fun cosmeticRuleCount(): Int = contentBlocker.cosmeticCount()
+
+    fun filterUpdatedText(): String {
+        val last = contentBlocker.lastUpdated()
+        if (last <= 0) return "Using the lists built into this version"
+        val days = ((System.currentTimeMillis() - last) / 86_400_000L).toInt()
+        return when (days) {
+            0 -> "Updated today"
+            1 -> "Updated yesterday"
+            else -> "Updated $days days ago"
+        }
+    }
+
+    fun setAdBlockAllowed(site: String, allowed: Boolean) = edit { store.setAdBlockAllowed(site, allowed) }
+
     fun setSearchEngine(v: SearchEngine) = edit { store.setSearchEngine(v) }
     fun setHomepage(v: String) = edit { store.setHomepage(v.trim()) }
     fun setRestoreTabs(v: Boolean) = edit { store.setRestoreTabs(v) }
@@ -207,10 +222,7 @@ class SettingsViewModel @Inject constructor(
         if (_updatingFilters.value) return
         _updatingFilters.value = true
         viewModelScope.launch {
-            val result = contentBlocker.updateFromUrl(
-                ContentBlocker.DEFAULT_EASYLIST_URL,
-                ContentBlocker.DEFAULT_EASYPRIVACY_URL
-            )
+            val result = contentBlocker.updateAll()
             _updatingFilters.value = false
             result.onSuccess { engineManager.refreshFilterRules() }
             _message.value = result.fold(
@@ -293,6 +305,17 @@ class SettingsViewModel @Inject constructor(
     fun setIncognitoAdBlock(v: Boolean) = edit { store.setIncognitoAdBlock(v) }
     fun setIncognitoTrackingProtection(v: Boolean) = edit { store.setIncognitoTrackingProtection(v) }
     fun setIncognitoStripParams(v: Boolean) = edit { store.setIncognitoStripParams(v) }
+    fun setIncognitoRandomUserAgent(v: Boolean) = edit { store.setIncognitoRandomUserAgent(v) }
+    fun setIncognitoTrimReferrer(v: Boolean) = edit { store.setIncognitoTrimReferrer(v) }
+    fun setIncognitoStripClientHints(v: Boolean) = edit { store.setIncognitoStripClientHints(v) }
+    fun setIncognitoSendDnt(v: Boolean) = edit { store.setIncognitoSendDnt(v) }
+    fun setPasswordSave(v: Boolean) = edit { store.setPasswordSave(v) }
+    fun setPasswordAutofill(v: Boolean) = edit { store.setPasswordAutofill(v) }
+    fun setPasswordIncognito(v: Boolean) = edit { store.setPasswordIncognito(v) }
+    fun setPasswordNever(site: String, never: Boolean) = edit { store.setPasswordNever(site, never) }
+    fun setOptimizerEnabled(v: Boolean) = edit { store.setOptimizerEnabled(v) }
+    fun setAdBlockCosmetic(v: Boolean) = edit { store.setAdBlockCosmetic(v) }
+    fun setAdBlockAutoUpdate(v: Boolean) = edit { store.setAdBlockAutoUpdate(v) }
     fun setIncognitoGpc(v: Boolean) = edit { store.setIncognitoGpc(v) }
     fun setIncognitoFingerprintProtection(v: Boolean) = edit { store.setIncognitoFingerprintProtection(v) }
     fun setGameTouchFix(v: Boolean) = edit { store.setGameTouchFix(v) }

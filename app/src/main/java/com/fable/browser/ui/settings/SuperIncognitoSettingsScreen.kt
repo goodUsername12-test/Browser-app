@@ -68,7 +68,10 @@ private val superHideItems: List<Triple<String, String, String>> = listOf(
     Triple("rects", "Layout noise", "Tiny random changes to measured element sizes"),
     Triple("voices", "Speech voices", "Fake list of text to speech voices"),
     Triple("dnt", "Do Not Track", "Random Do Not Track signal"),
-    Triple("webrtc", "Local IP address", "Hides your IP address from WebRTC")
+    Triple("webrtc", "Local IP address", "Hides your IP address from WebRTC"),
+    Triple("referrer", "Referrer trimming", "Other sites only see the origin you came from"),
+    Triple("hints", "Client hints", "Remove high entropy device hint headers"),
+    Triple("timezone", "Time zone", "Report the time zone of the fake device")
 )
 
 private val gameModeKeys = setOf("screen", "webglLimits", "webglNoise", "canvas", "audio", "rects")

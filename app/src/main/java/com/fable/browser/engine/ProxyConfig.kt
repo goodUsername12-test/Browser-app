@@ -7,6 +7,7 @@ import com.fable.browser.data.repo.FaviconStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -115,7 +116,12 @@ class ProxyConfig @Inject constructor(
             put("normalTabShield", s?.normalTabShield ?: false)
             put("forceUtc", s?.forceUtcTimezone ?: true)
             put("isolateIncognitoTabs", s?.isolateIncognitoTabs ?: true)
-            put("incognitoUa", fingerprintShield.sessionUserAgent())
+            put("incognitoUa", fingerprintShield.incognitoUserAgent(s?.incognitoRandomUserAgent ?: false))
+            put("trimReferrer", s?.incognitoTrimReferrer ?: true)
+            put("stripClientHints", s?.incognitoStripClientHints ?: true)
+            put("sendDnt", s?.incognitoSendDnt ?: true)
+            put("adBlockCosmetic", s?.adBlockCosmetic ?: true)
+            put("adBlockAllow", JSONArray((s?.adBlockAllowSites ?: emptySet()).toList()))
             put("sessionSeed", sessionSeed)
             put("supers", supers)
             put("superProxyEnabled", superProxyOn)
@@ -178,10 +184,25 @@ class ProxyConfig @Inject constructor(
             }
         })
         port.postMessage(configJson())
-        scope.launch { sendRules() }
+        scope.launch {
+            sendRules()
+            maybeAutoUpdate()
+        }
+    }
+
+    private var autoUpdateStarted = false
+
+    private suspend fun maybeAutoUpdate() {
+        if (autoUpdateStarted) return
+        val s = current ?: return
+        if (!s.adBlockAutoUpdate || !(s.adBlockEnabled || s.incognitoAdBlock)) return
+        autoUpdateStarted = true
+        delay(AUTO_UPDATE_DELAY_MS)
+        if (runCatching { contentBlocker.autoUpdateIfDue() }.getOrDefault(false)) sendRules()
     }
 
     companion object {
+        private const val AUTO_UPDATE_DELAY_MS = 20_000L
         const val NATIVE_APP = "fable"
         private const val TAG = "FableShield"
     }

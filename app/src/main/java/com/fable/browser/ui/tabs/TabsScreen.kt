@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -156,35 +157,46 @@ fun TabsScreen(
             }
         }
     ) { padding ->
-        if (visible.isEmpty()) {
-            EmptyTray(
-                incognito = showIncognito,
-                modifier = Modifier.fillMaxSize().padding(padding)
-            )
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(visible, key = { it.id }) { tab ->
-                    TabCard(
-                        tab = tab,
-                        isActive = tab.id == activeTabId,
-                        onSelect = {
-                            if (!leaving) {
-                                leaving = true
-                                viewModel.selectTab(tab.id)
-                                onClose()
-                            }
-                        },
-                        onClose = { viewModel.closeTab(tab.id) },
-                        onToggleKeepLoaded = { viewModel.setPinned(tab.id, !tab.isPinned.value) }
-                    )
+        val recentlyClosed by viewModel.recentlyClosed.collectAsStateWithLifecycle()
+        androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
+            if (visible.isEmpty()) {
+                EmptyTray(
+                    incognito = showIncognito,
+                    modifier = Modifier.fillMaxSize().padding(padding)
+                )
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 168.dp),
+                    modifier = Modifier.fillMaxSize().padding(padding),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(visible, key = { it.id }) { tab ->
+                        TabCard(
+                            tab = tab,
+                            isActive = tab.id == activeTabId,
+                            onSelect = {
+                                if (!leaving) {
+                                    leaving = true
+                                    viewModel.selectTab(tab.id)
+                                    onClose()
+                                }
+                            },
+                            onClose = { viewModel.closeTab(tab.id) },
+                            onToggleKeepLoaded = { viewModel.setPinned(tab.id, !tab.isPinned.value) }
+                        )
+                    }
                 }
             }
+            com.fable.browser.ui.components.UndoCloseBar(
+                closed = recentlyClosed,
+                onUndo = { viewModel.undoClose() },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(padding)
+                    .navigationBarsPadding()
+            )
         }
     }
 }

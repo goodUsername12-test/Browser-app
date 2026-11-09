@@ -178,6 +178,7 @@ fun BrowserScreen(
         }
     }
 
+    val recentlyClosed by viewModel.recentlyClosed.collectAsStateWithLifecycle()
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(Modifier.fillMaxSize()) {
             if (toolbarAtTop) {
@@ -259,6 +260,15 @@ fun BrowserScreen(
                 }
             )
         }
+
+        com.fable.browser.ui.components.UndoCloseBar(
+            closed = recentlyClosed,
+            onUndo = { viewModel.undoClose() },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = if (toolbarAtTop || !showToolbar) 8.dp else 60.dp)
+        )
     }
 
     if (menuOpen && tab != null) {

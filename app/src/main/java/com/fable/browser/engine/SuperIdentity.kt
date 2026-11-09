@@ -116,7 +116,8 @@ data class SuperIdentity(
 
         val HIDE_KEYS: List<String> = listOf(
             HIDE_BROWSER, "screen", "cpu", "touch", "languages", "graphics", "webglName",
-            "webglLimits", "webglNoise", "fonts", "canvas", "audio", "rects", "voices", "dnt", "webrtc"
+            "webglLimits", "webglNoise", "fonts", "canvas", "audio", "rects", "voices", "dnt", "webrtc",
+            "referrer", "hints", "timezone"
         )
 
         // turned off by game mode

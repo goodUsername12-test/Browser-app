@@ -5,14 +5,19 @@ import android.os.Handler
 import android.os.Looper
 import com.fable.browser.util.ActivityBridge
 import com.fable.browser.util.UploadFiles
+import com.fable.browser.data.repo.PasswordStore
+import java.util.concurrent.atomic.AtomicBoolean
 import org.mozilla.geckoview.AllowOrDeny
+import org.mozilla.geckoview.Autocomplete
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSession.PromptDelegate
 
 class FablePromptDelegate(
     private val bridge: PromptBridge,
-    private val activityBridge: ActivityBridge
+    private val activityBridge: ActivityBridge,
+    private val passwords: PasswordManager? = null,
+    private val incognito: Boolean = false
 ) : PromptDelegate {
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -218,11 +223,95 @@ class FablePromptDelegate(
 
     override fun onLoginSave(
         session: GeckoSession,
-        request: PromptDelegate.AutocompleteRequest<org.mozilla.geckoview.Autocomplete.LoginSaveOption>
-    ): GeckoResult<PromptDelegate.PromptResponse> = GeckoResult.fromValue(request.dismiss())
+        request: PromptDelegate.AutocompleteRequest<Autocomplete.LoginSaveOption>
+    ): GeckoResult<PromptDelegate.PromptResponse> {
+        val manager = passwords ?: return GeckoResult.fromValue(request.dismiss())
+        val entry = request.options.firstOrNull()?.value ?: return GeckoResult.fromValue(request.dismiss())
+        val host = PasswordStore.hostOf(entry.origin)
+        if (host.isEmpty() || entry.password.isEmpty() || !manager.canSave(host, incognito)) {
+            return GeckoResult.fromValue(request.dismiss())
+        }
+        val existing = manager.existing(entry)
+        if (existing != null && existing.password == entry.password && existing.username == entry.username) {
+            return GeckoResult.fromValue(request.dismiss())
+        }
+        val result = GeckoResult<PromptDelegate.PromptResponse>()
+        val done = AtomicBoolean(false)
+        fun finish() {
+            bridge.clear()
+            if (done.compareAndSet(false, true)) result.complete(request.dismiss())
+        }
+        bridge.show(
+            FablePrompt.SaveLogin(
+                title = if (existing != null) "Update saved password?" else "Save password?",
+                host = host,
+                username = entry.username,
+                password = entry.password,
+                update = existing != null,
+                onSave = { user, pass ->
+                    manager.save(
+                        Autocomplete.LoginEntry.Builder()
+                            .guid(existing?.guid ?: entry.guid)
+                            .origin(entry.origin)
+                            .formActionOrigin(entry.formActionOrigin)
+                            .httpRealm(entry.httpRealm)
+                            .username(user)
+                            .password(pass)
+                            .build()
+                    )
+                    activityBridge.toast("Password saved")
+                    finish()
+                },
+                onNever = {
+                    manager.neverForSite(host)
+                    finish()
+                },
+                onDismiss = { finish() }
+            )
+        )
+        return result
+    }
 
     override fun onLoginSelect(
         session: GeckoSession,
-        request: PromptDelegate.AutocompleteRequest<org.mozilla.geckoview.Autocomplete.LoginSelectOption>
-    ): GeckoResult<PromptDelegate.PromptResponse> = GeckoResult.fromValue(request.dismiss())
+        request: PromptDelegate.AutocompleteRequest<Autocomplete.LoginSelectOption>
+    ): GeckoResult<PromptDelegate.PromptResponse> {
+        val manager = passwords ?: return GeckoResult.fromValue(request.dismiss())
+        val options = request.options
+        if (options.isEmpty() || !manager.canFill(incognito)) return GeckoResult.fromValue(request.dismiss())
+        val host = PasswordStore.hostOf(options[0].value.origin)
+        val result = GeckoResult<PromptDelegate.PromptResponse>()
+        val done = AtomicBoolean(false)
+        fun finish(response: () -> PromptDelegate.PromptResponse) {
+            bridge.clear()
+            if (done.compareAndSet(false, true)) result.complete(response())
+        }
+        bridge.show(
+            FablePrompt.SelectLogin(
+                title = "Sign in with a saved password",
+                host = host,
+                accounts = options.map { option ->
+                    val generated = (option.hint and 1) != 0
+                    LoginChoice(
+                        label = when {
+                            generated -> "Use a strong generated password"
+                            option.value.username.isBlank() -> "(no username)"
+                            else -> option.value.username
+                        },
+                        detail = if (generated) "Saved after you sign up" else PasswordStore.hostOf(option.value.origin) + "  " + "\u2022".repeat(8)
+                    )
+                },
+                onPick = { index ->
+                    val picked = options.getOrNull(index)
+                    if (picked == null) finish { request.dismiss() }
+                    else {
+                        manager.store.markUsed(picked.value.guid)
+                        finish { request.confirm(picked) }
+                    }
+                },
+                onDismiss = { finish { request.dismiss() } }
+            )
+        )
+        return result
+    }
 }

@@ -17,12 +17,29 @@ class FingerprintShield @Inject constructor() {
 
     @Volatile private var sessionUa: String? = null
 
-    fun knownUserAgents(): Set<String> = uaPool.toSet()
+    fun knownUserAgents(): Set<String> = uaPool.toSet() + setOf(privateUserAgent()).filter { it.isNotEmpty() }
 
     fun sessionUserAgent(): String =
         sessionUa ?: synchronized(this) {
             sessionUa ?: uaPool[Random.nextInt(uaPool.size)].also { sessionUa = it }
         }
+
+    @Volatile private var privateUa: String? = null
+
+    fun privateUserAgent(): String =
+        privateUa ?: synchronized(this) {
+            privateUa ?: run {
+                val real = runCatching { org.mozilla.geckoview.GeckoSession.getDefaultUserAgent() }.getOrNull().orEmpty()
+                val version = Regex("Android ([0-9.]+);").find(real)?.groupValues?.get(1)
+                when {
+                    real.isEmpty() -> ""
+                    version == null -> real
+                    else -> real.replaceFirst("Android $version;", if (version == "10") "Android 11;" else "Android 10;")
+                }
+            }.also { privateUa = it }
+        }
+
+    fun incognitoUserAgent(random: Boolean): String = if (random) sessionUserAgent() else privateUserAgent()
 
     fun resetSession() {
         synchronized(this) { sessionUa = null }

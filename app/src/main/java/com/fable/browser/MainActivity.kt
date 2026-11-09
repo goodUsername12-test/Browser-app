@@ -180,6 +180,8 @@ class MainActivity : FragmentActivity() {
             Intent.ACTION_VIEW -> intent.dataString?.let { url ->
                 if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_super", false)) {
                     tabManager.openSuperTab(url)
+                } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_incognito", false)) {
+                    tabManager.openTab(url, incognito = true)
                 } else {
                     tabManager.openExternalUrl(url)
                 }

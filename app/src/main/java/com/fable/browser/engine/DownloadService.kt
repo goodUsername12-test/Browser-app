@@ -11,7 +11,6 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -27,20 +26,28 @@ class DownloadService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        ServiceCompat.startForeground(
-            this,
-            DownloadNotifier.FOREGROUND_ID,
-            notifier.foregroundNotification(),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            else 0
-        )
+        val started = runCatching {
+            ServiceCompat.startForeground(
+                this,
+                DownloadNotifier.FOREGROUND_ID,
+                notifier.foregroundNotification(),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                else 0
+            )
+        }.isSuccess
+        if (!started) stopSelf()
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
+        stopSelf()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (watcher == null) {
             watcher = scope.launch {
-                downloader.activeCount.drop(1).collect { active ->
+                downloader.activeCount.collect { active ->
                     if (active == 0) {
                         ServiceCompat.stopForeground(
                             this@DownloadService,

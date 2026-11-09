@@ -181,6 +181,74 @@ fun PromptHost(prompt: FablePrompt) {
             )
         }
 
+        is FablePrompt.SaveLogin -> {
+            var user by remember(prompt) { mutableStateOf(prompt.username) }
+            var pass by remember(prompt) { mutableStateOf(prompt.password) }
+            var show by remember(prompt) { mutableStateOf(false) }
+            AlertDialog(
+                onDismissRequest = prompt.onDismiss,
+                title = { Text(prompt.title) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(prompt.host, style = MaterialTheme.typography.bodyMedium)
+                        OutlinedTextField(
+                            value = user,
+                            onValueChange = { user = it },
+                            label = { Text("Username") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = pass,
+                            onValueChange = { pass = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation = if (show) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                TextButton(onClick = { show = !show }) { Text(if (show) "Hide" else "Show") }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (!prompt.update) {
+                            TextButton(onClick = prompt.onNever) { Text("Never for this site") }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = { prompt.onSave(user, pass) },
+                        enabled = pass.isNotEmpty()
+                    ) { Text(if (prompt.update) "Update" else "Save") }
+                },
+                dismissButton = { TextButton(onClick = prompt.onDismiss) { Text("Not now") } }
+            )
+        }
+        is FablePrompt.SelectLogin -> AlertDialog(
+            onDismissRequest = prompt.onDismiss,
+            title = { Text(prompt.title) },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(prompt.host, style = MaterialTheme.typography.bodySmall)
+                    prompt.accounts.forEachIndexed { index, account ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { prompt.onPick(index) }
+                                .padding(vertical = 12.dp)
+                        ) {
+                            Text(account.label, style = MaterialTheme.typography.bodyLarge)
+                            Text(account.detail, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = prompt.onDismiss) { Text("Cancel") } }
+        )
         is FablePrompt.IncognitoDownload -> AlertDialog(
             onDismissRequest = prompt.onDismiss,
             title = { Text(prompt.title) },

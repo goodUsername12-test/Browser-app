@@ -101,7 +101,8 @@ fun BottomToolbar(
         Box(
             modifier = Modifier
                 .size(40.dp)
-                .combinedClickable(onClick = onTabs, onLongClick = onTabs),
+                .combinedClickable(onClick = onTabs, onLongClick = onTabs)
+                .semantics { contentDescription = "Show tabs" },
             contentAlignment = Alignment.Center
         ) {
             Box(

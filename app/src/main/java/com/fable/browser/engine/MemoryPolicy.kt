@@ -32,13 +32,46 @@ data class MemoryPolicy(
             }.getOrDefault(4096L)
         }
 
+        @Volatile private var weak: Boolean? = null
+
+        fun cpuCores(): Int = Runtime.getRuntime().availableProcessors()
+
+        fun maxCpuMhz(): Int {
+            val cached = maxMhz
+            if (cached >= 0) return cached
+            val value = runCatching {
+                (0 until cpuCores()).maxOfOrNull { i ->
+                    runCatching {
+                        java.io.File("/sys/devices/system/cpu/cpu$i/cpufreq/cpuinfo_max_freq").readText().trim().toLong() / 1000L
+                    }.getOrDefault(0L)
+                }?.toInt() ?: 0
+            }.getOrDefault(0)
+            maxMhz = value
+            return value
+        }
+
+        @Volatile private var maxMhz: Int = -1
+
+        fun isWeakDevice(context: Context): Boolean {
+            weak?.let { return it }
+            val mb = totalRamMb(context)
+            val mhz = maxCpuMhz()
+            val result = lowRamDevice || mb <= 4608 || cpuCores() <= 4 || mhz in 1..1999
+            weak = result
+            return result
+        }
+
+        fun optimizing(context: Context, s: Settings): Boolean = s.optimizerEnabled && isWeakDevice(context)
+
         fun autoMode(context: Context): MemoryMode {
             val mb = totalRamMb(context)
             return if (lowRamDevice || mb <= 3584) MemoryMode.LOW else MemoryMode.BALANCED
         }
 
         fun resolve(context: Context, s: Settings): MemoryPolicy {
-            val mode = if (s.memoryMode == MemoryMode.AUTO) autoMode(context) else s.memoryMode
+            val mode = if (s.memoryMode == MemoryMode.AUTO) {
+                if (optimizing(context, s)) MemoryMode.LOW else autoMode(context)
+            } else s.memoryMode
             val bigPhone = totalRamMb(context) >= 7168
             return when (mode) {
                 MemoryMode.LOW -> MemoryPolicy(

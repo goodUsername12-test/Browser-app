@@ -2,6 +2,7 @@ package com.fable.browser
 
 import android.app.Application
 import android.os.Build
+import com.fable.browser.data.backup.BackupManager
 import com.fable.browser.engine.EngineManager
 import com.fable.browser.engine.TabManager
 import com.fable.browser.util.CrashReporter
@@ -22,6 +23,7 @@ class FableApplication : Application() {
         if (!isMainProcess) return
 
         CrashReporter.install(this)
+        BackupManager.applyStagedRestore(this)
         engineManager.get().warmUp()
     }
 

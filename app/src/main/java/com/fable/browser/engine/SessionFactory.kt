@@ -51,8 +51,8 @@ class SessionFactory @Inject constructor(
             .allowJavascript(true)
             .contextId(contextId)
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
-            .userAgentOverride(fingerprintShield.sessionUserAgent())
             .suspendMediaWhenInactive(true)
+        fingerprintShield.incognitoUserAgent(settings.incognitoRandomUserAgent).takeIf { it.isNotEmpty() }?.let { builder.userAgentOverride(it) }
 
         val session = GeckoSession(builder.build())
         if (open) session.open(engineManager.runtime)

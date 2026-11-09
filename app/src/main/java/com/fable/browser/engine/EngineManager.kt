@@ -37,7 +37,8 @@ class EngineManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settingsStore: SettingsStore,
     private val proxyConfig: ProxyConfig,
-    private val activityBridge: ActivityBridge
+    private val activityBridge: ActivityBridge,
+    private val passwordManager: PasswordManager
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -74,7 +75,7 @@ class EngineManager @Inject constructor(
         val builder = GeckoRuntimeSettings.Builder()
             .contentBlocking(contentBlocking)
             .globalPrivacyControlEnabled(true)
-            .consoleOutput(false)
+            .consoleOutput(com.fable.browser.BuildConfig.DEBUG)
             .remoteDebuggingEnabled(false)
             .aboutConfigEnabled(false)
             .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM)
@@ -83,6 +84,7 @@ class EngineManager @Inject constructor(
         writeEngineConfig()?.let { builder.configFilePath(it) }
 
         val runtime = GeckoRuntime.create(context, builder.build())
+        runCatching { runtime.setAutocompleteStorageDelegate(passwordManager) }
         installShieldExtension(runtime)
         installOrientationDelegate(runtime)
         return runtime
@@ -201,8 +203,8 @@ class EngineManager @Inject constructor(
             "webgl.enable-debug-renderer-info" to true,
             "media.peerconnection.ice.proxy_only" to d.webRtcProxyOnly,
             "media.peerconnection.enabled" to !d.webRtcDisabled,
-            "network.prefetch-next" to !quiet,
-            "network.predictor.enabled" to !quiet,
+            "network.prefetch-next" to (!quiet && !optimizing(d)),
+            "network.predictor.enabled" to (!quiet && !optimizing(d)),
             "javascript.options.baselinejit" to (!d.noJit || d.superGameMode),
             "javascript.options.ion" to (!d.noJit || d.superGameMode),
             "javascript.options.native_regexp" to (!d.noJit || d.superGameMode),
@@ -210,6 +212,8 @@ class EngineManager @Inject constructor(
             "javascript.options.wasm" to (!d.disableWasm || d.superGameMode)
         )
     }
+
+    private fun optimizing(s: Settings): Boolean = MemoryPolicy.optimizing(context, s)
 
     private fun intPrefs(s: Settings?): List<Pair<String, Int>> {
         val d = s ?: Settings()
@@ -223,7 +227,11 @@ class EngineManager @Inject constructor(
             "privacy.bounceTrackingProtection.mode" to if (d.bounceTracking) 1 else 0,
             "browser.cache.memory.capacity" to policy.memoryCacheKb,
             "browser.sessionhistory.max_total_viewers" to policy.backForwardPages,
-            "image.mem.surfacecache.max_size_kb" to policy.imageCacheKb
+            "image.mem.surfacecache.max_size_kb" to policy.imageCacheKb,
+            "dom.min_background_timeout_value" to if (optimizing(d)) 10_000 else 1_000,
+            "dom.timeout.background_throttling_max_budget" to if (optimizing(d)) 20 else 50,
+            "browser.sessionhistory.max_entries" to if (optimizing(d)) 25 else 50,
+            "image.mem.decode_bytes_at_a_time" to if (optimizing(d)) 65_536 else 16_384
         )
     }
 
@@ -497,6 +505,9 @@ class EngineManager @Inject constructor(
                 ContentBlocking.AntiTracking.CRYPTOMINING
 
         private val BASE_PREFS: List<Pair<String, Any>> = listOf(
+            "signon.rememberSignons" to true,
+            "signon.autofillForms" to true,
+            "signon.generation.enabled" to true,
             "dom.ipc.processPrelaunch.enabled" to false,
             "browser.cache.disk.smart_size.enabled" to false,
             "browser.cache.disk.capacity" to 262144,

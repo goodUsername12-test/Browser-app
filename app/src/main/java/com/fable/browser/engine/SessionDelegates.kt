@@ -53,7 +53,8 @@ class SessionDelegateFactory @Inject constructor(
     private val promptBridge: PromptBridge,
     private val downloader: Downloader,
     private val contentBlocker: ContentBlocker,
-    private val activityBridge: ActivityBridge
+    private val activityBridge: ActivityBridge,
+    private val passwordManager: PasswordManager
 ) {
     fun attach(
         tab: BrowserTab,
@@ -67,7 +68,7 @@ class SessionDelegateFactory @Inject constructor(
         session.progressDelegate = progressDelegate(tab)
         session.contentDelegate = contentDelegate(tab, settings, callbacks)
         session.permissionDelegate = permissionDelegate(tab, scope)
-        session.promptDelegate = FablePromptDelegate(promptBridge, activityBridge)
+        session.promptDelegate = FablePromptDelegate(promptBridge, activityBridge, passwordManager, tab.isIncognito)
         session.historyDelegate = historyDelegate(tab, scope)
         session.scrollDelegate = object : GeckoSession.ScrollDelegate {
             override fun onScrollChanged(session: GeckoSession, scrollX: Int, scrollY: Int) {
@@ -93,6 +94,9 @@ class SessionDelegateFactory @Inject constructor(
             hasUserGesture: Boolean
         ) {
             url?.let {
+                if (com.fable.browser.BuildConfig.DEBUG) {
+                    android.util.Log.i("FableNav", (if (tab.isSuper) "super " else if (tab.isIncognito) "incognito " else "normal ") + it)
+                }
                 tab.updateUrl(it)
                 tab.updateSecure(!UrlUtils.isInsecure(it))
                 tab.updateReaderMode(false)
@@ -276,11 +280,7 @@ class SessionDelegateFactory @Inject constructor(
         }
 
         override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
-            val fileName = response.headers["Content-Disposition"]
-                ?.substringAfter("filename=", "")
-                ?.trim('"', ' ')
-                ?.ifBlank { null }
-                ?: response.uri.substringAfterLast('/').substringBefore('?')
+            val fileName = runCatching { downloader.suggestedName(response) }.getOrDefault("download")
 
             if (tab.isIncognito) {
                 promptBridge.show(
@@ -291,7 +291,10 @@ class SessionDelegateFactory @Inject constructor(
                             promptBridge.clear()
                             downloader.enqueue(response, fromIncognito = true)
                         },
-                        onDismiss = { promptBridge.clear() }
+                        onDismiss = {
+                            promptBridge.clear()
+                            downloader.discard(response)
+                        }
                     )
                 )
             } else {

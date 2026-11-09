@@ -2,6 +2,7 @@ package com.fable.browser.ui.settings
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fable.browser.data.model.PerformanceProfile
@@ -27,7 +28,23 @@ fun PerformanceSettingsScreen(
         PerformanceProfile.entries.filter { it != PerformanceProfile.CUSTOM }
     }
 
+    val deviceContext = androidx.compose.ui.platform.LocalContext.current
+    val weakDevice = remember { com.fable.browser.engine.MemoryPolicy.isWeakDevice(deviceContext) }
+    val deviceRamGb = remember { com.fable.browser.engine.MemoryPolicy.totalRamMb(deviceContext) / 1024.0 }
+    val deviceCores = remember { com.fable.browser.engine.MemoryPolicy.cpuCores() }
+
     SettingsPage(title = "Performance", onBack = onBack, viewModel = viewModel) {
+        SectionHeader("Optimizer")
+        SwitchRow(
+            title = "Weak device optimizer",
+            subtitle = "This device: " + String.format(java.util.Locale.US, "%.1f", deviceRamGb) + " GB RAM, $deviceCores cores. " +
+                if (weakDevice) "Detected as a weak device: tabs unload sooner, caches shrink, background tabs are throttled and prefetching stops"
+                else "Fast enough, so the optimizer stays idle until memory runs low",
+            checked = settings.optimizerEnabled,
+            onCheckedChange = viewModel::setOptimizerEnabled
+        )
+        ListDivider()
+
         SectionHeader("Profile")
         RadioGroup(
             options = profileOptions,

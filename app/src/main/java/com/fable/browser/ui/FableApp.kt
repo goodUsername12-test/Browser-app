@@ -22,6 +22,8 @@ import com.fable.browser.ui.browser.BrowserViewModel
 import com.fable.browser.ui.downloads.DownloadsScreen
 import com.fable.browser.ui.history.HistoryScreen
 import com.fable.browser.ui.settings.AboutScreen
+import com.fable.browser.ui.settings.BackupScreen
+import com.fable.browser.ui.settings.PasswordsScreen
 import com.fable.browser.ui.settings.AppearanceSettingsScreen
 import com.fable.browser.ui.settings.DownloadSettingsScreen
 import com.fable.browser.ui.settings.GeneralSettingsScreen
@@ -52,6 +54,8 @@ object Routes {
     const val SETTINGS_PERFORMANCE = "settings/performance"
     const val SETTINGS_SUPER = "settings/super"
     const val SETTINGS_BOOSTER = "settings/booster"
+    const val SETTINGS_PASSWORDS = "settings/passwords"
+    const val SETTINGS_BACKUP = "settings/backup"
 }
 
 @Composable
@@ -170,6 +174,12 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
                 onBack = { navController.popIfNotRoot() },
                 onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) { launchSingleTop = true } }
             )
+        }
+        composable(Routes.SETTINGS_PASSWORDS) {
+            PasswordsScreen(onBack = { navController.popIfNotRoot() })
+        }
+        composable(Routes.SETTINGS_BACKUP) {
+            BackupScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS_ABOUT) {
             AboutScreen(onBack = { navController.popIfNotRoot() })

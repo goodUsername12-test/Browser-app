@@ -127,4 +127,26 @@ class ContentBlockerTest {
         assertFalse(ContentBlocker.shouldBlock(f, "about:blank", "news.test"))
         assertFalse(ContentBlocker.shouldBlock(f, "data:text/html,adframe.", "news.test"))
     }
+
+    @Test
+    fun `cosmetic rules are collected per domain and generic`() {
+        val f = ContentBlocker.parse("example.com##.sidebar-ad\n##.ad-banner\nexample.com#@#.ad-banner\n##div:-abp-has(.x)")
+        assertEquals(listOf(".ad-banner"), f.cosmeticGeneric)
+        assertEquals(listOf(".sidebar-ad"), f.cosmeticDomains["example.com"])
+        assertTrue(f.cosmeticExceptions["example.com"]!!.contains(".ad-banner"))
+    }
+
+    @Test
+    fun `hosts file lines become domain rules`() {
+        val f = ContentBlocker.parse("0.0.0.0 ads.hosts.test\n127.0.0.1 localhost")
+        assertTrue(ContentBlocker.shouldBlock(f, "https://ads.hosts.test/a.js", "news.test"))
+        assertFalse(f.blockedDomains.contains("localhost"))
+    }
+
+    @Test
+    fun `rules with unsupported options are skipped`() {
+        val f = ContentBlocker.parse("||onlyon.test^${'$'}domain=news.test\n||cdn.test/ads/*/x.js")
+        assertFalse(ContentBlocker.shouldBlock(f, "https://onlyon.test/a.js", "other.test"))
+        assertTrue(ContentBlocker.shouldBlock(f, "https://cdn.test/ads/1/x.js", "news.test"))
+    }
 }

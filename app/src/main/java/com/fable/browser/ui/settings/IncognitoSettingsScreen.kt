@@ -271,6 +271,30 @@ fun IncognitoSettingsScreen(
             onCheckedChange = viewModel::setIncognitoJavascript
         )
         SwitchRow(
+            title = "Trim referrer for other sites",
+            subtitle = "Other sites only see the origin you came from, not the full address",
+            checked = settings.incognitoTrimReferrer,
+            onCheckedChange = viewModel::setIncognitoTrimReferrer
+        )
+        SwitchRow(
+            title = "Remove device client hints",
+            subtitle = "Strips headers that reveal device model, memory and exact versions",
+            checked = settings.incognitoStripClientHints,
+            onCheckedChange = viewModel::setIncognitoStripClientHints
+        )
+        SwitchRow(
+            title = "Send Do Not Track",
+            subtitle = "Ask sites not to track you",
+            checked = settings.incognitoSendDnt,
+            onCheckedChange = viewModel::setIncognitoSendDnt
+        )
+        SwitchRow(
+            title = "Rotate common user agent",
+            subtitle = "Off uses one common Firefox for Android identity that every site supports. On picks a random common one per session",
+            checked = settings.incognitoRandomUserAgent,
+            onCheckedChange = viewModel::setIncognitoRandomUserAgent
+        )
+        SwitchRow(
             title = "Block all third-party cookies",
             subtitle = "Stronger than the default per-site isolation. Can stop logins and games embedded in other sites (like itch.io) from saving",
             checked = settings.incognitoBlockThirdPartyCookies,

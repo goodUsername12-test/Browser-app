@@ -71,14 +71,26 @@ fun PrivacySettingsScreen(
         SectionHeader("Blocking")
         SwitchRow(
             title = "Block ads and trackers",
-            subtitle = "EasyList + EasyPrivacy enforced inside the network stack (${viewModel.filterRuleCount()} rules loaded)",
+            subtitle = "EasyList, EasyPrivacy, AdGuard Mobile, AdGuard Tracking and Peter Lowe's list, enforced inside the network stack (${viewModel.filterRuleCount()} rules loaded)",
             icon = Icons.Outlined.Block,
             checked = settings.adBlockEnabled,
             onCheckedChange = viewModel::setAdBlockEnabled
         )
+        SwitchRow(
+            title = "Hide ad spaces",
+            subtitle = "Cosmetic filtering removes empty banners and sponsored boxes (${viewModel.cosmeticRuleCount()} element rules)",
+            checked = settings.adBlockCosmetic,
+            onCheckedChange = viewModel::setAdBlockCosmetic
+        )
+        SwitchRow(
+            title = "Update filter lists automatically",
+            subtitle = "Checks every 4 days in the background",
+            checked = settings.adBlockAutoUpdate,
+            onCheckedChange = viewModel::setAdBlockAutoUpdate
+        )
         SettingRow(
-            title = "Update filter lists",
-            subtitle = "Downloads EasyList and EasyPrivacy from easylist.to. This is the only network request Fable makes that you did not start by browsing.",
+            title = "Update filter lists now",
+            subtitle = viewModel.filterUpdatedText(),
             icon = Icons.Outlined.Refresh,
             onClick = { viewModel.updateFilterLists() },
             trailing = {
@@ -88,6 +100,36 @@ fun PrivacySettingsScreen(
                 )
             }
         )
+        var allowInput by remember { mutableStateOf("") }
+        SettingRow(
+            title = "Sites where ads are allowed",
+            subtitle = if (settings.adBlockAllowSites.isEmpty()) "None. Add a site here if blocking breaks it" else "Blocking is off on these sites and their subdomains"
+        )
+        settings.adBlockAllowSites.sorted().forEach { site ->
+            SettingRow(
+                title = site,
+                trailing = { TextButton(onClick = { viewModel.setAdBlockAllowed(site, false) }) { Text("Remove") } }
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = allowInput,
+                onValueChange = { allowInput = it },
+                singleLine = true,
+                placeholder = { Text("example.com") },
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedButton(
+                enabled = allowInput.contains('.'),
+                onClick = {
+                    viewModel.setAdBlockAllowed(allowInput, true)
+                    allowInput = ""
+                }
+            ) { Text("Add") }
+        }
         SwitchRow(
             title = "Strip tracking parameters",
             subtitle = "Removes utm_*, fbclid, gclid, igshid, mc_eid and friends from every URL you open",

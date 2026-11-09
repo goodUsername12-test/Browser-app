@@ -7,7 +7,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Public
@@ -115,6 +117,13 @@ fun SettingsScreen(
         )
         ListDivider()
         SettingRow(
+            title = "Passwords",
+            subtitle = if (settings.passwordSave) "Save and fill sign-ins, encrypted on device" else "Saving is off",
+            icon = Icons.Outlined.Key,
+            onClick = { onNavigate(Routes.SETTINGS_PASSWORDS) }
+        )
+        ListDivider()
+        SettingRow(
             title = "Incognito",
             subtitle = "Isolation, fingerprint shield, lock, auto-wipe, proxy",
             icon = Icons.Outlined.VisibilityOff,
@@ -160,6 +169,13 @@ fun SettingsScreen(
             subtitle = "Location and incognito download policy",
             icon = Icons.Outlined.Download,
             onClick = { onNavigate(Routes.SETTINGS_DOWNLOADS) }
+        )
+        ListDivider()
+        SettingRow(
+            title = "Backup & restore",
+            subtitle = "Encrypted export and import of all your data",
+            icon = Icons.Outlined.Backup,
+            onClick = { onNavigate(Routes.SETTINGS_BACKUP) }
         )
         ListDivider()
         SettingRow(

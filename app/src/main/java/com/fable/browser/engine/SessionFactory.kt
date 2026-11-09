@@ -7,7 +7,6 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// session setup
 @Singleton
 class SessionFactory @Inject constructor(
     private val engineManager: EngineManager,

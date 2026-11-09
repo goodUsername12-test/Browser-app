@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="src/FableBrowser/FableBrowser.csproj" />
-  <Project Path="tests/FableBrowser.SelfTest/FableBrowser.SelfTest.csproj" />
-</Solution>

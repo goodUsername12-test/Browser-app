@@ -1,4 +1,3 @@
-// background script: ad blocking, header cleanup, proxy routing and the native port
 const NATIVE_APP = "fable";
 
 let config = {
@@ -155,7 +154,6 @@ let rules = {
   exceptionSubstrings: indexSubstrings([]),
 };
 
-// big lists get bucketed by their first two chars so we don't scan every rule per request
 function indexSubstrings(list) {
   const all = Array.isArray(list) ? list.filter((s) => typeof s === "string" && s.length > 0) : [];
   if (all.length < 64) return { all, map: null, short: all };
@@ -199,13 +197,33 @@ let cosmetic = {
 };
 let allowSites = new Set();
 
+const frag = document.createDocumentFragment();
+
 function validSelector(sel) {
   try {
-    document.createDocumentFragment().querySelector(sel);
+    frag.querySelector(sel);
     return true;
   } catch (e) {
     return false;
   }
+}
+
+function filterValidSelectors(list) {
+  const out = [];
+  const step = 100;
+  for (let i = 0; i < list.length; i += step) {
+    const chunk = list.slice(i, i + step).filter((s) => typeof s === "string" && s.length > 0);
+    if (!chunk.length) continue;
+    try {
+      frag.querySelector(chunk.join(","));
+      for (const s of chunk) out.push(s);
+    } catch (e) {
+      for (const s of chunk) {
+        if (validSelector(s)) out.push(s);
+      }
+    }
+  }
+  return out;
 }
 
 function cssFor(selectors) {
@@ -217,9 +235,7 @@ function cssFor(selectors) {
 }
 
 function buildCosmetic(msg) {
-  const generic = (Array.isArray(msg.cosmeticGeneric) ? msg.cosmeticGeneric : []).filter(
-    (s) => typeof s === "string" && validSelector(s)
-  );
+  const generic = filterValidSelectors(Array.isArray(msg.cosmeticGeneric) ? msg.cosmeticGeneric : []);
   const domains = new Map();
   const rawDomains = msg.cosmeticDomains && typeof msg.cosmeticDomains === "object" ? msg.cosmeticDomains : {};
   for (const d of Object.keys(rawDomains)) {

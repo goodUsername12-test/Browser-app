@@ -7,7 +7,6 @@ import org.mozilla.geckoview.GeckoSession
 import java.security.SecureRandom
 import java.util.UUID
 
-// one fake device per super incognito session
 data class SuperIdentity(
     val id: String,
     val label: String,
@@ -120,7 +119,6 @@ data class SuperIdentity(
             "referrer", "hints", "timezone"
         )
 
-        // turned off by game mode
         private val GAME_KEYS = setOf("screen", "webglLimits", "webglNoise", "canvas", "audio", "rects")
 
         fun hideJson(reveal: Set<String>, gameMode: Boolean = false): JSONObject = JSONObject().apply {
@@ -400,7 +398,7 @@ object SuperIdentityFactory {
 
     private fun build(range: SuperDeviceRange, pickLabel: String, randomTimeZone: Boolean): SuperIdentity {
         val kinds = when (range) {
-            SuperDeviceRange.ANY -> setOf(PHONE, TABLET, WINDOWS, MAC, LINUX, IPHONE)
+            SuperDeviceRange.ANY -> setOf(PHONE, TABLET, WINDOWS, MAC, LINUX)
             SuperDeviceRange.PHONES -> setOf(PHONE)
             SuperDeviceRange.PHONES_TABLETS -> setOf(PHONE, TABLET)
             SuperDeviceRange.COMPUTERS -> setOf(WINDOWS, MAC, LINUX)

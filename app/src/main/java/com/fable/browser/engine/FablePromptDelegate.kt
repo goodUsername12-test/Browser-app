@@ -237,9 +237,9 @@ class FablePromptDelegate(
         }
         val result = GeckoResult<PromptDelegate.PromptResponse>()
         val done = AtomicBoolean(false)
-        fun finish() {
+        fun finish(response: () -> PromptDelegate.PromptResponse = { request.dismiss() }) {
             bridge.clear()
-            if (done.compareAndSet(false, true)) result.complete(request.dismiss())
+            if (done.compareAndSet(false, true)) result.complete(runCatching { response() }.getOrElse { request.dismiss() })
         }
         bridge.show(
             FablePrompt.SaveLogin(
@@ -249,18 +249,17 @@ class FablePromptDelegate(
                 password = entry.password,
                 update = existing != null,
                 onSave = { user, pass ->
-                    manager.save(
-                        Autocomplete.LoginEntry.Builder()
-                            .guid(existing?.guid ?: entry.guid)
-                            .origin(entry.origin)
-                            .formActionOrigin(entry.formActionOrigin)
-                            .httpRealm(entry.httpRealm)
-                            .username(user)
-                            .password(pass)
-                            .build()
-                    )
+                    val savedEntry = Autocomplete.LoginEntry.Builder()
+                        .guid(existing?.guid ?: entry.guid)
+                        .origin(entry.origin)
+                        .formActionOrigin(entry.formActionOrigin)
+                        .httpRealm(entry.httpRealm)
+                        .username(user)
+                        .password(pass)
+                        .build()
+                    manager.save(savedEntry)
                     activityBridge.toast("Password saved")
-                    finish()
+                    finish { request.confirm(Autocomplete.LoginSaveOption(savedEntry)) }
                 },
                 onNever = {
                     manager.neverForSite(host)

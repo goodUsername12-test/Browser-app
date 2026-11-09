@@ -23,7 +23,6 @@ import org.mozilla.geckoview.GeckoSessionSettings
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// tab manager
 @Singleton
 class TabManager @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
@@ -862,9 +861,7 @@ class TabManager @Inject constructor(
         override fun onNewSessionRequested(tab: BrowserTab, uri: String): GeckoSession? {
             val child = createTab(tab.isIncognito, open = false, inheritedContextId = tab.contextId, superMode = tab.isSuper)
             if (uri.isNotBlank()) child.updateUrl(uri)
-            child.touch()
-            _activeTabId.value = child.id
-            _isIncognitoMode.value = child.isIncognito
+            activate(child)
             _toolbarVisible.value = true
             scope.launch(Dispatchers.Main) { enforceTabBudget() }
             return child.session

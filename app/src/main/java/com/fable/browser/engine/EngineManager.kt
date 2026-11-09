@@ -31,7 +31,6 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// engine
 @Singleton
 class EngineManager @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -171,7 +170,6 @@ class EngineManager @Inject constructor(
         }
     }
 
-    // some vpns report themselves as metered, check what is underneath
     private fun meteredOf(caps: NetworkCapabilities): Boolean {
         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||

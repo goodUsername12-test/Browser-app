@@ -151,7 +151,6 @@ data class Settings(
 
 @Singleton
 class SettingsStore @Inject constructor(@ApplicationContext private val context: Context) {
-    // don't rename keys, people would lose their settings
     private object Keys {
         val SEARCH_ENGINE = stringPreferencesKey("search_engine")
         val HOMEPAGE = stringPreferencesKey("homepage")

@@ -296,8 +296,8 @@ class ContentBlocker @Inject constructor(@ApplicationContext private val context
         private const val ATTEMPT = ".attempt"
         private const val AUTO_UPDATE_INTERVAL_MS = 4L * 24 * 60 * 60 * 1000
         private const val RETRY_INTERVAL_MS = 6L * 60 * 60 * 1000
-        private const val MAX_GENERIC = 12_000
-        private const val MAX_PER_DOMAIN = 400
+        private const val MAX_GENERIC = 4_000
+        private const val MAX_PER_DOMAIN = 150
 
         val LISTS: List<FilterList> = listOf(
             FilterList("easylist.txt", "EasyList", DEFAULT_EASYLIST_URL),
@@ -308,7 +308,7 @@ class ContentBlocker @Inject constructor(@ApplicationContext private val context
         )
 
         private val ALLOWED_OPTIONS = setOf(
-            "third-party", "3p", "script", "image", "xmlhttprequest", "xhr", "subdocument", "frame", "popup",
+            "third-party", "3p", "script", "image", "xmlhttprequest", "xhr", "subdocument", "frame",
             "stylesheet", "css", "media", "font", "ping", "beacon", "websocket", "other", "object", "important",
             "all", "match-case", "fetch"
         )

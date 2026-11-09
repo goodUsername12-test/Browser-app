@@ -1,4 +1,6 @@
 import java.io.FileInputStream
+import java.net.HttpURLConnection
+import java.net.URI
 import java.util.Properties
 
 plugins {
@@ -25,8 +27,8 @@ android {
         applicationId = "com.fable.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.12.0"
+        versionCode = 9
+        versionName = "1.13.0"
 
         testInstrumentationRunner = "com.fable.browser.HiltTestRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -145,7 +147,7 @@ abstract class FetchFilterListsTask : DefaultTask() {
             if (dest.length() > 1024) return@forEach
             val tmp = File(dir, "$name.part")
             try {
-                val conn = java.net.URI(url).toURL().openConnection() as java.net.HttpURLConnection
+                val conn = URI(url).toURL().openConnection() as HttpURLConnection
                 conn.connectTimeout = 20_000
                 conn.readTimeout = 60_000
                 conn.instanceFollowRedirects = true

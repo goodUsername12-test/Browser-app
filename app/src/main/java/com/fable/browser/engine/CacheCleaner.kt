@@ -15,7 +15,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// cache cleanup, daily or past 300 MB
 @Singleton
 class CacheCleaner @Inject constructor(
     @ApplicationContext private val context: Context,

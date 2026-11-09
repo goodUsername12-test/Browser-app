@@ -28,7 +28,6 @@ import javax.inject.Singleton
 
 class SiteIconImage(val bitmap: Bitmap, val fullBleed: Boolean)
 
-// favicons
 @Singleton
 class FaviconStore @Inject constructor(
     @ApplicationContext private val context: Context

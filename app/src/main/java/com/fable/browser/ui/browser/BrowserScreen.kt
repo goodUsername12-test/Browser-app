@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -115,6 +116,18 @@ fun BrowserScreen(
             .then(if (showToolbar) Modifier else Modifier.navigationBarsPadding())
     }
 
+    val isTablet = LocalConfiguration.current.screenWidthDp >= 600
+    val modeTabs = remember(tabs, incognito) { tabs.filter { it.isIncognito == incognito } }
+    val openTabsAction = {
+        val currentId = tab?.id
+        captureHandle.capture { bitmap ->
+            if (currentId != null && bitmap != null) {
+                viewModel.setThumbnail(currentId, bitmap)
+            }
+            onOpenTabs()
+        }
+    }
+
     val toolbar: @Composable () -> Unit = {
         Column(
             Modifier
@@ -136,44 +149,83 @@ fun BrowserScreen(
                     onClose = viewModel::closeFind
                 )
             }
-            Omnibox(
-                url = url,
-                text = omniboxText,
-                focused = omniboxFocused,
-                isSecure = isSecure && !UrlUtils.isInsecure(url),
-                incognito = incognito,
-                blockedCount = blockedCount,
-                engineLabel = settings.searchEngine.label,
-                onTextChange = viewModel::onOmniboxChange,
-                onFocusChange = viewModel::onOmniboxFocus,
-                onSubmit = { viewModel.submit() },
-                onStartEditing = viewModel::startEditing,
-                onShieldClick = onOpenSettings
-            )
-            BottomToolbar(
-                canGoBack = canGoBack,
-                canGoForward = canGoForward,
-                loading = loading,
-                tabCount = tabs.count { it.isIncognito == incognito },
-                incognito = incognito,
-                onBack = { viewModel.goBack() },
-                onForward = viewModel::goForward,
-                onReload = { viewModel.reload() },
-                onStop = { viewModel.stop() },
-                onFullScreen = viewModel::enterFullScreen,
-                onTabs = {
-                    val currentId = tab?.id
-                    captureHandle.capture { bitmap ->
-                        if (currentId != null && bitmap != null) {
-                            viewModel.setThumbnail(currentId, bitmap)
-                        }
-                        onOpenTabs()
+            if (isTablet) {
+                if (!omniboxFocused) {
+                    TabletTabBar(
+                        tabs = modeTabs,
+                        activeTabId = activeTabId,
+                        incognito = incognito,
+                        onSelect = viewModel::selectTab,
+                        onClose = viewModel::closeTab,
+                        onNewTab = { viewModel.openTab(incognito = incognito) },
+                        onNewSuperTab = { viewModel.openSuperTab() }
+                    )
+                }
+                TabletToolbar(
+                    canGoBack = canGoBack,
+                    canGoForward = canGoForward,
+                    loading = loading,
+                    tabCount = modeTabs.size,
+                    incognito = incognito,
+                    onBack = { viewModel.goBack() },
+                    onForward = viewModel::goForward,
+                    onReload = { viewModel.reload() },
+                    onStop = { viewModel.stop() },
+                    onFullScreen = viewModel::enterFullScreen,
+                    onTabs = openTabsAction,
+                    onToggleIncognito = { viewModel.setIncognitoMode(!incognito) },
+                    onPanic = viewModel::panicWipe,
+                    onMenu = { menuOpen = true },
+                    omnibox = { mod ->
+                        Omnibox(
+                            url = url,
+                            text = omniboxText,
+                            focused = omniboxFocused,
+                            isSecure = isSecure && !UrlUtils.isInsecure(url),
+                            incognito = incognito,
+                            blockedCount = blockedCount,
+                            engineLabel = settings.searchEngine.label,
+                            onTextChange = viewModel::onOmniboxChange,
+                            onFocusChange = viewModel::onOmniboxFocus,
+                            onSubmit = { viewModel.submit() },
+                            onStartEditing = viewModel::startEditing,
+                            onShieldClick = onOpenSettings,
+                            modifier = mod
+                        )
                     }
-                },
-                onToggleIncognito = { viewModel.setIncognitoMode(!incognito) },
-                onPanic = viewModel::panicWipe,
-                onMenu = { menuOpen = true }
-            )
+                )
+            } else {
+                Omnibox(
+                    url = url,
+                    text = omniboxText,
+                    focused = omniboxFocused,
+                    isSecure = isSecure && !UrlUtils.isInsecure(url),
+                    incognito = incognito,
+                    blockedCount = blockedCount,
+                    engineLabel = settings.searchEngine.label,
+                    onTextChange = viewModel::onOmniboxChange,
+                    onFocusChange = viewModel::onOmniboxFocus,
+                    onSubmit = { viewModel.submit() },
+                    onStartEditing = viewModel::startEditing,
+                    onShieldClick = onOpenSettings
+                )
+                BottomToolbar(
+                    canGoBack = canGoBack,
+                    canGoForward = canGoForward,
+                    loading = loading,
+                    tabCount = modeTabs.size,
+                    incognito = incognito,
+                    onBack = { viewModel.goBack() },
+                    onForward = viewModel::goForward,
+                    onReload = { viewModel.reload() },
+                    onStop = { viewModel.stop() },
+                    onFullScreen = viewModel::enterFullScreen,
+                    onTabs = openTabsAction,
+                    onToggleIncognito = { viewModel.setIncognitoMode(!incognito) },
+                    onPanic = viewModel::panicWipe,
+                    onMenu = { menuOpen = true }
+                )
+            }
             if (toolbarAtTop) TabProgress(tab = tab, loading = loading)
         }
     }
@@ -322,7 +374,6 @@ fun BrowserScreen(
     }
 }
 
-// own scope so progress ticks don't redraw the whole screen
 @Composable
 private fun TabProgress(tab: BrowserTab?, loading: Boolean) {
     val progress = tab?.progress?.collectAsStateWithLifecycle()?.value ?: 0

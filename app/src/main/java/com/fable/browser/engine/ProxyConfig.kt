@@ -21,7 +21,6 @@ import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// talks to the fable_shield extension
 @Singleton
 class ProxyConfig @Inject constructor(
     private val contentBlocker: ContentBlocker,

@@ -34,7 +34,6 @@ import javax.inject.Inject
 
 data class Suggestion(val title: String, val url: String, val isBookmark: Boolean)
 
-// browser screen state
 @HiltViewModel
 class BrowserViewModel @Inject constructor(
     private val tabManager: TabManager,

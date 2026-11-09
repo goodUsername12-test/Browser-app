@@ -1,4 +1,3 @@
-// fingerprint shield, injected at document_start into every frame
 (() => {
   if (globalThis.__fableShieldRan) return;
   globalThis.__fableShieldRan = true;
@@ -102,6 +101,22 @@
 
     const exp = (fn) => exportFunction(fn, win);
 
+    function waived(x) {
+      try {
+        return (x && x.wrappedJSObject) || x;
+      } catch (e) {
+        return x;
+      }
+    }
+
+    function unwaive(x) {
+      try {
+        return typeof XPCNativeWrapper === "function" && x ? XPCNativeWrapper(x) : x;
+      } catch (e) {
+        return x;
+      }
+    }
+
     function desc(obj, prop) {
       try {
         return obj ? Object.getOwnPropertyDescriptor(obj, prop) : undefined;
@@ -110,26 +125,57 @@
       }
     }
 
+    function wrapOrig(xFn, pFn) {
+      if (!xFn && !pFn) return null;
+      return function () {
+        const arr = Array.prototype.slice.call(arguments);
+        if (xFn) {
+          try {
+            return Reflect.apply(xFn, unwaive(this), arr.map(unwaive));
+          } catch (e) {
+          }
+          try {
+            return Reflect.apply(xFn, this, arr);
+          } catch (e) {
+          }
+        }
+        if (pFn) {
+          return Reflect.apply(pFn, waived(this), cloneInto(arr, win));
+        }
+        return undefined;
+      };
+    }
+
+    function methodOf(obj, prop) {
+      const xD = desc(unwaive(obj), prop);
+      const pD = desc(waived(obj), prop);
+      return wrapOrig(xD && xD.value, pD && pD.value);
+    }
+
     function defGet(obj, prop, fn) {
-      const d = desc(obj, prop);
+      const xD = desc(unwaive(obj), prop);
+      const pD = desc(waived(obj), prop);
+      const d = pD || xD;
       if (!d) return null;
       try {
-        Object.defineProperty(obj, prop, {
+        Object.defineProperty(waived(obj), prop, {
           get: exp(fn),
-          set: d.set,
+          set: pD ? pD.set : d.set,
           enumerable: d.enumerable,
           configurable: true,
         });
       } catch (e) {
       }
-      return d.get || null;
+      return wrapOrig(xD && xD.get, pD && pD.get);
     }
 
     function defValue(obj, prop, fn) {
-      const d = desc(obj, prop);
+      const xD = desc(unwaive(obj), prop);
+      const pD = desc(waived(obj), prop);
+      const d = pD || xD;
       if (!d || typeof d.value !== "function") return null;
       try {
-        Object.defineProperty(obj, prop, {
+        Object.defineProperty(waived(obj), prop, {
           value: exp(fn),
           writable: d.writable !== false,
           enumerable: d.enumerable,
@@ -137,11 +183,11 @@
         });
       } catch (e) {
       }
-      return d.value;
+      return wrapOrig(xD && xD.value, pD && pD.value);
     }
 
     function constant(obj, prop, value) {
-      if (obj === W && !desc(W, prop)) {
+      if ((obj === W || obj === win) && !desc(W, prop)) {
         defGet(proto("Window"), prop, () => value);
         return;
       }
@@ -152,21 +198,13 @@
       return new W.Proxy(target, cloneInto(handler, win, { cloneFunctions: true }));
     }
 
-    function waived(x) {
-      try {
-        return (x && x.wrappedJSObject) || x;
-      } catch (e) {
-        return x;
-      }
-    }
-
     function pageArray(list) {
       return cloneInto(list, win);
     }
 
     function proto(name) {
       try {
-        return W[name] && W[name].prototype;
+        return (win[name] && win[name].prototype) || (W[name] && W[name].prototype) || null;
       } catch (e) {
         return null;
       }
@@ -190,8 +228,8 @@
 
     function shieldCanvas() {
       const C2D = proto("CanvasRenderingContext2D");
-      const realGetImageData = C2D && desc(C2D, "getImageData") ? desc(C2D, "getImageData").value : null;
-      const realPutImageData = C2D && desc(C2D, "putImageData") ? desc(C2D, "putImageData").value : null;
+      const realGetImageData = C2D ? methodOf(C2D, "getImageData") : null;
+      const realPutImageData = C2D ? methodOf(C2D, "putImageData") : null;
 
       function noisyCopy(canvas) {
         const w = canvas.width;
@@ -212,8 +250,8 @@
 
       const HC = proto("HTMLCanvasElement");
       if (HC) {
-        const origToDataURL = desc(HC, "toDataURL") && desc(HC, "toDataURL").value;
-        const origToBlob = desc(HC, "toBlob") && desc(HC, "toBlob").value;
+        const origToDataURL = methodOf(HC, "toDataURL");
+        const origToBlob = methodOf(HC, "toBlob");
         if (origToDataURL) {
           defValue(HC, "toDataURL", function () {
             let target = this;
@@ -240,10 +278,10 @@
 
       const OC = proto("OffscreenCanvas");
       const O2D = proto("OffscreenCanvasRenderingContext2D");
-      const realOffGet = O2D && desc(O2D, "getImageData") ? desc(O2D, "getImageData").value : null;
-      const realOffPut = O2D && desc(O2D, "putImageData") ? desc(O2D, "putImageData").value : null;
+      const realOffGet = O2D ? methodOf(O2D, "getImageData") : null;
+      const realOffPut = O2D ? methodOf(O2D, "putImageData") : null;
       if (OC && W.OffscreenCanvas) {
-        const origConvert = desc(OC, "convertToBlob") && desc(OC, "convertToBlob").value;
+        const origConvert = methodOf(OC, "convertToBlob");
         if (origConvert) {
           defValue(OC, "convertToBlob", function () {
             let target = this;
@@ -270,7 +308,7 @@
       for (const name of ["CanvasRenderingContext2D", "OffscreenCanvasRenderingContext2D"]) {
         const P = proto(name);
         if (!P) continue;
-        const orig = desc(P, "getImageData") && desc(P, "getImageData").value;
+        const orig = methodOf(P, "getImageData");
         if (!orig) continue;
         defValue(P, "getImageData", function (sx, sy, sw, sh, settings) {
           const img = orig.apply(this, arguments);
@@ -284,7 +322,7 @@
       }
 
       if (C2D) {
-        const origMeasure = desc(C2D, "measureText") && desc(C2D, "measureText").value;
+        const origMeasure = methodOf(C2D, "measureText");
         if (origMeasure) {
           defValue(C2D, "measureText", function (text) {
             const m = origMeasure.apply(this, arguments);
@@ -308,7 +346,6 @@
       }
     }
 
-    // webgl: name, limits and readPixels noise can each be turned off for games
     function shieldWebGl(vendor, renderer, limits, noise) {
       const caps = {
         0x0d33: "maxTexture",
@@ -322,13 +359,13 @@
       for (const name of ["WebGLRenderingContext", "WebGL2RenderingContext"]) {
         const P = proto(name);
         if (!P) continue;
-        const orig = desc(P, "getParameter") && desc(P, "getParameter").value;
+        const orig = methodOf(P, "getParameter");
         if (orig && (vendor !== null || renderer !== null || limits)) {
           defValue(P, "getParameter", function (pname) {
+            if (pname === 0x9245 && vendor !== null) return vendor;
+            if (pname === 0x9246 && renderer !== null) return renderer;
             const value = orig.apply(this, arguments);
             try {
-              if (pname === 0x9245 && vendor !== null) return vendor;
-              if (pname === 0x9246 && renderer !== null) return renderer;
               if (limits) {
                 const key = caps[pname];
                 if (key && typeof value === "number" && limits[key]) return Math.min(value, limits[key]);
@@ -342,7 +379,7 @@
             return value;
           });
         }
-        const origRead = desc(P, "readPixels") && desc(P, "readPixels").value;
+        const origRead = methodOf(P, "readPixels");
         if (origRead && noise !== false) {
           defValue(P, "readPixels", function () {
             const r = origRead.apply(this, arguments);
@@ -380,7 +417,7 @@
       }
       const AB = proto("AudioBuffer");
       if (AB) {
-        const origGet = desc(AB, "getChannelData") && desc(AB, "getChannelData").value;
+        const origGet = methodOf(AB, "getChannelData");
         if (origGet) {
           defValue(AB, "getChannelData", function (channel) {
             const data = origGet.apply(this, arguments);
@@ -394,7 +431,7 @@
             return data;
           });
         }
-        const origCopy = desc(AB, "copyFromChannel") && desc(AB, "copyFromChannel").value;
+        const origCopy = methodOf(AB, "copyFromChannel");
         if (origCopy) {
           defValue(AB, "copyFromChannel", function (dest, channel) {
             const r = origCopy.apply(this, arguments);
@@ -408,7 +445,7 @@
       }
       const AN = proto("AnalyserNode");
       if (AN) {
-        const origFreq = desc(AN, "getFloatFrequencyData") && desc(AN, "getFloatFrequencyData").value;
+        const origFreq = methodOf(AN, "getFloatFrequencyData");
         if (origFreq) {
           defValue(AN, "getFloatFrequencyData", function (arr) {
             const r = origFreq.apply(this, arguments);
@@ -448,8 +485,8 @@
       }
       const DP = W.Date && W.Date.prototype;
       if (!DP) return;
-      const realGetTime = desc(DP, "getTime").value;
-      const realSetTime = desc(DP, "setTime").value;
+      const realGetTime = methodOf(DP, "getTime");
+      const realSetTime = methodOf(DP, "setTime");
       const cache = new Map();
 
       function offsetMin(t) {
@@ -638,7 +675,7 @@
 
       try {
         const RealDate = W.Date;
-        const realParse = desc(RealDate, "parse").value;
+        const realParse = methodOf(win.Date, "parse") || desc(RealDate, "parse").value;
         defValue(RealDate, "parse", function (str) {
           const v = parseLocal(str);
           return v === null ? realParse.call(RealDate, str) : v;
@@ -734,7 +771,7 @@
         });
       }
       const FS = proto("FontFaceSet");
-      const origCheck = FS && desc(FS, "check") && desc(FS, "check").value;
+      const origCheck = FS ? methodOf(FS, "check") : null;
       if (origCheck) {
         defValue(FS, "check", function (font) {
           try {
@@ -753,7 +790,7 @@
       };
       for (const name of ["Element", "Range"]) {
         const P = proto(name);
-        const orig = P && desc(P, "getBoundingClientRect") && desc(P, "getBoundingClientRect").value;
+        const orig = P ? methodOf(P, "getBoundingClientRect") : null;
         if (!orig) continue;
         defValue(P, "getBoundingClientRect", function () {
           const r = orig.apply(this, arguments);
@@ -763,7 +800,7 @@
             const w2 = tweak(w, 1 + Math.round(w * 10));
             const h2 = tweak(h, 2 + Math.round(h * 10));
             if (w2 === w && h2 === h) return r;
-            return new W.DOMRect(r.x, r.y, w2, h2);
+            return new win.DOMRect(r.x, r.y, w2, h2);
           } catch (e) {
             return r;
           }
@@ -773,7 +810,7 @@
 
     function shieldVoices(share) {
       const SS = proto("SpeechSynthesis");
-      const orig = SS && desc(SS, "getVoices") && desc(SS, "getVoices").value;
+      const orig = SS ? methodOf(SS, "getVoices") : null;
       if (!orig) return;
       defValue(SS, "getVoices", function () {
         const list = orig.apply(this, arguments);

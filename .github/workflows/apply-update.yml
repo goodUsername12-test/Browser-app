@@ -50,7 +50,7 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Applying $VERSION ($SHA256)"
           gh api "repos/$GITHUB_REPOSITORY/issues/2/comments?per_page=100" --paginate \
-            --jq ".[] | select(.user.login == \"$OWNER\") | select(.body | startswith(\"FABLE-DATA $VERSION \")) | .body" \
+            --jq ".[] | select((.user.login == \"$OWNER\") or (.user.login == \"dust-agent[bot]\")) | select(.body | startswith(\"FABLE-DATA $VERSION \")) | .body" \
             | tr -d '\r' | grep -v '^FABLE-DATA' | tr -cd 'A-Za-z0-9+/=' | base64 -d > "$RUNNER_TEMP/fable.tar.xz"
           echo "$SHA256  $RUNNER_TEMP/fable.tar.xz" | sha256sum -c -
 

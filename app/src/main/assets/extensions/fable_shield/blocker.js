@@ -339,6 +339,8 @@ function onNativeMessage(msg) {
     }
   } else if (msg.type === "reader-toggle") {
     broadcastToActiveTab({ type: "reader-toggle" });
+  } else if (msg.type === "save-page") {
+    broadcastToActiveTab({ type: "fable-save-page", id: String(msg.id || ""), url: String(msg.url || "") });
   }
 }
 
@@ -613,6 +615,29 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       postNative({ type: "icon", page: String(msg.page || ""), icons: Array.isArray(msg.icons) ? msg.icons.slice(0, 3) : [] });
     }
     return undefined;
+  }
+  if (msg && msg.type === "fable-save") {
+    const tab = sender && sender.tab;
+    if (sender.frameId === 0 || sender.frameId === undefined) {
+      postNative({
+        type: "save-page-data",
+        id: String(msg.id || ""),
+        op: String(msg.op || ""),
+        path: msg.path === undefined ? "" : String(msg.path),
+        seq: Number(msg.seq) || 0,
+        last: msg.last === true,
+        data: typeof msg.data === "string" ? msg.data : "",
+        page: String(msg.page || ""),
+        title: String(msg.title || ""),
+        done: Number(msg.done) || 0,
+        total: Number(msg.total) || 0,
+        count: Number(msg.count) || 0,
+        bytes: Number(msg.bytes) || 0,
+        message: String(msg.message || ""),
+        incognito: !!(tab && tab.incognito),
+      });
+    }
+    return Promise.resolve(true);
   }
   if (msg && msg.type === "fable-diag") {
     if (config.diag) postNative({ type: "diag", text: String(msg.text || "").slice(0, 600) });

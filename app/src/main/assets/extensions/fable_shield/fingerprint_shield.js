@@ -99,7 +99,62 @@
       return;
     }
 
-    const exp = (fn) => exportFunction(fn, win);
+    function pageError(e) {
+      if (e === undefined || e === null || typeof e !== "object") return e;
+      let name = "Error";
+      let message = "";
+      try {
+        name = String(e.name || "Error");
+        message = String(e.message || "");
+      } catch (x) {
+      }
+      try {
+        const Ctor = W[name];
+        if (typeof Ctor === "function" && /Error$/.test(name)) return new Ctor(message);
+        if (name && W.DOMException) return new W.DOMException(message, name);
+      } catch (x) {
+      }
+      try {
+        return new W.Error(message);
+      } catch (x) {
+        return undefined;
+      }
+    }
+
+    function toPage(v) {
+      if (v === null || (typeof v !== "object" && typeof v !== "function")) return v;
+      try {
+        if (typeof v === "function") return v;
+        if (v instanceof Promise) {
+          return new W.Promise(
+            exportFunction((resolve, reject) => {
+              v.then(
+                (r) => resolve(toPage(r)),
+                (e) => reject(pageError(e))
+              );
+            }, win)
+          );
+        }
+        const pr = Object.getPrototypeOf(v);
+        if (pr === Array.prototype || pr === Object.prototype || pr === null) return cloneInto(v, win, { cloneFunctions: true, wrapReflectors: true });
+      } catch (e) {
+      }
+      return v;
+    }
+
+    function guard(fn) {
+      return function () {
+        let r;
+        try {
+          r = fn.apply(this, arguments);
+        } catch (e) {
+          throw pageError(e);
+        }
+        return toPage(r);
+      };
+    }
+
+    const exp = (fn) => exportFunction(guard(fn), win);
 
     function waived(x) {
       try {
@@ -195,7 +250,9 @@
     }
 
     function pageProxy(target, handler) {
-      return new W.Proxy(target, cloneInto(handler, win, { cloneFunctions: true }));
+      const safe = {};
+      for (const k of Object.keys(handler)) safe[k] = guard(handler[k]);
+      return new W.Proxy(target, cloneInto(safe, win, { cloneFunctions: true }));
     }
 
     function pageArray(list) {

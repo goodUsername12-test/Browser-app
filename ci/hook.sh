@@ -229,8 +229,9 @@ for mode in incognito super; do
   adb pull /sdcard/fable-ui.xml "$ART/js-$mode-ui.xml" >/dev/null 2>&1 || true
   jsyes="$(grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -ciE 'javascript is enabled|yes.{0,20}javascript')"
   jsno="$(grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -ciE 'javascript is disabled|javascript is not enabled|no.{0,20}javascript')"
+  jstext="$(grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -iE 'javascript' | head -n 3 | cut -c1-120 | tr '\n' ' ')"
   step "javascript $mode: enabled-text=$jsyes disabled-text=$jsno"
-  JSCHECK="$JSCHECK"$'\n'"[$mode] enabled=$jsyes disabled=$jsno"
+  JSCHECK="$JSCHECK"$'\n'"[$mode] enabled=$jsyes disabled=$jsno text: $jstext"
 done
 timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://coveryourtracks.eff.org/kcarter?aat=1" --ez fable_super true -n "$ACT" >> "$ART/start.txt" 2>&1
 sleep 45; shot "15-eff-super"
@@ -242,6 +243,45 @@ sleep 40; shot "16-download"
 adb shell ls /sdcard/Download > "$ART/dl-after.txt" 2>/dev/null || true
 DLNEW="$(comm -13 <(sort "$ART/dl-before.txt") <(sort "$ART/dl-after.txt") | tr -d '\r' | tr '\n' ' ')"
 step "download to Download folder: new files=[${DLNEW}]"
+
+log "Download page code check"
+PAGECODE="not run"
+adb shell ls /sdcard/Download > "$ART/pc-before.txt" 2>/dev/null || true
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://webglsamples.org/aquarium/aquarium.html" -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 25
+adb logcat -d -v brief > "$ART/dust-zz-before-page-code.txt" 2>/dev/null || true
+adb logcat -c
+if tap_desc "Menu"; then
+  sleep 2
+  if ! tap_text "Download page code"; then
+    adb shell input swipe 540 1800 540 700 300; sleep 2
+    tap_text "Download page code" || PAGECODE="menu item not found"
+  fi
+  sleep 90; shot "17-page-code"
+  adb shell ls /sdcard/Download > "$ART/pc-after.txt" 2>/dev/null || true
+  PCNEW="$(comm -13 <(sort "$ART/pc-before.txt") <(sort "$ART/pc-after.txt") | tr -d '\r' | grep -i '\.zip$' | head -n 1)"
+  if [ -n "$PCNEW" ]; then
+    adb pull "/sdcard/Download/$PCNEW" "$ART/page-code.zip" >/dev/null 2>&1 || true
+    PAGECODE="saved $PCNEW: $(python3 - "$ART/page-code.zip" <<'PY2'
+import sys, zipfile, collections
+try:
+    z = zipfile.ZipFile(sys.argv[1])
+    names = z.namelist()
+    ext = collections.Counter((n.rsplit(".", 1)[-1].lower() if "." in n.rsplit("/", 1)[-1] else "none") for n in names)
+    size = sum(i.file_size for i in z.infolist())
+    print("%d files, %d KB, types %s" % (len(names), size // 1024, dict(ext.most_common(10))))
+except Exception as e:
+    print("unreadable zip: %s" % e)
+PY2
+)"
+  else
+    [ "$PAGECODE" = "not run" ] && PAGECODE="no zip appeared"
+  fi
+else
+  PAGECODE="menu button not found"
+fi
+adb logcat -d -v brief -s PageArchiver:* FableShield:* > "$ART/page-code-log.txt" 2>/dev/null || true
+step "download page code: $PAGECODE"
 
 log "Close a tab and undo"
 timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com/?undo=1" -n "$ACT" >> "$ART/start.txt" 2>&1

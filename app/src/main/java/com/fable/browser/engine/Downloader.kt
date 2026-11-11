@@ -145,6 +145,24 @@ class Downloader @Inject constructor(
         }
     }
 
+    fun saveLocalFile(file: File, fileName: String, mimeType: String, fromIncognito: Boolean) {
+        scope.launch {
+            try {
+                runDownload(
+                    fileName = sanitize(fileName),
+                    url = "about:page-code",
+                    mimeType = mimeType,
+                    totalBytes = file.length(),
+                    fromIncognito = fromIncognito,
+                    openStream = { file.inputStream() },
+                    retry = null
+                )
+            } finally {
+                file.delete()
+            }
+        }
+    }
+
     private class Fetched(val stream: InputStream, val mimeType: String?, val length: Long, val fileName: String?)
 
     private fun isHttp(url: String): Boolean = url.startsWith("http://") || url.startsWith("https://")

@@ -719,6 +719,13 @@ class TabManager @Inject constructor(
         proxyConfig.toggleReaderMode()
     }
 
+    fun savePageCode(): Boolean {
+        val tab = activeTab ?: return false
+        val url = tab.url.value
+        if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("file://")) return false
+        return proxyConfig.savePageCode(url)
+    }
+
     fun findInPage(query: String, forward: Boolean = true) {
         val tab = activeTab ?: return
         if (query.isBlank()) {

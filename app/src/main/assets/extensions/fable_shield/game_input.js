@@ -29,15 +29,28 @@
       h = screen.height || h;
     } catch (_) {
     }
-    return Math.max(140, Math.min(w, h) * 0.45);
+    return Math.max(90, Math.min(w, h) * 0.22);
   }
 
-  function clampMove(dx, dy) {
+  const speed = new Map();
+
+  function clampMove(dx, dy, id) {
     if (!isFinite(dx) || !isFinite(dy)) return [0, 0];
     const max = limit();
     if (Math.abs(dx) > max || Math.abs(dy) > max) return [0, 0];
+    const mag = Math.abs(dx) + Math.abs(dy);
+    if (id !== undefined) {
+      const avg = speed.get(id);
+      if (avg !== undefined && mag > 64 && mag > avg * 8 + 40) {
+        speed.set(id, avg * 0.8 + 24 * 0.2);
+        return [0, 0];
+      }
+      speed.set(id, avg === undefined ? Math.min(mag, 24) : avg * 0.8 + mag * 0.2);
+    }
     return [dx, dy];
   }
+
+  const lastDelta = new Map();
 
   function remember(e, m, x, y) {
     moves.set(e, m);
@@ -78,16 +91,22 @@
       if (e.type === "pointermove") {
         const p = last.get(id);
         before.set(e, p || [x, y]);
-        remember(e, p ? clampMove(x - p[0], y - p[1]) : [0, 0], x, y);
+        const m = p ? clampMove(x - p[0], y - p[1], id) : [0, 0];
+        remember(e, m, x, y);
         last.set(id, [x, y]);
+        lastDelta.set(id, [m[0], m[1], x, y, false]);
         lastTouchAt = now();
       } else if (e.type === "pointerdown") {
         last.set(id, [x, y]);
+        speed.delete(id);
+        lastDelta.delete(id);
         remember(e, [0, 0], x, y);
         activeTouches = last.size;
         lastTouchAt = now();
       } else {
         last.delete(id);
+        speed.delete(id);
+        lastDelta.delete(id);
         remember(e, [0, 0], x, y);
         activeTouches = last.size;
         lastTouchAt = now();
@@ -110,8 +129,21 @@
       const x = e.screenX;
       const y = e.screenY;
       if (e.type === "mousemove") {
-        const p = mouseLast;
-        remember(e, p ? clampMove(x - p[0], y - p[1]) : [0, 0], x, y);
+        let match = null;
+        for (const d of lastDelta.values()) {
+          if (Math.abs(d[2] - x) <= 2 && Math.abs(d[3] - y) <= 2) {
+            match = d;
+            break;
+          }
+        }
+        if (match) {
+          remember(e, match[4] ? [0, 0] : [match[0], match[1]], x, y);
+          match[4] = true;
+        } else if (lastDelta.size === 0 && mouseLast) {
+          remember(e, clampMove(x - mouseLast[0], y - mouseLast[1], "mouse"), x, y);
+        } else {
+          remember(e, [0, 0], x, y);
+        }
         mouseLast = [x, y];
       } else if (e.type === "mousedown") {
         mouseLast = [x, y];

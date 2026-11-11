@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.outlined.AddToHomeScreen
 import androidx.compose.material.icons.outlined.Article
 import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.Download
@@ -67,7 +68,8 @@ fun MenuSheet(
     onSaveAsPdf: () -> Unit,
     onTextZoom: (Int) -> Unit,
     onFingerprintTest: () -> Unit,
-    onNewSuperTab: () -> Unit = {}
+    onNewSuperTab: () -> Unit = {},
+    onSavePageCode: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -122,6 +124,7 @@ fun MenuSheet(
                 onAddToHomeScreen(); onDismiss()
             }
             MenuItem(Icons.Outlined.Print, "Print / Save as PDF") { onSaveAsPdf(); onDismiss() }
+            MenuItem(Icons.Outlined.Code, "Download page code (.zip)") { onSavePageCode(); onDismiss() }
             ListDivider()
             MenuItem(Icons.Outlined.Fingerprint, "Test my fingerprint") {
                 onFingerprintTest(); onDismiss()

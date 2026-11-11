@@ -26,7 +26,8 @@ class ProxyConfig @Inject constructor(
     private val contentBlocker: ContentBlocker,
     private val superIncognito: SuperIncognito,
     private val fingerprintShield: FingerprintShield,
-    private val faviconStore: FaviconStore
+    private val faviconStore: FaviconStore,
+    private val pageArchiver: PageArchiver
 ) : WebExtension.MessageDelegate {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val sessionSeed = SecureRandom().nextInt(Int.MAX_VALUE - 1) + 1
@@ -62,6 +63,17 @@ class ProxyConfig @Inject constructor(
 
     fun toggleReaderMode() {
         port?.postMessage(JSONObject().apply { put("type", "reader-toggle") })
+    }
+
+    fun savePageCode(url: String): Boolean {
+        val p = port ?: return false
+        val id = pageArchiver.newRequest() ?: return true
+        p.postMessage(JSONObject().apply {
+            put("type", "save-page")
+            put("id", id)
+            put("url", url)
+        })
+        return true
     }
 
     fun pushRules() {
@@ -152,6 +164,7 @@ class ProxyConfig @Inject constructor(
                 if (page.isNotBlank()) faviconStore.onPageIcons(page, list)
             }
             "diag" -> Log.i(TAG, json.optString("text").take(600))
+            "save-page-data" -> pageArchiver.onMessage(json)
             else -> {
                 p.postMessage(configJson())
                 scope.launch { sendRules() }

@@ -27,8 +27,8 @@ android {
         applicationId = "com.fable.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.14.0"
+        versionCode = 11
+        versionName = "1.15.0"
 
         testInstrumentationRunner = "com.fable.browser.HiltTestRunner"
         vectorDrawables { useSupportLibrary = true }

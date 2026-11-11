@@ -18,6 +18,11 @@
     <string name="download_started">Downloading %1$s</string>
     <string name="download_saved">Saved to %1$s</string>
     <string name="download_failed_named">Download failed: %1$s</string>
+    <string name="page_code_collecting">Collecting page code and loaded files…</string>
+    <string name="page_code_progress">Page code: %1$d of %2$d files, %3$d MB</string>
+    <string name="page_code_failed">Could not save the page code</string>
+    <string name="page_code_busy">Page code is already being saved</string>
+    <string name="page_code_no_response">The page did not respond. Reload it and try again</string>
     <string name="no_app_for_link">No app can open this link</string>
     <string name="cannot_open_file">That file cannot be opened</string>
     <string name="shortcut_unsupported">This launcher does not support shortcuts</string>

@@ -261,6 +261,10 @@ class BrowserViewModel @Inject constructor(
         activityBridge.addToHomeScreen(tab.title.value, tab.url.value, tab.thumbnail.value)
     }
 
+    fun savePageCode() {
+        if (!tabManager.savePageCode()) activityBridge.toast("This page cannot be saved")
+    }
+
     fun saveAsPdf() {
         val tab = activeTab ?: return
         val name = (tab.title.value.ifBlank { UrlUtils.displayHost(tab.url.value) })

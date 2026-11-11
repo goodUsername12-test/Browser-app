@@ -350,7 +350,8 @@ fun BrowserScreen(
             onSaveAsPdf = viewModel::saveAsPdf,
             onTextZoom = viewModel::setTextZoom,
             onFingerprintTest = viewModel::openFingerprintTest,
-            onNewSuperTab = { viewModel.openSuperTab() }
+            onNewSuperTab = { viewModel.openSuperTab() },
+            onSavePageCode = viewModel::savePageCode
         )
     }
 

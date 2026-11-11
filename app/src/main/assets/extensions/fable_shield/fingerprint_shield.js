@@ -303,7 +303,7 @@
         copy.height = h;
         const ctx = copy.getContext("2d");
         if (!ctx) return null;
-        ctx.drawImage(canvas, 0, 0);
+        ctx.drawImage(unwaive(canvas), 0, 0);
         const img = realGetImageData.call(ctx, 0, 0, w, h);
         noiseBytes(img.data, img.data.length, 0);
         realPutImageData.call(ctx, img, 0, 0);
@@ -961,7 +961,7 @@
           constant(NP, "vendor", S.vendor || "");
           constant(NP, "pdfViewerEnabled", !!S.pdfViewer);
         }
-        if (hiding("cpu")) constant(NP, "hardwareConcurrency", S.cores);
+        if (hiding("cpu")) constant(NP, "hardwareConcurrency", [4, 6, 8, 12, 16][(SEED + (S.cores || 8)) % 5]);
         if (hiding("touch")) constant(NP, "maxTouchPoints", S.touchPoints);
         if (hiding("languages")) {
           constant(NP, "language", langs[0]);
@@ -1016,7 +1016,7 @@
         constant(SP, "availHeight", bucket(ih));
         constant(SP, "colorDepth", 24);
         constant(SP, "pixelDepth", 24);
-        constant(NP, "hardwareConcurrency", 8);
+        constant(NP, "hardwareConcurrency", [4, 6, 8, 12][SEED % 4]);
         constant(NP, "maxTouchPoints", 5);
         if (CFG.dnt !== false) constant(NP, "doNotTrack", "1");
         constant(NP, "language", "en-US");

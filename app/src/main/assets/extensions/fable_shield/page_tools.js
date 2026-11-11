@@ -12,6 +12,33 @@
 
   let blockedCount = 0;
 
+  const retainedBlobs = new Map();
+  let retainedBlobBytes = 0;
+  const MAX_RETAINED_BLOBS = 80;
+  const MAX_RETAINED_BLOB_BYTES = 96 * 1024 * 1024;
+
+  try {
+    const W = window.wrappedJSObject;
+    if (W && W.URL && typeof W.URL.createObjectURL === "function" && typeof exportFunction === "function") {
+      const origCreate = W.URL.createObjectURL.bind(W.URL);
+      W.URL.createObjectURL = exportFunction(function (obj) {
+        const u = origCreate(obj);
+        try {
+          const raw = (obj && obj.wrappedJSObject) || obj;
+          if (u && raw && typeof raw.size === "number" && typeof raw.arrayBuffer === "function") {
+            if (raw.size > 0 && raw.size <= 32 * 1024 * 1024 && retainedBlobs.size < MAX_RETAINED_BLOBS && retainedBlobBytes + raw.size <= MAX_RETAINED_BLOB_BYTES) {
+              retainedBlobs.set(String(u), { blob: raw, size: raw.size, type: String(raw.type || "") });
+              retainedBlobBytes += raw.size;
+            }
+          }
+        } catch (e) {
+        }
+        return u;
+      }, window);
+    }
+  } catch (e) {
+  }
+
   let readerActive = false;
   let savedBodyHtml = null;
 
@@ -328,6 +355,12 @@
       index.push({ path: "page/rendered-dom.html", url: location.href, kind: "current DOM" });
 
       try {
+        await new Promise((resolve) => {
+          let doneRaf = false;
+          const finish = () => { if (!doneRaf) { doneRaf = true; resolve(); } };
+          setTimeout(finish, 120);
+          try { requestAnimationFrame(finish); } catch (e) { finish(); }
+        });
         const canvases = Array.from(document.querySelectorAll("canvas")).slice(0, 16);
         let ci = 0;
         for (const c of canvases) {
@@ -359,6 +392,48 @@
         const snapBytes = enc.encode(JSON.stringify(snap, null, 2));
         await sendBytes("memory/runtime-state.json", snapBytes);
         index.push({ path: "memory/runtime-state.json", url: "memory://runtime-state", kind: "memory:state", type: "application/json", size: snapBytes.length });
+
+        let cssDump = "";
+        try {
+          let si = 0;
+          for (const sheet of document.styleSheets) {
+            si++;
+            try {
+              const rules = sheet.cssRules;
+              if (!rules || !rules.length) continue;
+              cssDump += "/* Stylesheet #" + si + " " + (sheet.href || "inline/cssom") + " */\n";
+              for (let ri = 0; ri < rules.length && ri < 10000; ri++) {
+                cssDump += (rules[ri].cssText || "") + "\n";
+              }
+            } catch (e) {
+            }
+          }
+        } catch (e) {
+        }
+        if (cssDump) {
+          const cssBytes = enc.encode(cssDump);
+          total += cssBytes.length;
+          await sendBytes("memory/computed-stylesheets.css", cssBytes);
+          index.push({ path: "memory/computed-stylesheets.css", url: "memory://stylesheets", kind: "memory:cssom", type: "text/css", size: cssBytes.length });
+        }
+
+        let bi = 0;
+        for (const [burl, info] of retainedBlobs.entries()) {
+          bi++;
+          if (total >= SAVE_MAX_TOTAL) break;
+          try {
+            const ab = await info.blob.arrayBuffer();
+            const bbytes = new Uint8Array(ab);
+            if (bbytes.length > 0 && bbytes.length <= SAVE_MAX_FILE) {
+              const bpath = "memory/blobs/blob-" + bi + extFromType(info.type, ".bin");
+              total += bbytes.length;
+              await sendBytes(bpath, bbytes);
+              seen.set(burl, "memory:blob");
+              index.push({ path: bpath, url: burl, kind: "memory:blob", type: info.type, size: bbytes.length });
+            }
+          } catch (e) {
+          }
+        }
       } catch (e) {
       }
 

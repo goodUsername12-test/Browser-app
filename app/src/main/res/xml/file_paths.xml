@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <external-path name="downloads" path="Download/Fable/" />
-    <external-files-path name="app_downloads" path="downloads/" />
+    <external-path name="downloads_root" path="Download/" />
+    <external-files-path name="app_downloads" path="Download/" />
+    <external-files-path name="app_downloads_legacy" path="downloads/" />
+    <files-path name="internal_downloads" path="downloads/" />
+    <cache-path name="opened_html" path="opened_html/" />
+    <cache-path name="exports" path="exports/" />
 </paths>

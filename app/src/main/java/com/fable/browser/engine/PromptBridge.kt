@@ -74,7 +74,10 @@ sealed interface FablePrompt {
         val host: String,
         val accounts: List<LoginChoice>,
         val onPick: (Int) -> Unit,
-        override val onDismiss: () -> Unit
+        override val onDismiss: () -> Unit,
+        val offersGenerated: Boolean = false,
+        val onOwnPassword: () -> Unit = onDismiss,
+        val onNeverSuggest: () -> Unit = onDismiss
     ) : FablePrompt
 
     data class IncognitoDownload(

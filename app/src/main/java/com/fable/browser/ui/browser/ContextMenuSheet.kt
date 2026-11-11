@@ -61,6 +61,9 @@ fun ContextMenuSheet(
                 Item(Icons.Outlined.VisibilityOff, "Open in new incognito tab") {
                     onAction(ContentMenuAction.OPEN_IN_NEW_INCOGNITO_TAB)
                 }
+                Item(Icons.Outlined.Download, "Download link") {
+                    onAction(ContentMenuAction.DOWNLOAD_LINK)
+                }
                 Item(Icons.Outlined.ContentCopy, "Copy link") { onCopyLink(link) }
             }
             if (image != null) {

@@ -117,6 +117,7 @@ class PasswordsViewModel @Inject constructor(
     fun setSave(v: Boolean) { viewModelScope.launch { settingsStore.setPasswordSave(v) } }
     fun setAutofill(v: Boolean) { viewModelScope.launch { settingsStore.setPasswordAutofill(v) } }
     fun setIncognito(v: Boolean) { viewModelScope.launch { settingsStore.setPasswordIncognito(v) } }
+    fun setSuggestStrong(v: Boolean) { viewModelScope.launch { settingsStore.setPasswordSuggestStrong(v) } }
     fun allowSite(site: String) { viewModelScope.launch { settingsStore.setPasswordNever(site, false) } }
 }
 
@@ -164,6 +165,12 @@ fun PasswordsScreen(
             subtitle = "Off keeps private tabs fully separate",
             checked = settings.passwordIncognito,
             onCheckedChange = viewModel::setIncognito
+        )
+        SwitchRow(
+            title = "Suggest strong passwords",
+            subtitle = "Offer a generated password on sign-up forms. Choosing Type my own hides it for that site",
+            checked = settings.passwordSuggestStrong,
+            onCheckedChange = viewModel::setSuggestStrong
         )
         SettingRow(
             title = "Stored encrypted on this device",

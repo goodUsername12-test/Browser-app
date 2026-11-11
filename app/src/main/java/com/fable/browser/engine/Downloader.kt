@@ -59,12 +59,18 @@ class Downloader @Inject constructor(
     }
 
     fun enqueue(response: WebResponse, fromIncognito: Boolean) {
+        activityBridge.ensureNotificationPermission()
         val fileName = fileNameOf(response)
         val mime = mimeOf(response.headers["Content-Type"], fileName)
         val total = response.headers["Content-Length"]?.trim()?.toLongOrNull() ?: -1L
         runCatching { response.setReadTimeoutMillis(READ_TIMEOUT_MS) }
         val body = response.body
         val url = response.uri
+        if (body == null && isHttp(url)) {
+            enqueueUrl(url, fileName, fromIncognito)
+            return
+        }
+        activityBridge.toast(context.getString(R.string.download_started, fileName))
         scope.launch {
             runDownload(
                 fileName = fileName,
@@ -79,12 +85,14 @@ class Downloader @Inject constructor(
     }
 
     fun enqueueUrl(url: String, suggestedName: String?, fromIncognito: Boolean) {
+        activityBridge.ensureNotificationPermission()
+        activityBridge.toast(context.getString(R.string.download_started, suggestedName?.takeIf { it.isNotBlank() } ?: fileNameFromUrl(url)))
         scope.launch {
             val fallbackName = suggestedName?.takeIf { it.isNotBlank() }?.let { sanitize(it) } ?: fileNameFromUrl(url)
             if (url.startsWith("data:")) {
                 val decoded = runCatching { decodeDataUrl(url) }.getOrNull()
                 if (decoded == null) {
-                    notifications.showFailure(fallbackName)
+                    reportFailure(fallbackName)
                     return@launch
                 }
                 val name = withExtension(fallbackName, decoded.first)
@@ -107,7 +115,7 @@ class Downloader @Inject constructor(
             }
             val legacy = runCatching { legacyStream(url) }.getOrNull()
             if (legacy == null) {
-                notifications.showFailure(fallbackName)
+                reportFailure(fallbackName)
                 return@launch
             }
             val name = suggestedName?.takeIf { it.isNotBlank() }?.let { sanitize(it) } ?: legacy.fileName ?: fallbackName
@@ -209,7 +217,7 @@ class Downloader @Inject constructor(
         val target = runCatching { createTarget(fileName, mimeType) }.getOrNull()
         if (target == null) {
             runCatching { openStream()?.close() }
-            notifications.showFailure(fileName)
+            reportFailure(fileName)
             return@withContext
         }
         val id = runCatching {
@@ -225,7 +233,7 @@ class Downloader @Inject constructor(
             )
         }.getOrElse {
             target.delete()
-            notifications.showFailure(fileName)
+            reportFailure(fileName)
             return@withContext
         }
         _activeCount.update { it + 1 }
@@ -249,16 +257,17 @@ class Downloader @Inject constructor(
                 repository.updateProgress(id, written, if (totalBytes > 0) maxOf(totalBytes, written) else written)
                 repository.setStatus(id, DownloadStatus.COMPLETED)
                 notifications.showComplete(id, target.fileName, target.contentUri, mimeType)
+                activityBridge.toast(context.getString(R.string.download_saved, target.locationLabel))
             } else {
                 repository.setStatus(id, DownloadStatus.FAILED)
                 target.delete()
-                notifications.showFailure(target.fileName)
+                reportFailure(target.fileName)
             }
         } catch (e: Throwable) {
             Log.w(TAG, "download failed", e)
             runCatching { repository.setStatus(id, DownloadStatus.FAILED) }
             target.delete()
-            notifications.showFailure(target.fileName)
+            reportFailure(target.fileName)
         } finally {
             _activeCount.update { (it - 1).coerceAtLeast(0) }
         }
@@ -296,6 +305,11 @@ class Downloader @Inject constructor(
         return if (result.isSuccess) written else -1L
     }
 
+    private fun reportFailure(fileName: String) {
+        notifications.showFailure(fileName)
+        activityBridge.toast(context.getString(R.string.download_failed_named, fileName))
+    }
+
     suspend fun open(entry: DownloadEntry) {
         val uri = withContext(Dispatchers.IO) { resolveUri(entry) } ?: run {
             activityBridge.toast(context.getString(R.string.cannot_open_file))
@@ -305,7 +319,13 @@ class Downloader @Inject constructor(
     }
 
     private fun resolveUri(entry: DownloadEntry): Uri? {
-        if (entry.filePath.startsWith("content://")) return Uri.parse(entry.filePath)
+        if (entry.filePath.startsWith("content://")) {
+            val uri = Uri.parse(entry.filePath)
+            val exists = runCatching {
+                context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), null, null, null)?.use { it.moveToFirst() }
+            }.getOrNull()
+            return if (exists == false) null else uri
+        }
         val file = File(entry.filePath)
         if (!file.exists()) return null
         return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -314,6 +334,7 @@ class Downloader @Inject constructor(
     private interface Target {
         val fileName: String
         val displayPath: String
+        val locationLabel: String
         val contentUri: Uri?
         fun openOutput(): OutputStream
         fun sync(stream: OutputStream) {}
@@ -323,10 +344,10 @@ class Downloader @Inject constructor(
 
     private fun createTarget(fileName: String, mimeType: String?): Target? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val sub = "${Environment.DIRECTORY_DOWNLOADS}/$SUBFOLDER"
-            runCatching { mediaStoreTarget(fileName, mimeType, sub) }.getOrNull()?.let { return it }
-            runCatching { mediaStoreTarget(fileName, null, sub) }.getOrNull()?.let { return it }
-            runCatching { mediaStoreTarget(fileName, null, Environment.DIRECTORY_DOWNLOADS) }.getOrNull()?.let { return it }
+            val root = Environment.DIRECTORY_DOWNLOADS
+            runCatching { mediaStoreTarget(fileName, mimeType, root) }.getOrNull()?.let { return it }
+            runCatching { mediaStoreTarget(fileName, null, root) }.getOrNull()?.let { return it }
+            runCatching { mediaStoreTarget(sanitize("download_" + System.currentTimeMillis() + extOf(fileName)), null, root) }.getOrNull()?.let { return it }
         } else {
             runCatching { legacyTarget(fileName) }.getOrNull()?.let { return it }
         }
@@ -355,6 +376,7 @@ class Downloader @Inject constructor(
         return object : Target {
             override val fileName = storedName
             override val displayPath = uri.toString()
+            override val locationLabel = "${Environment.DIRECTORY_DOWNLOADS}/$storedName"
             override val contentUri: Uri = uri
             override fun openOutput(): OutputStream =
                 resolver.openOutputStream(uri, "wt") ?: error("cannot open $uri")
@@ -380,25 +402,24 @@ class Downloader @Inject constructor(
     }
 
     private fun legacyTarget(fileName: String): Target? {
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            SUBFOLDER
-        )
+        @Suppress("DEPRECATION")
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         if (!dir.exists() && !dir.mkdirs()) return null
-        return fileTarget(uniqueFile(dir, fileName), scan = true)
+        return fileTarget(uniqueFile(dir, fileName), scan = true, label = Environment.DIRECTORY_DOWNLOADS)
     }
 
     private fun privateTarget(fileName: String): Target? {
-        val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: File(context.filesDir, "downloads"), SUBFOLDER)
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: File(context.filesDir, "downloads")
         if (!dir.exists() && !dir.mkdirs()) return null
-        return fileTarget(uniqueFile(dir, fileName), scan = false)
+        return fileTarget(uniqueFile(dir, fileName), scan = false, label = dir.absolutePath)
     }
 
-    private fun fileTarget(file: File, scan: Boolean): Target {
+    private fun fileTarget(file: File, scan: Boolean, label: String): Target {
         file.outputStream().close()
         return object : Target {
             override val fileName = file.name
             override val displayPath = file.absolutePath
+            override val locationLabel = "$label/${file.name}"
             override val contentUri: Uri? =
                 runCatching {
                     FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -480,11 +501,13 @@ class Downloader @Inject constructor(
         return sanitize(name.ifBlank { "download" })
     }
 
+    private fun extOf(name: String): String =
+        name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && it.length <= 8 }?.let { ".$it" } ?: ""
+
     private fun sanitize(name: String): String =
         name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(180).ifBlank { "download" }
 
     companion object {
-        const val SUBFOLDER = "Fable"
         private const val TAG = "FableDownload"
         private const val READ_TIMEOUT_MS = 120_000L
         private const val FETCH_TIMEOUT_MS = 60_000L

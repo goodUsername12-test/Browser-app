@@ -30,7 +30,7 @@ class SessionFactory @Inject constructor(
         val builder = GeckoSessionSettings.Builder()
             .usePrivateMode(true)
             .useTrackingProtection(settings.incognitoTrackingProtection)
-            .allowJavascript(true)
+            .allowJavascript(javascriptFor(settings, incognito = true))
             .contextId(contextId)
             .userAgentMode(if (identity.desktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
             .viewportMode(if (identity.desktop) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
@@ -47,7 +47,7 @@ class SessionFactory @Inject constructor(
         val builder = GeckoSessionSettings.Builder()
             .usePrivateMode(true)
             .useTrackingProtection(settings.incognitoTrackingProtection)
-            .allowJavascript(true)
+            .allowJavascript(javascriptFor(settings, incognito = true))
             .contextId(contextId)
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
             .suspendMediaWhenInactive(true)
@@ -61,10 +61,21 @@ class SessionFactory @Inject constructor(
 
     private fun applyCommon(session: GeckoSession, settings: Settings, incognito: Boolean) {
         session.settings.apply {
-            allowJavascript = if (incognito) settings.incognitoJavascript else true
+            val js = javascriptFor(settings, incognito)
+            if (allowJavascript != js) allowJavascript = js
             if (incognito) useTrackingProtection = settings.incognitoTrackingProtection
         }
     }
+
+    fun applyJavascript(session: GeckoSession, settings: Settings, incognito: Boolean): Boolean {
+        val js = javascriptFor(settings, incognito)
+        if (session.settings.allowJavascript == js) return false
+        session.settings.allowJavascript = js
+        return true
+    }
+
+    fun javascriptFor(settings: Settings, incognito: Boolean): Boolean =
+        if (incognito) settings.incognitoJavascript else true
 
     fun newContextId(): String = "fable-" + UUID.randomUUID().toString()
 }

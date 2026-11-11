@@ -2,6 +2,8 @@ package com.fable.browser
 
 import android.app.ActivityManager
 import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.os.Build
 import android.os.Bundle
 import android.view.Choreographer
@@ -31,6 +33,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -178,7 +183,10 @@ class MainActivity : FragmentActivity() {
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
             Intent.ACTION_VIEW -> intent.dataString?.let { url ->
-                if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_super", false)) {
+                val data = intent.data
+                if (data != null && (data.scheme == "content" || data.scheme == "file")) {
+                    openLocalHtml(data, intent.type)
+                } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_super", false)) {
                     tabManager.openSuperTab(url)
                 } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_incognito", false)) {
                     tabManager.openTab(url, incognito = true)
@@ -191,6 +199,37 @@ class MainActivity : FragmentActivity() {
             }
         }
     }
+
+    private fun openLocalHtml(uri: Uri, type: String?) {
+        lifecycleScope.launch {
+            val local = withContext(Dispatchers.IO) { copyLocalHtml(uri, type) }
+            if (local != null) tabManager.openExternalUrl(Uri.fromFile(local).toString())
+            else activityBridge.toast(getString(R.string.cannot_open_file))
+        }
+    }
+
+    private fun copyLocalHtml(uri: Uri, type: String?): File? = runCatching {
+        val rawName = runCatching {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: "page.html"
+        val safe = rawName.replace(Regex("[^A-Za-z0-9._ -]"), "_").take(120).ifBlank { "page.html" }
+        val lower = safe.lowercase()
+        val ext = when {
+            lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml") || lower.endsWith(".mht") || lower.endsWith(".mhtml") -> ""
+            type == "application/xhtml+xml" -> ".xhtml"
+            type == "multipart/related" || type == "message/rfc822" -> ".mht"
+            else -> ".html"
+        }
+        val dir = File(cacheDir, "opened_html/" + System.currentTimeMillis())
+        if (!dir.mkdirs() && !dir.isDirectory) return@runCatching null
+        val out = File(dir, safe + ext)
+        val input = contentResolver.openInputStream(uri) ?: return@runCatching null
+        input.use { src -> out.outputStream().use { dst -> src.copyTo(dst, 64 * 1024) } }
+        File(cacheDir, "opened_html").listFiles()?.sortedByDescending { it.lastModified() }?.drop(20)?.forEach { it.deleteRecursively() }
+        out
+    }.getOrNull()
 
     override fun onStart() {
         super.onStart()

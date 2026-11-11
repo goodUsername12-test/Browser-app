@@ -8,7 +8,6 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.runtime.Composable
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.fable.browser.engine.Downloader
 import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
@@ -22,7 +21,7 @@ fun DownloadSettingsScreen(
     SettingsPage(title = "Downloads", onBack = onBack, viewModel = viewModel) {
         SectionHeader("Location")
         SettingRow(
-            title = "${Environment.DIRECTORY_DOWNLOADS}/${Downloader.SUBFOLDER}",
+            title = Environment.DIRECTORY_DOWNLOADS,
             subtitle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                 "Written through MediaStore, so Fable never asks for storage permission"
             else

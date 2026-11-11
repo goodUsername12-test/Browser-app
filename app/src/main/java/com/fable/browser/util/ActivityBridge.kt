@@ -1,11 +1,15 @@
 package com.fable.browser.util
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
@@ -17,6 +21,7 @@ import androidx.core.graphics.drawable.IconCompat
 import com.fable.browser.R
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -24,11 +29,13 @@ import javax.inject.Singleton
 class ActivityBridge @Inject constructor(
     @ApplicationContext private val appContext: Context
 ) {
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var activityRef: WeakReference<ComponentActivity>? = null
     private var filePicker: ActivityResultLauncher<Intent>? = null
     private var pendingFileResult: ((List<Uri>) -> Unit)? = null
     private var permissionRequester: ActivityResultLauncher<Array<String>>? = null
     private var pendingPermissionResult: ((Boolean) -> Unit)? = null
+    private val notifPrompted = AtomicBoolean(false)
 
     @Volatile
     var externalPickerOpen: Boolean = false
@@ -73,6 +80,15 @@ class ActivityBridge @Inject constructor(
             pendingFileResult = null
             pendingPermissionResult = null
             externalPickerOpen = false
+        }
+    }
+
+    fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        if (!notifPrompted.compareAndSet(false, true)) return
+        mainHandler.post {
+            requestAndroidPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) {}
         }
     }
 
@@ -182,6 +198,12 @@ class ActivityBridge @Inject constructor(
     }
 
     fun toast(message: String) {
-        Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            runCatching { Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show() }
+        } else {
+            mainHandler.post {
+                runCatching { Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show() }
+            }
+        }
     }
 }

@@ -244,10 +244,20 @@ fun PromptHost(prompt: FablePrompt) {
                             Text(account.detail, style = MaterialTheme.typography.bodySmall)
                         }
                     }
+                    if (prompt.offersGenerated) {
+                        TextButton(
+                            onClick = prompt.onNeverSuggest,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Never suggest strong passwords") }
+                    }
                 }
             },
             confirmButton = {},
-            dismissButton = { TextButton(onClick = prompt.onDismiss) { Text("Cancel") } }
+            dismissButton = {
+                TextButton(onClick = if (prompt.offersGenerated) prompt.onOwnPassword else prompt.onDismiss) {
+                    Text(if (prompt.offersGenerated) "Type my own" else "Cancel")
+                }
+            }
         )
         is FablePrompt.IncognitoDownload -> AlertDialog(
             onDismissRequest = prompt.onDismiss,

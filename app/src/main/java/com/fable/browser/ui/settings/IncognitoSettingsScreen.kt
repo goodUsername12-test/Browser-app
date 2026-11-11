@@ -265,8 +265,8 @@ fun IncognitoSettingsScreen(
             onCheckedChange = viewModel::setIncognitoFingerprintProtection
         )
         SwitchRow(
-            title = "JavaScript",
-            subtitle = "Turn off for the most private and secure browsing. Most sites and all games need it. Applies to new incognito tabs",
+            title = "Allow JavaScript",
+            subtitle = if (settings.incognitoJavascript) "On: sites and games work normally in incognito and super incognito" else "Off: scripts are blocked in incognito and super incognito, most sites will break",
             checked = settings.incognitoJavascript,
             onCheckedChange = viewModel::setIncognitoJavascript
         )

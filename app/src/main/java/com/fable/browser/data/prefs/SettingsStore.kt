@@ -130,6 +130,7 @@ data class Settings(
     val passwordSave: Boolean = true,
     val passwordAutofill: Boolean = true,
     val passwordIncognito: Boolean = false,
+    val passwordSuggestStrong: Boolean = true,
     val passwordNeverSites: Set<String> = emptySet(),
     val optimizerEnabled: Boolean = true,
     val adBlockCosmetic: Boolean = true,
@@ -194,7 +195,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val NO_JIT = booleanPreferencesKey("no_jit")
         val DISABLE_WASM = booleanPreferencesKey("disable_wasm")
         val SPEED_MEMORY = booleanPreferencesKey("speed_memory")
-        val INCOGNITO_JS = booleanPreferencesKey("incognito_javascript")
+        val INCOGNITO_JS = booleanPreferencesKey("incognito_javascript_v2")
         val INCOGNITO_HTTPS = booleanPreferencesKey("incognito_https_only")
         val INCOGNITO_3P_COOKIES = booleanPreferencesKey("incognito_block_3p_cookies")
         val FP_TRUSTED = stringPreferencesKey("fp_trusted_sites")
@@ -252,6 +253,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val PASSWORD_SAVE = booleanPreferencesKey("passwords_offer_save")
         val PASSWORD_AUTOFILL = booleanPreferencesKey("passwords_autofill")
         val PASSWORD_INCOGNITO = booleanPreferencesKey("passwords_incognito")
+        val PASSWORD_SUGGEST = booleanPreferencesKey("passwords_suggest_strong")
         val PASSWORD_NEVER = stringSetPreferencesKey("passwords_never_sites")
         val OPTIMIZER = booleanPreferencesKey("optimizer_enabled")
         val AD_BLOCK_COSMETIC = booleanPreferencesKey("adblock_cosmetic")
@@ -365,6 +367,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             passwordSave = p[Keys.PASSWORD_SAVE] ?: true,
             passwordAutofill = p[Keys.PASSWORD_AUTOFILL] ?: true,
             passwordIncognito = p[Keys.PASSWORD_INCOGNITO] ?: false,
+            passwordSuggestStrong = p[Keys.PASSWORD_SUGGEST] ?: true,
             passwordNeverSites = p[Keys.PASSWORD_NEVER] ?: emptySet(),
             optimizerEnabled = p[Keys.OPTIMIZER] ?: true,
             adBlockCosmetic = p[Keys.AD_BLOCK_COSMETIC] ?: true,
@@ -485,6 +488,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setPasswordSave(v: Boolean) = set(Keys.PASSWORD_SAVE, v)
     suspend fun setPasswordAutofill(v: Boolean) = set(Keys.PASSWORD_AUTOFILL, v)
     suspend fun setPasswordIncognito(v: Boolean) = set(Keys.PASSWORD_INCOGNITO, v)
+    suspend fun setPasswordSuggestStrong(v: Boolean) = set(Keys.PASSWORD_SUGGEST, v)
     suspend fun setOptimizerEnabled(v: Boolean) = set(Keys.OPTIMIZER, v)
     suspend fun setAdBlockCosmetic(v: Boolean) = set(Keys.AD_BLOCK_COSMETIC, v)
     suspend fun setAdBlockAutoUpdate(v: Boolean) = set(Keys.AD_BLOCK_AUTO_UPDATE, v)

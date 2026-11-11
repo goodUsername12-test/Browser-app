@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import org.mozilla.geckoview.Autocomplete
 import org.mozilla.geckoview.GeckoResult
 import javax.inject.Inject
@@ -38,6 +39,19 @@ class PasswordManager @Inject constructor(
     fun canFill(incognito: Boolean): Boolean {
         val s = settings
         return s.passwordAutofill && (!incognito || s.passwordIncognito)
+    }
+
+    private val declinedGenerated = ConcurrentHashMap.newKeySet<String>()
+
+    fun suggestGenerated(host: String): Boolean =
+        settings.passwordSuggestStrong && PasswordStore.hostOf(host) !in declinedGenerated
+
+    fun declineGenerated(host: String) {
+        declinedGenerated.add(PasswordStore.hostOf(host))
+    }
+
+    fun disableGenerated() {
+        scope.launch { settingsStore.setPasswordSuggestStrong(false) }
     }
 
     fun neverForSite(host: String) {

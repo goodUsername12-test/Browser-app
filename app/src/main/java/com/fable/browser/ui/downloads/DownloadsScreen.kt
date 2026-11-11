@@ -145,7 +145,7 @@ private fun statusLine(entry: DownloadEntry): String {
             if (entry.totalBytes > 0)
                 "${formatBytes(entry.downloadedBytes)} of ${formatBytes(entry.totalBytes)}"
             else formatBytes(entry.downloadedBytes)
-        DownloadStatus.COMPLETED -> "${formatBytes(entry.downloadedBytes)}  ·  Downloads/Fable"
+        DownloadStatus.COMPLETED -> "${formatBytes(entry.downloadedBytes)}  ·  Download"
         DownloadStatus.FAILED -> "Failed"
         DownloadStatus.CANCELLED -> "Cancelled"
     }
@@ -180,7 +180,7 @@ private fun EmptyState(modifier: Modifier = Modifier) {
         Text("No downloads", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Files are saved to Downloads/Fable. Incognito downloads ask for confirmation first.",
+            "Files are saved to Download. Incognito downloads ask for confirmation first.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

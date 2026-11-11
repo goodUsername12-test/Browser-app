@@ -503,6 +503,7 @@ class EngineManager @Inject constructor(
                 ContentBlocking.AntiTracking.CRYPTOMINING
 
         private val BASE_PREFS: List<Pair<String, Any>> = listOf(
+            "javascript.enabled" to true,
             "signon.rememberSignons" to true,
             "signon.autofillForms" to true,
             "signon.generation.enabled" to true,

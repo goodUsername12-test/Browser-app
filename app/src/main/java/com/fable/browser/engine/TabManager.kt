@@ -99,13 +99,24 @@ class TabManager @Inject constructor(
                     updated.memoryMode != settings.memoryMode ||
                     updated.idleTabMinutes != settings.idleTabMinutes
                 val keepChanged = updated.keepIncognitoTabs != settings.keepIncognitoTabs || updated.keepSuperTabs != settings.keepSuperTabs
+                val jsChanged = updated.incognitoJavascript != settings.incognitoJavascript
                 settings = updated
+                if (jsChanged) applyJavascriptToTabs(updated)
                 if (wipeChanged) restartAutoWipeTimer()
                 if (budgetChanged) {
                     enforceTabBudget()
                     if (appVisible) restartIdleSweep()
                 }
                 if (keepChanged) persist()
+            }
+        }
+    }
+
+    private fun applyJavascriptToTabs(current: Settings) {
+        _tabs.value.forEach { tab ->
+            val changed = runCatching { sessionFactory.applyJavascript(tab.session, current, tab.isIncognito) }.getOrDefault(false)
+            if (changed && tab.session.isOpen && tab.url.value.startsWith("http", ignoreCase = true)) {
+                runCatching { tab.session.reload() }
             }
         }
     }

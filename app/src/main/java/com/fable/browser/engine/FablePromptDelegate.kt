@@ -20,6 +20,7 @@ class FablePromptDelegate(
     private val incognito: Boolean = false
 ) : PromptDelegate {
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val dismissedLoginHosts = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     override fun onAlertPrompt(
         session: GeckoSession,
@@ -276,21 +277,35 @@ class FablePromptDelegate(
         request: PromptDelegate.AutocompleteRequest<Autocomplete.LoginSelectOption>
     ): GeckoResult<PromptDelegate.PromptResponse> {
         val manager = passwords ?: return GeckoResult.fromValue(request.dismiss())
-        val options = request.options
-        if (options.isEmpty() || !manager.canFill(incognito)) return GeckoResult.fromValue(request.dismiss())
-        val host = PasswordStore.hostOf(options[0].value.origin)
+        val all = request.options
+        if (all.isEmpty()) return GeckoResult.fromValue(request.dismiss())
+        val host = PasswordStore.hostOf(all[0].value.origin)
+        val allowGenerated = manager.suggestGenerated(host)
+        val dismissedAt = dismissedLoginHosts[host] ?: 0L
+        val allowSaved = manager.canFill(incognito) && System.currentTimeMillis() - dismissedAt > LOGIN_SNOOZE_MS
+        val options = all.filter { option ->
+            if (isGenerated(option)) allowGenerated else allowSaved
+        }
+        if (options.isEmpty()) return GeckoResult.fromValue(request.dismiss())
+        val hasGenerated = options.any { isGenerated(it) }
+        val onlyGenerated = options.all { isGenerated(it) }
         val result = GeckoResult<PromptDelegate.PromptResponse>()
         val done = AtomicBoolean(false)
         fun finish(response: () -> PromptDelegate.PromptResponse) {
             bridge.clear()
-            if (done.compareAndSet(false, true)) result.complete(response())
+            if (done.compareAndSet(false, true)) result.complete(runCatching { response() }.getOrElse { request.dismiss() })
+        }
+        fun decline() {
+            if (hasGenerated) manager.declineGenerated(host)
+            dismissedLoginHosts[host] = System.currentTimeMillis()
+            finish { request.dismiss() }
         }
         bridge.show(
             FablePrompt.SelectLogin(
-                title = "Sign in with a saved password",
+                title = if (onlyGenerated) "Use a strong password?" else "Sign in with a saved password",
                 host = host,
                 accounts = options.map { option ->
-                    val generated = (option.hint and 1) != 0
+                    val generated = isGenerated(option)
                     LoginChoice(
                         label = when {
                             generated -> "Use a strong generated password"
@@ -302,15 +317,30 @@ class FablePromptDelegate(
                 },
                 onPick = { index ->
                     val picked = options.getOrNull(index)
-                    if (picked == null) finish { request.dismiss() }
+                    if (picked == null) decline()
                     else {
-                        manager.store.markUsed(picked.value.guid)
+                        if (!isGenerated(picked)) runCatching { manager.store.markUsed(picked.value.guid) }
                         finish { request.confirm(picked) }
                     }
                 },
-                onDismiss = { finish { request.dismiss() } }
+                onDismiss = { decline() },
+                offersGenerated = hasGenerated,
+                onOwnPassword = { decline() },
+                onNeverSuggest = {
+                    manager.declineGenerated(host)
+                    manager.disableGenerated()
+                    finish { request.dismiss() }
+                }
             )
         )
         return result
+    }
+
+    private fun isGenerated(option: Autocomplete.LoginSelectOption): Boolean =
+        (option.hint and GENERATED_HINT) != 0
+
+    private companion object {
+        const val GENERATED_HINT = 1
+        const val LOGIN_SNOOZE_MS = 180_000L
     }
 }

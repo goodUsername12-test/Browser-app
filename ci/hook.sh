@@ -218,6 +218,31 @@ for mode in normal incognito super; do
   step "dust.tt $mode: tapped=$tapped, web text nodes=$webnodes"
   DUST="$DUST"$'\n'"[$mode] tapped: $tapped | nav: $nav"$'\n'"$errs"
 done
+log "JavaScript check in incognito and super incognito"
+JSCHECK=""
+for mode in incognito super; do
+  extra="--ez fable_incognito true"
+  [ "$mode" = "super" ] && extra="--ez fable_super true"
+  timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://www.whatismybrowser.com/detect/is-javascript-enabled" $extra -n "$ACT" >> "$ART/start.txt" 2>&1
+  sleep 25; shot "14-js-$mode"
+  adb shell uiautomator dump /sdcard/fable-ui.xml > /dev/null 2>&1
+  adb pull /sdcard/fable-ui.xml "$ART/js-$mode-ui.xml" >/dev/null 2>&1 || true
+  jsyes="$(grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -ciE 'javascript is enabled|yes.{0,20}javascript')"
+  jsno="$(grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -ciE 'javascript is disabled|javascript is not enabled|no.{0,20}javascript')"
+  step "javascript $mode: enabled-text=$jsyes disabled-text=$jsno"
+  JSCHECK="$JSCHECK"$'\n'"[$mode] enabled=$jsyes disabled=$jsno"
+done
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://coveryourtracks.eff.org/kcarter?aat=1" --ez fable_super true -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 45; shot "15-eff-super"
+
+log "Download check"
+adb shell ls /sdcard/Download > "$ART/dl-before.txt" 2>/dev/null || true
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://codeload.github.com/goodUsername12-test/Browser-app/zip/refs/heads/main" -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 40; shot "16-download"
+adb shell ls /sdcard/Download > "$ART/dl-after.txt" 2>/dev/null || true
+DLNEW="$(comm -13 <(sort "$ART/dl-before.txt") <(sort "$ART/dl-after.txt") | tr -d '\r' | tr '\n' ' ')"
+step "download to Download folder: new files=[${DLNEW}]"
+
 log "Close a tab and undo"
 timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com/?undo=1" -n "$ACT" >> "$ART/start.txt" 2>&1
 sleep 12
@@ -271,6 +296,10 @@ adb logcat -d -b events -v brief 2>/dev/null | grep -E "am_anr|am_crash|am_proc_
   echo "dust.tt check:"
   echo '```'
   echo "$DUST" | cut -c1-400 | head -n 60
+  echo '```'
+  echo "JavaScript check:"
+  echo '```'
+  echo "$JSCHECK"
   echo '```'
   echo "Super incognito diagnostics:"
   echo '```'

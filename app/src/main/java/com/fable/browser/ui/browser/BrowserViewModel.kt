@@ -285,6 +285,9 @@ class BrowserViewModel @Inject constructor(
                 maybeShowDisclosure(true)
                 tabManager.openTab(it, incognito = true)
             }
+            ContentMenuAction.DOWNLOAD_LINK -> target.linkUri?.let {
+                downloader.enqueueUrl(it, null, fromIncognito = target.isIncognito)
+            }
             ContentMenuAction.DOWNLOAD_IMAGE -> target.imageUri?.let {
                 downloader.enqueueUrl(it, null, fromIncognito = target.isIncognito)
             }

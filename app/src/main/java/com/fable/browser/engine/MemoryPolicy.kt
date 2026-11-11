@@ -76,13 +76,13 @@ data class MemoryPolicy(
             return when (mode) {
                 MemoryMode.LOW -> MemoryPolicy(
                     mode = mode,
-                    keepLoaded = 1,
-                    idleUnloadMs = 30_000L,
-                    hiddenUnloadMs = 30_000L,
+                    keepLoaded = 2,
+                    idleUnloadMs = 180_000L,
+                    hiddenUnloadMs = 120_000L,
                     unloadOnBackgroundTrim = true,
-                    memoryCacheKb = 8192,
-                    backForwardPages = 0,
-                    imageCacheKb = 65536,
+                    memoryCacheKb = 32768,
+                    backForwardPages = 1,
+                    imageCacheKb = 131072,
                     thumbnailWidth = 240
                 )
                 MemoryMode.FAST -> MemoryPolicy(
@@ -117,7 +117,7 @@ data class MemoryPolicy(
                     idleUnloadMs = (if (bigPhone) 20 else 10) * 60_000L,
                     hiddenUnloadMs = 0L,
                     unloadOnBackgroundTrim = true,
-                    memoryCacheKb = if (bigPhone) 32768 else 16384,
+                    memoryCacheKb = if (bigPhone) 65536 else 49152,
                     backForwardPages = if (bigPhone) 2 else 1,
                     imageCacheKb = 131072,
                     thumbnailWidth = 360

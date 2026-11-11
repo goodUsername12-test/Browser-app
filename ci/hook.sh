@@ -227,9 +227,10 @@ for mode in incognito super; do
   sleep 25; shot "14-js-$mode"
   adb shell uiautomator dump /sdcard/fable-ui.xml > /dev/null 2>&1
   adb pull /sdcard/fable-ui.xml "$ART/js-$mode-ui.xml" >/dev/null 2>&1 || true
-  jsyes="$(grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -ciE 'javascript is enabled|yes.{0,20}javascript')"
-  jsno="$(grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -ciE 'javascript is disabled|javascript is not enabled|no.{0,20}javascript')"
-  jstext="$(grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -iE 'javascript' | head -n 3 | cut -c1-120 | tr '\n' ' ')"
+  adb logcat -d -v brief -s FableShield:* > "$ART/js-$mode-log.txt" 2>/dev/null || true
+  jsyes="$( { grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null; grep -E "js-page" "$ART/js-$mode-log.txt" 2>/dev/null; } | grep -ciE 'javascript is enabled|yes.{0,25}javascript')"
+  jsno="$( { grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null; grep -E "js-page" "$ART/js-$mode-log.txt" 2>/dev/null; } | grep -ciE 'javascript is disabled|javascript is not enabled|no.{0,25}javascript')"
+  jstext="$( { grep -E "js-page" "$ART/js-$mode-log.txt" 2>/dev/null | tail -n 1; grep -o 'text="[^"]*"' "$ART/js-$mode-ui.xml" 2>/dev/null | grep -iE 'javascript' | head -n 2; } | cut -c1-180 | tr '\n' ' ')"
   step "javascript $mode: enabled-text=$jsyes disabled-text=$jsno"
   JSCHECK="$JSCHECK"$'\n'"[$mode] enabled=$jsyes disabled=$jsno text: $jstext"
 done
@@ -271,8 +272,9 @@ try:
     z = zipfile.ZipFile(sys.argv[1])
     names = z.namelist()
     ext = collections.Counter((n.rsplit(".", 1)[-1].lower() if "." in n.rsplit("/", 1)[-1] else "none") for n in names)
+    mem = [n for n in names if n.startswith("memory/") or n.startswith("devtools/") or n.startswith("network-stream/")]
     size = sum(i.file_size for i in z.infolist())
-    print("%d files, %d KB, types %s" % (len(names), size // 1024, dict(ext.most_common(10))))
+    print("%d files (%d memory/devtools/stream), %d KB, types %s" % (len(names), len(mem), size // 1024, dict(ext.most_common(10))))
 except Exception as e:
     print("unreadable zip: %s" % e)
 PY2
@@ -293,8 +295,9 @@ try:
     z = zipfile.ZipFile(sys.argv[1])
     names = z.namelist()
     ext = collections.Counter((n.rsplit(".", 1)[-1].lower() if "." in n.rsplit("/", 1)[-1] else "none") for n in names)
+    mem = [n for n in names if n.startswith("memory/") or n.startswith("devtools/") or n.startswith("network-stream/")]
     size = sum(i.file_size for i in z.infolist())
-    print("%d files, %d KB, types %s" % (len(names), size // 1024, dict(ext.most_common(10))))
+    print("%d files (%d memory/devtools/stream), %d KB, types %s" % (len(names), len(mem), size // 1024, dict(ext.most_common(10))))
 except Exception as e:
     print("unreadable zip: %s" % e)
 PY2

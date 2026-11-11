@@ -753,9 +753,32 @@
     }
   }
 
+  function reportPageDiag() {
+    try {
+      if (window.top !== window) return;
+      const h = location.hostname.toLowerCase();
+      if (h.includes("whatismybrowser.com")) {
+        const bodyText = String((document.body && document.body.innerText) || "").replace(/\s+/g, " ").slice(0, 300);
+        browser.runtime.sendMessage({ type: "fable-diag", text: "js-page " + location.href + " text=" + bodyText }).catch(() => {});
+      } else if (h.includes("coveryourtracks.eff.org")) {
+        setTimeout(() => {
+          try {
+            const statusEl = document.getElementById("fp_status") || document.body;
+            const st = String((statusEl && statusEl.innerText) || "").replace(/\s+/g, " ").slice(0, 350);
+            browser.runtime.sendMessage({ type: "fable-diag", text: "eff-page status=" + st }).catch(() => {});
+          } catch (e) {}
+        }, 6000);
+      }
+    } catch (e) {}
+  }
+
   if (document.readyState === "complete") {
     setTimeout(reportIcon, 600);
+    setTimeout(reportPageDiag, 1200);
   } else {
-    window.addEventListener("load", () => setTimeout(reportIcon, 600), { once: true });
+    window.addEventListener("load", () => {
+      setTimeout(reportIcon, 600);
+      setTimeout(reportPageDiag, 1200);
+    }, { once: true });
   }
 })();

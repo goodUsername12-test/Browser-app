@@ -192,7 +192,7 @@ class EngineManager @Inject constructor(
             "network.http.http3.enable" to true,
             "network.http.http3.enable_0rtt" to d.fastConnections,
             "security.tls.enable_0rtt_data" to d.fastConnections,
-            "network.http.rcwn.enabled" to d.fastConnections,
+            "network.http.rcwn.enabled" to false,
             "network.dns.disablePrefetch" to quiet,
             "network.dns.disablePrefetchFromHTTPS" to (quiet || !d.fastConnections),
             "privacy.query_stripping.enabled" to d.stripTrackingParams,
@@ -230,7 +230,11 @@ class EngineManager @Inject constructor(
             "dom.min_background_timeout_value" to if (optimizing(d)) 10_000 else 1_000,
             "dom.timeout.background_throttling_max_budget" to if (optimizing(d)) 20 else 50,
             "browser.sessionhistory.max_entries" to if (optimizing(d)) 25 else 50,
-            "image.mem.decode_bytes_at_a_time" to if (optimizing(d)) 65_536 else 16_384
+            "image.mem.decode_bytes_at_a_time" to if (d.gameMode || d.superGameMode) 131_072 else 65_536,
+            "browser.cache.disk.max_entry_size" to 51_200,
+            "network.buffer.cache.size" to 65_536,
+            "network.buffer.cache.count" to 48,
+            "dom.ipc.processCount.webIsolated" to if (optimizing(d)) 2 else 4
         )
     }
 

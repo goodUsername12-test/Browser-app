@@ -320,6 +320,17 @@ class SettingsViewModel @Inject constructor(
     fun setIncognitoFingerprintProtection(v: Boolean) = edit { store.setIncognitoFingerprintProtection(v) }
     fun setGameTouchFix(v: Boolean) = edit { store.setGameTouchFix(v) }
     fun setFpTouch(v: Boolean) = edit { store.setFpTouch(v) }
+    fun setArchiveReadOnly(v: Boolean) = edit { store.setArchiveReadOnly(v) }
+    fun setArchiveNetworkStream(v: Boolean) = edit { store.setArchiveNetworkStream(v) }
+    fun setArchiveIncludeMemory(v: Boolean) = edit { store.setArchiveIncludeMemory(v) }
+    fun setArchiveIncludeCanvas(v: Boolean) = edit { store.setArchiveIncludeCanvas(v) }
+    fun setArchiveIncludeStorage(v: Boolean) = edit { store.setArchiveIncludeStorage(v) }
+    fun setArchiveGuessAssets(v: Boolean) = edit { store.setArchiveGuessAssets(v) }
+    fun setArchiveDeepHooks(v: Boolean) = edit { store.setArchiveDeepHooks(v) }
+    fun setArchiveMaxFiles(v: Int) = edit { store.setArchiveMaxFiles(v) }
+    fun setArchiveMaxTotalMb(v: Int) = edit { store.setArchiveMaxTotalMb(v) }
+    fun setArchiveMaxFileMb(v: Int) = edit { store.setArchiveMaxFileMb(v) }
+    fun setArchiveStreamBufferMb(v: Int) = edit { store.setArchiveStreamBufferMb(v) }
     fun copyIncognitoFromNormal() = edit { store.copyIncognitoFromNormal(settings.value) }
 
     fun autoMemoryInfo(context: android.content.Context): Pair<com.fable.browser.data.model.MemoryMode, Long> =

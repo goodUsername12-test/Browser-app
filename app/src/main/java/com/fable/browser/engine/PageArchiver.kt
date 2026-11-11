@@ -34,7 +34,8 @@ class PageArchiver @Inject constructor(
         val zip: ZipOutputStream,
         val title: String,
         val page: String,
-        val incognito: Boolean
+        val incognito: Boolean,
+        val mode: String
     ) {
         var entry: String? = null
         var lastActivity: Long = System.currentTimeMillis()
@@ -122,7 +123,8 @@ class PageArchiver @Inject constructor(
             zip = zip,
             title = json.optString("title"),
             page = json.optString("page"),
-            incognito = json.optBoolean("incognito")
+            incognito = json.optBoolean("incognito"),
+            mode = json.optString("mode", "code")
         )
     }
 
@@ -194,7 +196,8 @@ class PageArchiver @Inject constructor(
             .trim()
             .take(60)
         val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
-        return "$base-code-$stamp.zip"
+        val tag = if (a.mode == "memory") "memory" else "code"
+        return "$base-$tag-$stamp.zip"
     }
 
     private fun cleanPath(raw: String): String {

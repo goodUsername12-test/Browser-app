@@ -351,7 +351,8 @@ fun BrowserScreen(
             onTextZoom = viewModel::setTextZoom,
             onFingerprintTest = viewModel::openFingerprintTest,
             onNewSuperTab = { viewModel.openSuperTab() },
-            onSavePageCode = viewModel::savePageCode
+            onSavePageCode = viewModel::savePageCode,
+            onSaveMemorySnapshot = viewModel::saveMemorySnapshot
         )
     }
 

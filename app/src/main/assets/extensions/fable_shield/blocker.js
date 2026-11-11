@@ -28,6 +28,17 @@ let config = {
   superProxyPass: "",
   dataSaver: false,
   diag: false,
+  archiveReadOnly: true,
+  archiveNetworkStream: true,
+  archiveIncludeMemory: true,
+  archiveIncludeCanvas: true,
+  archiveIncludeStorage: true,
+  archiveGuessAssets: true,
+  archiveDeepHooks: false,
+  archiveMaxFiles: 4000,
+  archiveMaxTotalMb: 600,
+  archiveMaxFileMb: 120,
+  archiveStreamBufferMb: 160,
 };
 
 let superByUa = new Map();
@@ -340,7 +351,7 @@ function onNativeMessage(msg) {
   } else if (msg.type === "reader-toggle") {
     broadcastToActiveTab({ type: "reader-toggle" });
   } else if (msg.type === "save-page") {
-    triggerSavePage(String(msg.id || ""), String(msg.url || ""));
+    triggerSavePage(String(msg.id || ""), String(msg.url || ""), String(msg.mode || "all"));
   }
 }
 
@@ -464,9 +475,144 @@ async function fallbackSaveFromBackground(id, url) {
   }
 }
 
-async function triggerSavePage(id, url) {
+
+function archiveCfg() {
+  return {
+    readOnly: config.archiveReadOnly !== false,
+    networkStream: config.archiveNetworkStream !== false,
+    includeMemory: config.archiveIncludeMemory !== false,
+    includeCanvas: config.archiveIncludeCanvas !== false,
+    includeStorage: config.archiveIncludeStorage !== false,
+    guessAssets: config.archiveGuessAssets !== false,
+    deepHooks: config.archiveReadOnly === false && config.archiveDeepHooks === true,
+    maxFiles: Math.max(100, Number(config.archiveMaxFiles) || 4000),
+    maxTotalMb: Math.max(50, Number(config.archiveMaxTotalMb) || 600),
+    maxFileMb: Math.max(10, Number(config.archiveMaxFileMb) || 120),
+    streamBufferMb: Math.max(16, Number(config.archiveStreamBufferMb) || 160),
+  };
+}
+
+const tabNetStore = new Map();
+const reqMeta = new Map();
+
+function getTabStore(tabId) {
+  let s = tabNetStore.get(tabId);
+  if (!s) {
+    s = { bytes: 0, entries: new Map() };
+    tabNetStore.set(tabId, s);
+  }
+  return s;
+}
+
+function captureStreamIfEnabled(details) {
+  try {
+    if (config.archiveNetworkStream === false) return;
+    const tabId = details.tabId;
+    if (typeof tabId !== "number" || tabId < 0) return;
+    const url = String(details.url || "").split("#")[0];
+    if (!/^https?:/i.test(url)) return;
+    const wr = browser.webRequest;
+    if (!wr || typeof wr.filterResponseData !== "function") return;
+    if (details.type === "main_frame") {
+      tabNetStore.set(tabId, { bytes: 0, entries: new Map() });
+    }
+    const maxFileBytes = Math.min(64, Math.max(10, Number(config.archiveMaxFileMb) || 120)) * 1024 * 1024;
+    const maxTabBytes = Math.max(16, Number(config.archiveStreamBufferMb) || 160) * 1024 * 1024;
+    const filter = wr.filterResponseData(details.requestId);
+    const chunks = [];
+    let size = 0;
+    let overflow = false;
+    const startedAt = Date.now();
+    reqMeta.set(details.requestId, { tabId, url, method: details.method || "GET", resType: details.type || "other", status: 200, mime: "", startedAt });
+    filter.ondata = (event) => {
+      try {
+        filter.write(event.data);
+      } catch (e) {
+      }
+      if (!overflow && event.data && event.data.byteLength) {
+        if (size + event.data.byteLength <= maxFileBytes) {
+          chunks.push(new Uint8Array(event.data.slice(0)));
+          size += event.data.byteLength;
+        } else {
+          overflow = true;
+          chunks.length = 0;
+        }
+      }
+    };
+    filter.onstop = () => {
+      try {
+        filter.close();
+      } catch (e) {
+      }
+      const meta = reqMeta.get(details.requestId) || { tabId, url, method: "GET", resType: details.type || "other", status: 200, mime: "", startedAt };
+      reqMeta.delete(details.requestId);
+      if (overflow || size === 0) return;
+      const store = getTabStore(tabId);
+      const old = store.entries.get(url);
+      if (old) store.bytes -= old.size;
+      while (store.bytes + size > maxTabBytes && store.entries.size > 0) {
+        const oldestKey = store.entries.keys().next().value;
+        const oldest = store.entries.get(oldestKey);
+        if (oldest) store.bytes -= oldest.size;
+        store.entries.delete(oldestKey);
+      }
+      if (store.bytes + size > maxTabBytes) return;
+      const merged = new Uint8Array(size);
+      let off = 0;
+      for (const c of chunks) {
+        merged.set(c, off);
+        off += c.byteLength;
+      }
+      store.entries.set(url, {
+        url,
+        method: meta.method,
+        resType: meta.resType,
+        status: meta.status || 200,
+        mime: meta.mime || "",
+        size,
+        timeMs: Date.now() - startedAt,
+        startedIso: new Date(startedAt).toISOString(),
+        bytes: merged,
+      });
+      store.bytes += size;
+    };
+    filter.onerror = () => {
+      reqMeta.delete(details.requestId);
+      try {
+        filter.disconnect();
+      } catch (e) {
+      }
+    };
+  } catch (e) {
+  }
+}
+
+function onHeadersReceived(details) {
+  const m = reqMeta.get(details.requestId);
+  if (!m) return;
+  m.status = details.statusCode || 200;
+  if (Array.isArray(details.responseHeaders)) {
+    for (const h of details.responseHeaders) {
+      if (h && h.name && h.name.toLowerCase() === "content-type") {
+        m.mime = String(h.value || "");
+        break;
+      }
+    }
+  }
+}
+
+try {
+  if (browser.tabs && browser.tabs.onRemoved) {
+    browser.tabs.onRemoved.addListener((tabId) => {
+      tabNetStore.delete(tabId);
+    });
+  }
+} catch (e) {
+}
+
+async function triggerSavePage(id, url, mode) {
   const tabs = await candidateTabs(url);
-  const msg = { type: "fable-save-page", id, url, force: true };
+  const msg = { type: "fable-save-page", id, url, mode: mode || "all", cfg: archiveCfg(), force: true };
   for (const tab of tabs) {
     try {
       const res = await browser.tabs.sendMessage(tab.id, msg);
@@ -527,8 +673,14 @@ function shouldBlock(url, documentUrl) {
 }
 
 function onBeforeRequest(details) {
-  if (!adBlockOn(details.incognito)) return {};
-  if (details.type === "main_frame") return {};
+  if (!adBlockOn(details.incognito)) {
+    captureStreamIfEnabled(details);
+    return {};
+  }
+  if (details.type === "main_frame") {
+    captureStreamIfEnabled(details);
+    return {};
+  }
   if (allowSites.size > 0) {
     const top = details.frameAncestors && details.frameAncestors.length
       ? details.frameAncestors[details.frameAncestors.length - 1].url
@@ -694,8 +846,10 @@ function registerListeners() {
 
   const wr = browser.webRequest;
   if (wr.onBeforeRequest.hasListener(onBeforeRequest)) wr.onBeforeRequest.removeListener(onBeforeRequest);
-  if (blockNormal || blockPrivate) {
-    addListenerSafe(wr.onBeforeRequest, onBeforeRequest, filterFor(blockAll), ["blocking"]);
+  addListenerSafe(wr.onBeforeRequest, onBeforeRequest, { urls: ["<all_urls>"] }, ["blocking"]);
+  if (wr.onHeadersReceived) {
+    if (wr.onHeadersReceived.hasListener(onHeadersReceived)) wr.onHeadersReceived.removeListener(onHeadersReceived);
+    addListenerSafe(wr.onHeadersReceived, onHeadersReceived, { urls: ["<all_urls>"] }, ["responseHeaders"]);
   }
   replaceListener(
     wr.onBeforeSendHeaders,
@@ -749,10 +903,62 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     }
     return undefined;
   }
+  if (msg && msg.type === "fable-net-flush") {
+    const tab = sender && sender.tab;
+    const tabId = tab ? tab.id : -1;
+    const id = String(msg.id || "");
+    const incognito = !!(tab && tab.incognito);
+    const includeBodies = msg.includeBodies !== false;
+    const already = new Set(Array.isArray(msg.seenUrls) ? msg.seenUrls : []);
+    const store = tabNetStore.get(tabId);
+    const flushed = [];
+    if (store && store.entries.size > 0) {
+      const sendNativeChunked = (path, bytes) => {
+        const chunk = 384 * 1024;
+        if (!bytes.length) {
+          postNative({ type: "save-page-data", id, op: "file", path, seq: 0, last: true, data: "", incognito });
+          return;
+        }
+        let seq = 0;
+        for (let off = 0; off < bytes.length; off += chunk) {
+          const end = Math.min(bytes.length, off + chunk);
+          postNative({ type: "save-page-data", id, op: "file", path, seq: seq++, last: end >= bytes.length, data: b64Bytes(bytes.subarray(off, end)), incognito });
+        }
+      };
+      const harEntries = [];
+      let idx = 0;
+      for (const [u, entry] of store.entries.entries()) {
+        idx++;
+        harEntries.push({
+          startedDateTime: entry.startedIso,
+          time: entry.timeMs,
+          request: { method: entry.method, url: entry.url },
+          response: { status: entry.status, content: { size: entry.size, mimeType: entry.mime } },
+        });
+        if (includeBodies && !already.has(u) && entry.bytes && entry.bytes.length > 0) {
+          let p = "network-stream/item-" + idx;
+          try {
+            const parsed = new URL(u);
+            const cleanHost = parsed.hostname.replace(/[^a-z0-9.-]/gi, "_");
+            const cleanName = (parsed.pathname.split("/").filter(Boolean).slice(-2).join("_") || "index").replace(/[^a-z0-9._-]/gi, "_").slice(0, 100);
+            p = "network-stream/" + cleanHost + "/" + idx + "_" + cleanName;
+          } catch (e) {
+          }
+          sendNativeChunked(p, entry.bytes);
+          flushed.push({ path: p, url: u, kind: "network-stream:" + entry.resType, type: entry.mime, size: entry.size });
+        }
+      }
+      const harBytes = new TextEncoder().encode(JSON.stringify({ log: { version: "1.2", creator: { name: "Fable Browser", version: "1.18" }, entries: harEntries } }, null, 2));
+      sendNativeChunked("devtools/network.har", harBytes);
+      flushed.push({ path: "devtools/network.har", url: "devtools://network.har", kind: "devtools:har", type: "application/json", size: harBytes.length });
+    }
+    return Promise.resolve({ flushed });
+  }
   if (msg && msg.type === "fable-save") {
     const tab = sender && sender.tab;
     if (sender.frameId === 0 || sender.frameId === undefined) {
       postNative({
+        mode: String(msg.mode || "code"),
         type: "save-page-data",
         id: String(msg.id || ""),
         op: String(msg.op || ""),
@@ -793,6 +999,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       normalTabShield: config.normalTabShield,
       forceUtc: config.forceUtc,
       gameTouchFix: config.gameTouchFix !== false,
+      archive: archiveCfg(),
     });
   }
   return undefined;

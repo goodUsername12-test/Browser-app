@@ -262,7 +262,11 @@ class BrowserViewModel @Inject constructor(
     }
 
     fun savePageCode() {
-        if (!tabManager.savePageCode()) activityBridge.toast("This page cannot be saved")
+        if (!tabManager.savePageCode("all")) activityBridge.toast("This page cannot be saved")
+    }
+
+    fun saveMemorySnapshot() {
+        if (!tabManager.savePageCode("memory")) activityBridge.toast("This page cannot be saved")
     }
 
     fun saveAsPdf() {

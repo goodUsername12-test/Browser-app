@@ -18,6 +18,7 @@ import androidx.compose.material.icons.outlined.AddToHomeScreen
 import androidx.compose.material.icons.outlined.Article
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.Download
@@ -69,7 +70,8 @@ fun MenuSheet(
     onTextZoom: (Int) -> Unit,
     onFingerprintTest: () -> Unit,
     onNewSuperTab: () -> Unit = {},
-    onSavePageCode: () -> Unit = {}
+    onSavePageCode: () -> Unit = {},
+    onSaveMemorySnapshot: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -90,6 +92,7 @@ fun MenuSheet(
             }
             MenuItem(Icons.Outlined.Download, "Downloads") { onDownloads(); onDismiss() }
             MenuItem(Icons.Outlined.Code, "Download page code (.zip)") { onSavePageCode(); onDismiss() }
+            MenuItem(Icons.Outlined.Memory, "Download memory snapshot (.zip)") { onSaveMemorySnapshot(); onDismiss() }
             ListDivider()
             MenuItem(Icons.Outlined.Search, "Find in page") { onFind(); onDismiss() }
             MenuToggle(

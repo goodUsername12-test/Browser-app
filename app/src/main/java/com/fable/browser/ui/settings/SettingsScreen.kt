@@ -177,7 +177,7 @@ fun SettingsScreen(
         ListDivider()
         SettingRow(
             title = "Downloads",
-            subtitle = "Location and incognito download policy",
+            subtitle = "Page code (.zip), memory snapshot, limits & download manager",
             icon = Icons.Outlined.Download,
             onClick = { onNavigate(Routes.SETTINGS_DOWNLOADS) }
         )

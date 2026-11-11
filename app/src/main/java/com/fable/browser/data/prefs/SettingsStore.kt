@@ -139,7 +139,18 @@ data class Settings(
     val incognitoGpc: Boolean = true,
     val incognitoFingerprintProtection: Boolean = true,
     val gameTouchFix: Boolean = true,
-    val fpTouch: Boolean = false
+    val fpTouch: Boolean = false,
+    val archiveReadOnly: Boolean = true,
+    val archiveNetworkStream: Boolean = true,
+    val archiveIncludeMemory: Boolean = true,
+    val archiveIncludeCanvas: Boolean = true,
+    val archiveIncludeStorage: Boolean = true,
+    val archiveGuessAssets: Boolean = true,
+    val archiveDeepHooks: Boolean = false,
+    val archiveMaxFiles: Int = 4000,
+    val archiveMaxTotalMb: Int = 600,
+    val archiveMaxFileMb: Int = 120,
+    val archiveStreamBufferMb: Int = 160
 ) {
     val performanceProfile: PerformanceProfile
         get() = when {
@@ -263,6 +274,17 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val INCOGNITO_FPP = booleanPreferencesKey("incognito_fingerprint_protection")
         val GAME_TOUCH_FIX = booleanPreferencesKey("game_touch_fix")
         val FP_TOUCH = booleanPreferencesKey("fp_touch")
+        val ARCHIVE_READ_ONLY = booleanPreferencesKey("archive_read_only")
+        val ARCHIVE_NET_STREAM = booleanPreferencesKey("archive_net_stream")
+        val ARCHIVE_INC_MEMORY = booleanPreferencesKey("archive_inc_memory")
+        val ARCHIVE_INC_CANVAS = booleanPreferencesKey("archive_inc_canvas")
+        val ARCHIVE_INC_STORAGE = booleanPreferencesKey("archive_inc_storage")
+        val ARCHIVE_GUESS_ASSETS = booleanPreferencesKey("archive_guess_assets")
+        val ARCHIVE_DEEP_HOOKS = booleanPreferencesKey("archive_deep_hooks")
+        val ARCHIVE_MAX_FILES = intPreferencesKey("archive_max_files")
+        val ARCHIVE_MAX_TOTAL_MB = intPreferencesKey("archive_max_total_mb")
+        val ARCHIVE_MAX_FILE_MB = intPreferencesKey("archive_max_file_mb")
+        val ARCHIVE_STREAM_BUF_MB = intPreferencesKey("archive_stream_buf_mb")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -376,7 +398,18 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             incognitoGpc = p[Keys.INCOGNITO_GPC] ?: true,
             incognitoFingerprintProtection = p[Keys.INCOGNITO_FPP] ?: true,
             gameTouchFix = p[Keys.GAME_TOUCH_FIX] ?: true,
-            fpTouch = p[Keys.FP_TOUCH] ?: false
+            fpTouch = p[Keys.FP_TOUCH] ?: false,
+            archiveReadOnly = p[Keys.ARCHIVE_READ_ONLY] ?: true,
+            archiveNetworkStream = p[Keys.ARCHIVE_NET_STREAM] ?: true,
+            archiveIncludeMemory = p[Keys.ARCHIVE_INC_MEMORY] ?: true,
+            archiveIncludeCanvas = p[Keys.ARCHIVE_INC_CANVAS] ?: true,
+            archiveIncludeStorage = p[Keys.ARCHIVE_INC_STORAGE] ?: true,
+            archiveGuessAssets = p[Keys.ARCHIVE_GUESS_ASSETS] ?: true,
+            archiveDeepHooks = p[Keys.ARCHIVE_DEEP_HOOKS] ?: false,
+            archiveMaxFiles = (p[Keys.ARCHIVE_MAX_FILES] ?: 4000).coerceIn(500, 10000),
+            archiveMaxTotalMb = (p[Keys.ARCHIVE_MAX_TOTAL_MB] ?: 600).coerceIn(100, 2000),
+            archiveMaxFileMb = (p[Keys.ARCHIVE_MAX_FILE_MB] ?: 120).coerceIn(20, 500),
+            archiveStreamBufferMb = (p[Keys.ARCHIVE_STREAM_BUF_MB] ?: 160).coerceIn(32, 512)
         )
     }.distinctUntilChanged()
 
@@ -553,6 +586,17 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setIncognitoFingerprintProtection(v: Boolean) = set(Keys.INCOGNITO_FPP, v)
     suspend fun setGameTouchFix(v: Boolean) = set(Keys.GAME_TOUCH_FIX, v)
     suspend fun setFpTouch(v: Boolean) = set(Keys.FP_TOUCH, v)
+    suspend fun setArchiveReadOnly(v: Boolean) = set(Keys.ARCHIVE_READ_ONLY, v)
+    suspend fun setArchiveNetworkStream(v: Boolean) = set(Keys.ARCHIVE_NET_STREAM, v)
+    suspend fun setArchiveIncludeMemory(v: Boolean) = set(Keys.ARCHIVE_INC_MEMORY, v)
+    suspend fun setArchiveIncludeCanvas(v: Boolean) = set(Keys.ARCHIVE_INC_CANVAS, v)
+    suspend fun setArchiveIncludeStorage(v: Boolean) = set(Keys.ARCHIVE_INC_STORAGE, v)
+    suspend fun setArchiveGuessAssets(v: Boolean) = set(Keys.ARCHIVE_GUESS_ASSETS, v)
+    suspend fun setArchiveDeepHooks(v: Boolean) = set(Keys.ARCHIVE_DEEP_HOOKS, v)
+    suspend fun setArchiveMaxFiles(v: Int) = set(Keys.ARCHIVE_MAX_FILES, v.coerceIn(500, 10000))
+    suspend fun setArchiveMaxTotalMb(v: Int) = set(Keys.ARCHIVE_MAX_TOTAL_MB, v.coerceIn(100, 2000))
+    suspend fun setArchiveMaxFileMb(v: Int) = set(Keys.ARCHIVE_MAX_FILE_MB, v.coerceIn(20, 500))
+    suspend fun setArchiveStreamBufferMb(v: Int) = set(Keys.ARCHIVE_STREAM_BUF_MB, v.coerceIn(32, 512))
 
     suspend fun copyIncognitoFromNormal(s: Settings) {
         context.dataStore.edit {

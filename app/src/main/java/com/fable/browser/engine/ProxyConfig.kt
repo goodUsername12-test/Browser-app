@@ -65,13 +65,14 @@ class ProxyConfig @Inject constructor(
         port?.postMessage(JSONObject().apply { put("type", "reader-toggle") })
     }
 
-    fun savePageCode(url: String): Boolean {
+    fun savePageCode(url: String, mode: String = "all"): Boolean {
         val p = port ?: return false
         val id = pageArchiver.newRequest() ?: return true
         p.postMessage(JSONObject().apply {
             put("type", "save-page")
             put("id", id)
             put("url", url)
+            put("mode", mode)
         })
         return true
     }
@@ -143,6 +144,17 @@ class ProxyConfig @Inject constructor(
             put("superProxyPass", superIncognito.proxyPass)
             put("dataSaver", dataSaverActive)
             put("diag", BuildConfig.DEBUG)
+            put("archiveReadOnly", s?.archiveReadOnly ?: true)
+            put("archiveNetworkStream", s?.archiveNetworkStream ?: true)
+            put("archiveIncludeMemory", s?.archiveIncludeMemory ?: true)
+            put("archiveIncludeCanvas", s?.archiveIncludeCanvas ?: true)
+            put("archiveIncludeStorage", s?.archiveIncludeStorage ?: true)
+            put("archiveGuessAssets", s?.archiveGuessAssets ?: true)
+            put("archiveDeepHooks", s?.archiveDeepHooks ?: false)
+            put("archiveMaxFiles", s?.archiveMaxFiles ?: 4000)
+            put("archiveMaxTotalMb", s?.archiveMaxTotalMb ?: 600)
+            put("archiveMaxFileMb", s?.archiveMaxFileMb ?: 120)
+            put("archiveStreamBufferMb", s?.archiveStreamBufferMb ?: 160)
         }
     }
 

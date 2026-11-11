@@ -14,30 +14,65 @@
 
   const retainedBlobs = new Map();
   let retainedBlobBytes = 0;
+  const consoleLogs = [];
+  const runtimeErrors = [];
   const MAX_RETAINED_BLOBS = 80;
   const MAX_RETAINED_BLOB_BYTES = 96 * 1024 * 1024;
 
-  try {
-    const W = window.wrappedJSObject;
-    if (W && W.URL && typeof W.URL.createObjectURL === "function" && typeof exportFunction === "function") {
-      const origCreate = W.URL.createObjectURL.bind(W.URL);
-      W.URL.createObjectURL = exportFunction(function (obj) {
-        const u = origCreate(obj);
-        try {
-          const raw = (obj && obj.wrappedJSObject) || obj;
-          if (u && raw && typeof raw.size === "number" && typeof raw.arrayBuffer === "function") {
-            if (raw.size > 0 && raw.size <= 32 * 1024 * 1024 && retainedBlobs.size < MAX_RETAINED_BLOBS && retainedBlobBytes + raw.size <= MAX_RETAINED_BLOB_BYTES) {
-              retainedBlobs.set(String(u), { blob: raw, size: raw.size, type: String(raw.type || "") });
-              retainedBlobBytes += raw.size;
+  window.addEventListener("error", (ev) => {
+    try {
+      if (runtimeErrors.length < 300) {
+        runtimeErrors.push({ time: Date.now(), message: String(ev.message || ""), file: String(ev.filename || ""), line: ev.lineno || 0, col: ev.colno || 0 });
+      }
+    } catch (e) {}
+  }, true);
+
+  function installDeepHooksIfEnabled() {
+    try {
+      const W = window.wrappedJSObject;
+      if (!W || typeof exportFunction !== "function") return;
+      if (window.URL && typeof window.URL.createObjectURL === "function" && W.URL) {
+        const xCreate = window.URL.createObjectURL.bind(window.URL);
+        W.URL.createObjectURL = exportFunction(function (obj) {
+          let u = "";
+          try {
+            u = xCreate(obj);
+            if (u && obj && typeof obj.size === "number" && typeof obj.arrayBuffer === "function") {
+              if (obj.size > 0 && obj.size <= 32 * 1024 * 1024 && retainedBlobs.size < MAX_RETAINED_BLOBS && retainedBlobBytes + obj.size <= MAX_RETAINED_BLOB_BYTES) {
+                retainedBlobs.set(String(u), { blob: obj, size: obj.size, type: String(obj.type || "") });
+                retainedBlobBytes += obj.size;
+              }
             }
-          }
-        } catch (e) {
+          } catch (e) {}
+          return u;
+        }, window);
+      }
+      if (W.console) {
+        for (const level of ["log", "info", "warn", "error"]) {
+          const xFn = console[level] ? console[level].bind(console) : null;
+          if (!xFn) continue;
+          W.console[level] = exportFunction(function () {
+            try {
+              if (consoleLogs.length < 500) {
+                const parts = [];
+                for (let i = 0; i < arguments.length && i < 6; i++) parts.push(String(arguments[i]).slice(0, 400));
+                consoleLogs.push({ time: Date.now(), level, text: parts.join(" ") });
+              }
+            } catch (e) {}
+            try { return xFn.apply(console, arguments); } catch (e) { return undefined; }
+          }, window);
         }
-        return u;
-      }, window);
-    }
-  } catch (e) {
+      }
+    } catch (e) {}
   }
+
+  try {
+    browser.runtime.sendMessage({ type: "fable-get-config" }).then((cfg) => {
+      if (cfg && cfg.archive && cfg.archive.readOnly === false && cfg.archive.deepHooks === true) {
+        installDeepHooksIfEnabled();
+      }
+    }).catch(() => {});
+  } catch (e) {}
 
   let readerActive = false;
   let savedBodyHtml = null;
@@ -314,9 +349,25 @@
     if (saving) return;
     saving = true;
     const id = String(msg.id || "");
-    const send = (m) => browser.runtime.sendMessage(Object.assign({ type: "fable-save", id }, m)).catch(() => {});
+    const mode = msg.mode === "memory" ? "memory" : "all";
+    const cfg = Object.assign({
+      readOnly: true,
+      networkStream: true,
+      includeMemory: true,
+      includeCanvas: true,
+      includeStorage: true,
+      guessAssets: true,
+      deepHooks: false,
+      maxFiles: 4000,
+      maxTotalMb: 600,
+      maxFileMb: 120,
+    }, msg.cfg || {});
+    const maxFiles = Math.max(100, Number(cfg.maxFiles) || 4000);
+    const maxTotalBytes = Math.max(50, Number(cfg.maxTotalMb) || 600) * 1024 * 1024;
+    const maxFileBytes = Math.max(10, Number(cfg.maxFileMb) || 120) * 1024 * 1024;
+    const send = (m) => browser.runtime.sendMessage(Object.assign({ type: "fable-save", id, mode }, m)).catch(() => {});
     try {
-      await send({ op: "begin", page: location.href, title: document.title || "" });
+      await send({ op: "begin", page: location.href, title: document.title || "", mode });
       const used = new Set();
       const seen = new Map();
       const queue = [];
@@ -326,7 +377,7 @@
 
       const add = (raw, base, why) => {
         const abs = absolute(raw, base);
-        if (!abs || seen.has(abs) || seen.size >= SAVE_MAX_FILES) return;
+        if (!abs || seen.has(abs) || seen.size >= maxFiles) return;
         if (abs.startsWith("blob:") && why === "guess") return;
         seen.set(abs, why);
         queue.push(abs);
@@ -420,11 +471,11 @@
         let bi = 0;
         for (const [burl, info] of retainedBlobs.entries()) {
           bi++;
-          if (total >= SAVE_MAX_TOTAL) break;
+          if (total >= maxTotalBytes) break;
           try {
             const ab = await info.blob.arrayBuffer();
             const bbytes = new Uint8Array(ab);
-            if (bbytes.length > 0 && bbytes.length <= SAVE_MAX_FILE) {
+            if (bbytes.length > 0 && bbytes.length <= maxFileBytes) {
               const bpath = "memory/blobs/blob-" + bi + extFromType(info.type, ".bin");
               total += bbytes.length;
               await sendBytes(bpath, bbytes);
@@ -437,9 +488,133 @@
       } catch (e) {
       }
 
-      perfUrls(add);
-      domUrls(add);
-      add(location.href, location.href, "page");
+      if (mode === "memory" || cfg.includeStorage !== false) {
+        try {
+          const dumpStorage = (st) => {
+            const out = {};
+            try {
+              for (let i = 0; i < st.length && i < 1000; i++) {
+                const k = st.key(i);
+                if (k !== null) out[k] = String(st.getItem(k) || "").slice(0, 65536);
+              }
+            } catch (e) {}
+            return out;
+          };
+          const lsBytes = enc.encode(JSON.stringify(dumpStorage(localStorage), null, 2));
+          await sendBytes("memory/local-storage.json", lsBytes);
+          index.push({ path: "memory/local-storage.json", url: "memory://local-storage", kind: "memory:storage", type: "application/json", size: lsBytes.length });
+
+          const ssBytes = enc.encode(JSON.stringify(dumpStorage(sessionStorage), null, 2));
+          await sendBytes("memory/session-storage.json", ssBytes);
+          index.push({ path: "memory/session-storage.json", url: "memory://session-storage", kind: "memory:storage", type: "application/json", size: ssBytes.length });
+        } catch (e) {}
+
+        try {
+          if (window.indexedDB && typeof window.indexedDB.databases === "function") {
+            const dbs = await window.indexedDB.databases();
+            for (const dbInfo of (dbs || []).slice(0, 12)) {
+              if (!dbInfo || !dbInfo.name) continue;
+              const dbDump = await new Promise((resolve) => {
+                const t = setTimeout(() => resolve(null), 1500);
+                try {
+                  const req = window.indexedDB.open(dbInfo.name);
+                  req.onerror = () => { clearTimeout(t); resolve(null); };
+                  req.onsuccess = () => {
+                    const db = req.result;
+                    const names = Array.from(db.objectStoreNames || []).slice(0, 20);
+                    if (!names.length) { db.close(); clearTimeout(t); resolve({ name: dbInfo.name, version: db.version, stores: {} }); return; }
+                    const stores = {};
+                    let pending = names.length;
+                    const tx = db.transaction(names, "readonly");
+                    for (const sname of names) {
+                      try {
+                        const getReq = tx.objectStore(sname).getAll(null, 250);
+                        getReq.onsuccess = () => { stores[sname] = getReq.result || []; if (--pending <= 0) { db.close(); clearTimeout(t); resolve({ name: dbInfo.name, version: db.version, stores }); } };
+                        getReq.onerror = () => { if (--pending <= 0) { db.close(); clearTimeout(t); resolve({ name: dbInfo.name, version: db.version, stores }); } };
+                      } catch (e) {
+                        if (--pending <= 0) { db.close(); clearTimeout(t); resolve({ name: dbInfo.name, version: db.version, stores }); }
+                      }
+                    }
+                  };
+                } catch (e) { clearTimeout(t); resolve(null); }
+              });
+              if (dbDump) {
+                const idbBytes = enc.encode(JSON.stringify(dbDump, null, 2));
+                const idbPath = "memory/indexeddb/" + safePart(dbInfo.name) + ".json";
+                total += idbBytes.length;
+                await sendBytes(idbPath, idbBytes);
+                index.push({ path: idbPath, url: "indexeddb://" + dbInfo.name, kind: "memory:indexeddb", type: "application/json", size: idbBytes.length });
+              }
+            }
+          }
+        } catch (e) {}
+
+        try {
+          if (window.caches && typeof window.caches.keys === "function") {
+            const ckeys = await window.caches.keys();
+            let cCount = 0;
+            for (const ck of (ckeys || []).slice(0, 8)) {
+              const cache = await window.caches.open(ck);
+              const reqs = await cache.keys();
+              for (const rq of (reqs || []).slice(0, 80)) {
+                if (total >= maxTotalBytes || ++cCount > 150) break;
+                const resp = await cache.match(rq);
+                if (!resp) continue;
+                const ctype = resp.headers.get("content-type") || "";
+                const cbuf = new Uint8Array(await resp.arrayBuffer());
+                if (cbuf.length > 0 && cbuf.length <= maxFileBytes) {
+                  const cpath = "memory/cache-storage/" + safePart(ck) + "/" + pathFor(rq.url, ctype, used);
+                  total += cbuf.length;
+                  await sendBytes(cpath, cbuf);
+                  seen.set(stripHash(rq.url), "memory:cache-storage");
+                  index.push({ path: cpath, url: rq.url, kind: "memory:cache-storage", type: ctype, size: cbuf.length });
+                }
+              }
+            }
+          }
+        } catch (e) {}
+
+        try {
+          if (navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === "function") {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            const swList = (regs || []).map((r) => ({
+              scope: r.scope,
+              active: r.active ? r.active.scriptURL : null,
+              waiting: r.waiting ? r.waiting.scriptURL : null,
+            }));
+            const swBytes = enc.encode(JSON.stringify(swList, null, 2));
+            await sendBytes("memory/service-workers.json", swBytes);
+            index.push({ path: "memory/service-workers.json", url: "memory://service-workers", kind: "memory:service-workers", type: "application/json", size: swBytes.length });
+          }
+        } catch (e) {}
+
+        try {
+          const perfDump = {
+            navigation: performance.getEntriesByType("navigation"),
+            resources: performance.getEntriesByType("resource").slice(0, 1500),
+          };
+          const perfBytes = enc.encode(JSON.stringify(perfDump, null, 2));
+          await sendBytes("devtools/performance.json", perfBytes);
+          index.push({ path: "devtools/performance.json", url: "devtools://performance", kind: "devtools:performance", type: "application/json", size: perfBytes.length });
+        } catch (e) {}
+
+        if (consoleLogs.length > 0) {
+          const clBytes = enc.encode(consoleLogs.map((x) => JSON.stringify(x)).join("\n") + "\n");
+          await sendBytes("devtools/console.jsonl", clBytes);
+          index.push({ path: "devtools/console.jsonl", url: "devtools://console", kind: "devtools:console", type: "application/x-ndjson", size: clBytes.length });
+        }
+        if (runtimeErrors.length > 0) {
+          const erBytes = enc.encode(JSON.stringify(runtimeErrors, null, 2));
+          await sendBytes("devtools/errors.json", erBytes);
+          index.push({ path: "devtools/errors.json", url: "devtools://errors", kind: "devtools:errors", type: "application/json", size: erBytes.length });
+        }
+      }
+
+      if (mode !== "memory") {
+        perfUrls(add);
+        domUrls(add);
+        add(location.href, location.href, "page");
+      }
 
       let done = 0;
       while (queue.length) {
@@ -447,7 +622,7 @@
         const why = seen.get(url) || "";
         done++;
         if (done % 10 === 0) await send({ op: "progress", done, total: done + queue.length });
-        if (total >= SAVE_MAX_TOTAL) {
+        if (total >= maxTotalBytes) {
           index.push({ url, kind: why, skipped: "size limit" });
           continue;
         }
@@ -475,7 +650,7 @@
           index.push({ url, kind: why, error: "read failed" });
           continue;
         }
-        if (buf.length > SAVE_MAX_FILE) {
+        if (buf.length > maxFileBytes) {
           index.push({ url, kind: why, skipped: "file too large", size: buf.length });
           continue;
         }
@@ -500,9 +675,27 @@
         }
       }
 
+      try {
+        const netRes = await browser.runtime.sendMessage({
+          type: "fable-net-flush",
+          id,
+          includeBodies: mode !== "memory" && cfg.networkStream !== false,
+          seenUrls: Array.from(seen.keys()),
+        }).catch(() => null);
+        if (netRes && Array.isArray(netRes.flushed)) {
+          for (const f of netRes.flushed) {
+            total += Number(f.size) || 0;
+            index.push(f);
+          }
+        }
+      } catch (e) {}
+
       const info = {
         page: location.href,
         title: document.title || "",
+        mode,
+        readOnlyMode: cfg.readOnly !== false,
+        settings: cfg,
         savedAt: new Date().toISOString(),
         userAgent: navigator.userAgent,
         files: index,

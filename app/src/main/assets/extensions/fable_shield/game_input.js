@@ -178,12 +178,19 @@
         const desc = Object.getOwnPropertyDescriptor(mouseProto, prop);
         if (!desc || typeof desc.get !== "function") return;
         const orig = desc.get;
+        const xDesc = window.MouseEvent ? Object.getOwnPropertyDescriptor(window.MouseEvent.prototype, prop) : null;
+        const xOrig = xDesc && typeof xDesc.get === "function" ? xDesc.get : null;
         const getter = exportFunction(function () {
-          if (enabled) {
-            const m = lookup(this);
-            if (m) return m[idx];
+          try {
+            if (enabled) {
+              const m = lookup(this);
+              if (m) return m[idx];
+            }
+            if (xOrig) return xOrig.call(this);
+            return orig.call((this && this.wrappedJSObject) || this);
+          } catch (_) {
+            return 0;
           }
-          return orig.call(this);
         }, window);
         Object.defineProperty(mouseProto, prop, {
           get: getter,
@@ -208,11 +215,18 @@
       if (pageWin.PointerEvent) {
         const ptrProto = pageWin.PointerEvent.prototype;
         const cd = Object.getOwnPropertyDescriptor(ptrProto, "getCoalescedEvents");
+        const xCd = window.PointerEvent ? Object.getOwnPropertyDescriptor(window.PointerEvent.prototype, "getCoalescedEvents") : null;
+        const xCoal = xCd && typeof xCd.value === "function" ? xCd.value : null;
         if (cd && typeof cd.value === "function") {
           const origCoalesced = cd.value;
           Object.defineProperty(ptrProto, "getCoalescedEvents", {
             value: exportFunction(function () {
-              const list = origCoalesced.call(this);
+              let list;
+              try {
+                list = xCoal ? xCoal.call(this) : origCoalesced.call((this && this.wrappedJSObject) || this);
+              } catch (_) {
+                return new pageWin.Array();
+              }
               try {
                 if (enabled && list && list.length > 0) {
                   const start = before.get(this);

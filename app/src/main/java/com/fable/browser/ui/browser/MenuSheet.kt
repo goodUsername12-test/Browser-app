@@ -89,6 +89,7 @@ fun MenuSheet(
                 MenuItem(Icons.Outlined.History, "History") { onHistory(); onDismiss() }
             }
             MenuItem(Icons.Outlined.Download, "Downloads") { onDownloads(); onDismiss() }
+            MenuItem(Icons.Outlined.Code, "Download page code (.zip)") { onSavePageCode(); onDismiss() }
             ListDivider()
             MenuItem(Icons.Outlined.Search, "Find in page") { onFind(); onDismiss() }
             MenuToggle(
@@ -124,7 +125,6 @@ fun MenuSheet(
                 onAddToHomeScreen(); onDismiss()
             }
             MenuItem(Icons.Outlined.Print, "Print / Save as PDF") { onSaveAsPdf(); onDismiss() }
-            MenuItem(Icons.Outlined.Code, "Download page code (.zip)") { onSavePageCode(); onDismiss() }
             ListDivider()
             MenuItem(Icons.Outlined.Fingerprint, "Test my fingerprint") {
                 onFingerprintTest(); onDismiss()

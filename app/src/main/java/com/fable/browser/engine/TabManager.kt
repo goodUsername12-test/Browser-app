@@ -392,6 +392,7 @@ class TabManager @Inject constructor(
             previous.touch()
             if (previous.session.isOpen) {
                 previous.session.setActive(false)
+                engineManager.setTabActive(previous.session, false)
                 setPriority(previous, high = false)
             }
         }
@@ -401,6 +402,7 @@ class TabManager @Inject constructor(
         passwordManager.privateActive = tab.isIncognito
         if (tab.session.isOpen) {
             tab.session.setActive(true)
+            engineManager.setTabActive(tab.session, true)
             setPriority(tab, high = true)
         }
     }
@@ -839,8 +841,10 @@ class TabManager @Inject constructor(
         if (tab.isDesktopMode.value && !tab.isSuper) applyDesktopMode(session, true)
         tab.replaceSession(session)
         delegateFactory.attach(tab, scope, { settings }, callbacks)
-        session.setActive(tab.id == _activeTabId.value)
-        setPriority(tab, high = tab.id == _activeTabId.value)
+        val isAct = tab.id == _activeTabId.value
+        session.setActive(isAct)
+        engineManager.setTabActive(session, isAct)
+        setPriority(tab, high = isAct)
         return session
     }
 

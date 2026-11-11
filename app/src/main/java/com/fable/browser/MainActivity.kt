@@ -197,6 +197,9 @@ class MainActivity : FragmentActivity() {
             Intent.ACTION_WEB_SEARCH -> intent.getStringExtra("query")?.let { q ->
                 tabManager.openExternalSearch(q)
             }
+            else -> if (BuildConfig.DEBUG && intent?.getBooleanExtra("fable_save_page_code", false) == true) {
+                tabManager.savePageCode()
+            }
         }
     }
 

@@ -65,14 +65,24 @@
   }
 
   browser.runtime.onMessage.addListener((msg) => {
-    if (!msg) return;
+    if (!msg) return undefined;
     if (msg.type === "reader-toggle") {
       toggleReader();
-    } else if (msg.type === "fable-blocked") {
-      blockedCount++;
-    } else if (msg.type === "fable-save-page") {
-      savePageCode(msg);
+      return Promise.resolve({ ok: true });
     }
+    if (msg.type === "fable-blocked") {
+      blockedCount++;
+      return undefined;
+    }
+    if (msg.type === "fable-save-page") {
+      if (window.top !== window) return undefined;
+      const want = stripHash(msg.url || "").replace(/\/+$/, "");
+      const here = stripHash(location.href).replace(/\/+$/, "");
+      if (!msg.force && want && here !== want) return undefined;
+      savePageCode(msg);
+      return Promise.resolve({ started: true, url: location.href });
+    }
+    return undefined;
   });
 
   const SAVE_MAX_FILES = 2500;
@@ -274,8 +284,6 @@
 
   async function savePageCode(msg) {
     if (window.top !== window) return;
-    const want = stripHash(msg.url || "");
-    if (want && stripHash(location.href) !== want) return;
     if (saving) return;
     saving = true;
     const id = String(msg.id || "");
@@ -318,6 +326,41 @@
       const rendered = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
       await sendBytes("page/rendered-dom.html", enc.encode(rendered));
       index.push({ path: "page/rendered-dom.html", url: location.href, kind: "current DOM" });
+
+      try {
+        const canvases = Array.from(document.querySelectorAll("canvas")).slice(0, 16);
+        let ci = 0;
+        for (const c of canvases) {
+          ci++;
+          try {
+            if (!c.width || !c.height) continue;
+            const dataUrl = c.toDataURL("image/png");
+            const comma = dataUrl.indexOf(",");
+            if (comma > 0) {
+              const raw = atob(dataUrl.slice(comma + 1));
+              const bytes = new Uint8Array(raw.length);
+              for (let k = 0; k < raw.length; k++) bytes[k] = raw.charCodeAt(k);
+              const cpath = "memory/canvas-" + ci + "-" + c.width + "x" + c.height + ".png";
+              total += bytes.length;
+              await sendBytes(cpath, bytes);
+              index.push({ path: cpath, url: "memory://canvas/" + ci, kind: "memory:canvas", type: "image/png", size: bytes.length });
+            }
+          } catch (e) {
+          }
+        }
+        const snap = {
+          url: location.href,
+          title: document.title || "",
+          viewport: { width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio },
+          canvasCount: canvases.length,
+          localStorageKeys: (() => { try { return Object.keys(localStorage).slice(0, 200); } catch (e) { return []; } })(),
+          sessionStorageKeys: (() => { try { return Object.keys(sessionStorage).slice(0, 200); } catch (e) { return []; } })(),
+        };
+        const snapBytes = enc.encode(JSON.stringify(snap, null, 2));
+        await sendBytes("memory/runtime-state.json", snapBytes);
+        index.push({ path: "memory/runtime-state.json", url: "memory://runtime-state", kind: "memory:state", type: "application/json", size: snapBytes.length });
+      } catch (e) {
+      }
 
       perfUrls(add);
       domUrls(add);

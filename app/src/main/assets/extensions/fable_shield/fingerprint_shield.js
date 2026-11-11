@@ -100,7 +100,10 @@
     }
 
     function pageError(e) {
-      if (e === undefined || e === null || typeof e !== "object") return e;
+      if (e === undefined || e === null) {
+        try { return new win.Error("Error"); } catch (x) { return "Error"; }
+      }
+      if (typeof e !== "object") return e;
       let name = "Error";
       let message = "";
       try {
@@ -108,17 +111,19 @@
         message = String(e.message || "");
       } catch (x) {
       }
-      try {
-        const Ctor = W[name];
-        if (typeof Ctor === "function" && /Error$/.test(name)) return new Ctor(message);
-        if (name && W.DOMException) return new W.DOMException(message, name);
-      } catch (x) {
+      for (const scope of [win, W]) {
+        try {
+          const Ctor = scope && scope[name];
+          if (typeof Ctor === "function" && /Error$/.test(name)) return new Ctor(message);
+          if (name && scope && scope.DOMException) return new scope.DOMException(message, name);
+        } catch (x) {
+        }
+        try {
+          if (scope && scope.Error) return new scope.Error(message);
+        } catch (x) {
+        }
       }
-      try {
-        return new W.Error(message);
-      } catch (x) {
-        return undefined;
-      }
+      return message || "Error";
     }
 
     function toPage(v) {

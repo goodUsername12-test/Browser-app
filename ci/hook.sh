@@ -255,7 +255,10 @@ if tap_desc "Menu"; then
   sleep 2
   if ! tap_text "Download page code"; then
     adb shell input swipe 540 1800 540 700 300; sleep 2
-    tap_text "Download page code" || PAGECODE="menu item not found"
+    if ! tap_text "Download page code"; then
+      adb shell input keyevent KEYCODE_BACK; sleep 1
+      timeout 30 adb shell am start -n "$ACT" --ez fable_save_page_code true >> "$ART/start.txt" 2>&1 || PAGECODE="menu item not found"
+    fi
   fi
   sleep 90; shot "17-page-code"
   adb shell ls /sdcard/Download > "$ART/pc-after.txt" 2>/dev/null || true
@@ -278,7 +281,27 @@ PY2
     [ "$PAGECODE" = "not run" ] && PAGECODE="no zip appeared"
   fi
 else
-  PAGECODE="menu button not found"
+  timeout 30 adb shell am start -n "$ACT" --ez fable_save_page_code true >> "$ART/start.txt" 2>&1
+  sleep 60; shot "17-page-code"
+  adb shell ls /sdcard/Download > "$ART/pc-after.txt" 2>/dev/null || true
+  PCNEW="$(comm -13 <(sort "$ART/pc-before.txt") <(sort "$ART/pc-after.txt") | tr -d '\r' | grep -i '\.zip$' | head -n 1)"
+  if [ -n "$PCNEW" ]; then
+    adb pull "/sdcard/Download/$PCNEW" "$ART/page-code.zip" >/dev/null 2>&1 || true
+    PAGECODE="saved $PCNEW (via intent): $(python3 - "$ART/page-code.zip" <<'PY2'
+import sys, zipfile, collections
+try:
+    z = zipfile.ZipFile(sys.argv[1])
+    names = z.namelist()
+    ext = collections.Counter((n.rsplit(".", 1)[-1].lower() if "." in n.rsplit("/", 1)[-1] else "none") for n in names)
+    size = sum(i.file_size for i in z.infolist())
+    print("%d files, %d KB, types %s" % (len(names), size // 1024, dict(ext.most_common(10))))
+except Exception as e:
+    print("unreadable zip: %s" % e)
+PY2
+)"
+  else
+    PAGECODE="menu button not found"
+  fi
 fi
 adb logcat -d -v brief -s PageArchiver:* FableShield:* > "$ART/page-code-log.txt" 2>/dev/null || true
 step "download page code: $PAGECODE"

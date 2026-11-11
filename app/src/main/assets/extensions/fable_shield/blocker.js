@@ -340,17 +340,150 @@ function onNativeMessage(msg) {
   } else if (msg.type === "reader-toggle") {
     broadcastToActiveTab({ type: "reader-toggle" });
   } else if (msg.type === "save-page") {
-    broadcastToActiveTab({ type: "fable-save-page", id: String(msg.id || ""), url: String(msg.url || "") });
+    triggerSavePage(String(msg.id || ""), String(msg.url || ""));
   }
+}
+
+function normUrl(u) {
+  const s = String(u || "");
+  const i = s.indexOf("#");
+  return (i < 0 ? s : s.slice(0, i)).replace(/\/+$/, "");
+}
+
+async function candidateTabs(wantUrl) {
+  const seen = new Set();
+  const out = [];
+  const push = (t) => {
+    if (t && t.id !== undefined && !seen.has(t.id)) {
+      seen.add(t.id);
+      out.push(t);
+    }
+  };
+  let active = [];
+  let all = [];
+  try {
+    active = await browser.tabs.query({ active: true });
+  } catch (e) {
+  }
+  try {
+    all = await browser.tabs.query({});
+  } catch (e) {
+  }
+  const want = normUrl(wantUrl);
+  if (want) {
+    for (const t of active) if (normUrl(t.url) === want) push(t);
+    for (const t of all) if (normUrl(t.url) === want) push(t);
+    const wantHost = hostOf(wantUrl);
+    if (wantHost) {
+      for (const t of active) if (hostOf(t.url) === wantHost) push(t);
+      for (const t of all) if (hostOf(t.url) === wantHost) push(t);
+    }
+  }
+  for (const t of active) push(t);
+  for (let i = all.length - 1; i >= 0; i--) push(all[i]);
+  return out;
 }
 
 async function broadcastToActiveTab(message) {
   try {
-    const tabs = await browser.tabs.query({ active: true });
+    const tabs = await candidateTabs(message.url || "");
     for (const tab of tabs) {
-      browser.tabs.sendMessage(tab.id, message).catch(() => {});
+      const ok = await browser.tabs.sendMessage(tab.id, message).then(() => true).catch(() => false);
+      if (ok) return;
     }
   } catch (e) {
+  }
+}
+
+function b64Bytes(bytes) {
+  let out = "";
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + step)));
+  }
+  return btoa(out);
+}
+
+async function fallbackSaveFromBackground(id, url) {
+  const send = (m) => postNative(Object.assign({ type: "save-page-data", id, incognito: false }, m));
+  try {
+    send({ op: "begin", page: url, title: hostOf(url) || "page" });
+    const enc = new TextEncoder();
+    const sendFile = (path, bytes) => {
+      const chunk = 384 * 1024;
+      if (!bytes.length) {
+        send({ op: "file", path, seq: 0, last: true, data: "" });
+        return;
+      }
+      let seq = 0;
+      for (let off = 0; off < bytes.length; off += chunk) {
+        const end = Math.min(bytes.length, off + chunk);
+        send({ op: "file", path, seq: seq++, last: end >= bytes.length, data: b64Bytes(bytes.subarray(off, end)) });
+      }
+    };
+    const index = [];
+    const seen = new Set([url]);
+    const queue = [{ u: url, kind: "page" }];
+    let total = 0;
+    while (queue.length && index.length < 300 && total < 120 * 1024 * 1024) {
+      const item = queue.shift();
+      let res;
+      try {
+        res = await fetch(item.u, { redirect: "follow" });
+      } catch (e) {
+        index.push({ url: item.u, kind: item.kind, error: String(e) });
+        continue;
+      }
+      if (!res.ok) continue;
+      const type = res.headers.get("content-type") || "";
+      const buf = new Uint8Array(await res.arrayBuffer());
+      total += buf.length;
+      let path = item.kind === "page" ? "page/original.html" : "files/" + (new URL(item.u).hostname.replace(/[^a-z0-9.-]/gi, "_")) + "/" + (new URL(item.u).pathname.split("/").filter(Boolean).slice(-2).join("_") || "asset");
+      sendFile(path, buf);
+      index.push({ path, url: item.u, kind: item.kind, type, size: buf.length });
+      if ((/html|css|javascript/i.test(type) || item.kind === "page") && buf.length < 4 * 1024 * 1024) {
+        const text = new TextDecoder().decode(buf);
+        const re = /(?:src|href|url\()\s*["']?([^"'\)\s>]+)["']?/gi;
+        let m;
+        while ((m = re.exec(text)) && seen.size < 300) {
+          try {
+            const abs = new URL(m[1], item.u).href.split("#")[0];
+            if (/^https?:/i.test(abs) && !seen.has(abs)) {
+              seen.add(abs);
+              queue.push({ u: abs, kind: "linked" });
+            }
+          } catch (e) {
+          }
+        }
+      }
+    }
+    sendFile("index.json", enc.encode(JSON.stringify({ page: url, savedAt: new Date().toISOString(), fallback: true, files: index }, null, 2)));
+    send({ op: "end", count: index.filter((x) => x.path).length, bytes: total });
+  } catch (e) {
+    send({ op: "error", message: String(e) });
+  }
+}
+
+async function triggerSavePage(id, url) {
+  const tabs = await candidateTabs(url);
+  const msg = { type: "fable-save-page", id, url, force: true };
+  for (const tab of tabs) {
+    try {
+      const res = await browser.tabs.sendMessage(tab.id, msg);
+      if (res && res.started) return;
+    } catch (e) {
+    }
+    try {
+      if (browser.tabs.executeScript) {
+        await browser.tabs.executeScript(tab.id, { file: "page_tools.js" });
+        const res2 = await browser.tabs.sendMessage(tab.id, msg);
+        if (res2 && res2.started) return;
+      }
+    } catch (e) {
+    }
+  }
+  if (url && /^https?:/i.test(url)) {
+    await fallbackSaveFromBackground(id, url);
   }
 }
 

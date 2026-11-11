@@ -383,6 +383,10 @@ class EngineManager @Inject constructor(
         proxyConfig.attach(ext)
     }
 
+    fun setTabActive(session: GeckoSession, active: Boolean) {
+        runCatching { _runtime?.webExtensionController?.setTabActive(session, active) }
+    }
+
     private fun observeSettings() {
         scope.launch {
             settingsStore.settings.collect { applySettings(it) }

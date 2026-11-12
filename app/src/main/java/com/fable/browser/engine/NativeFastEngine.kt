@@ -30,6 +30,9 @@ object NativeFastEngine {
     @JvmStatic
     private external fun nativeFilterCameraMove(pointerId: Int, x: Float, y: Float, timeMs: Long): Boolean
 
+    @JvmStatic
+    private external fun nativeIsFastAsset(url: String, docHost: String?): Boolean
+
     fun decodeBase64(data: String): ByteArray {
         if (data.isEmpty()) return ByteArray(0)
         if (isNativeAvailable) {
@@ -89,5 +92,12 @@ object NativeFastEngine {
             runCatching { return nativeFilterCameraMove(pointerId, x, y, timeMs) }
         }
         return true
+    }
+
+    fun isFastAsset(url: String, docHost: String?): Boolean {
+        if (isNativeAvailable) {
+            runCatching { return nativeIsFastAsset(url, docHost) }
+        }
+        return false
     }
 }

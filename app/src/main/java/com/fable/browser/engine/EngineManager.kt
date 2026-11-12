@@ -446,9 +446,10 @@ class EngineManager @Inject constructor(
         rt.settings.setGlobalPrivacyControl(s.sendGpc)
 
         runCatching {
-            rt.settings.setBaselineFingerprintingProtection(true)
+            val normalFp = s.normalTabShield && !s.gameMode && !s.superGameMode
+            rt.settings.setBaselineFingerprintingProtection(normalFp)
             rt.settings.setFingerprintingProtectionPrivateBrowsing(s.incognitoFingerprintProtection)
-            rt.settings.setFingerprintingProtection(s.fingerprintProtectionAll)
+            rt.settings.setFingerprintingProtection(normalFp && s.fingerprintProtectionAll)
             rt.settings.contentBlocking.setCookieBehaviorPrivateMode(
                 if (s.incognitoBlockThirdPartyCookies) ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY
                 else ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS
@@ -552,7 +553,12 @@ class EngineManager @Inject constructor(
             "network.dnsCacheEntries" to 2048,
             "network.dnsCacheExpiration" to 3600,
             "network.ssl_tokens_cache_capacity" to 16384,
-            "content.notify.interval" to 50000,
+            "content.notify.interval" to 16000,
+            "javascript.options.warp" to true,
+            "javascript.options.parallel_parsing" to true,
+            "javascript.options.wasm_baselinejit" to true,
+            "dom.script_loader.bytecode_cache.enabled" to true,
+            "dom.script_loader.bytecode_cache.strategy" to 0,
             "gfx.downloadable_fonts.enabled" to true,
             "gfx.font_rendering.opentype_svg.enabled" to true,
             "gfx.canvas.accelerated" to true,

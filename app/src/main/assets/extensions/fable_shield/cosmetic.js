@@ -1,13 +1,14 @@
 (() => {
   if (globalThis.__fableCosmetic) return;
   globalThis.__fableCosmetic = true;
+  if (window !== window.top) return;
   let host = "";
   try {
     host = location.hostname;
   } catch (e) {
     return;
   }
-  if (!host || !/^https?:$/.test(location.protocol)) return;
+  if (!host || !/^https?:$/.test(location.protocol) || /browserbench\.org$/i.test(host)) return;
 
   let styleEl = null;
   function attach(css) {

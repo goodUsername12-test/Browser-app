@@ -2,6 +2,10 @@
   "use strict";
   if (globalThis.__fableGameInput) return;
   globalThis.__fableGameInput = true;
+  try {
+    if (window !== window.top) return;
+    if (/browserbench\.org$/i.test(location.hostname || "")) return;
+  } catch (_) {}
 
   let enabled = true;
   const last = new Map();

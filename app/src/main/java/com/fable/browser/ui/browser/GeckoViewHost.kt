@@ -173,9 +173,12 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
             settings.allowContentAccess = false
             settings.loadsImagesAutomatically = true
             settings.blockNetworkImage = false
-            settings.setSupportZoom(true)
-            settings.builtInZoomControls = true
+            settings.setSupportZoom(false)
+            settings.builtInZoomControls = false
             settings.displayZoomControls = false
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                runCatching { settings.offscreenPreRaster = true }
+            }
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
             settings.javaScriptCanOpenWindowsAutomatically = false
@@ -193,25 +196,27 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                 tab.updateFindMatch(FindMatch(cur, numberOfMatches))
             }
             webViewClient = object : WebViewClient() {
+                @Volatile private var cachedDocHost: String? = null
+
                 override fun shouldInterceptRequest(
                     view: WebView,
                     request: WebResourceRequest
                 ): WebResourceResponse? {
+                    if (request.isForMainFrame) return null
                     val reqUrl = request.url?.toString() ?: return null
-                    if (!request.isForMainFrame) {
-                        val docHost = UrlUtils.host(tab.url.value)
-                        val blocked = tab.hybridBlockChecker?.invoke(reqUrl, docHost) == true
-                        if (blocked) {
-                            tab.incrementBlocked()
-                            return WebResourceResponse(
-                                "text/plain",
-                                "UTF-8",
-                                204,
-                                "Blocked by Gecko Privacy Shield",
-                                mapOf("Access-Control-Allow-Origin" to "*"),
-                                ByteArrayInputStream(ByteArray(0))
-                            )
-                        }
+                    val docHost = cachedDocHost
+                    if (NativeFastEngine.isFastAsset(reqUrl, docHost)) return null
+                    val blocked = tab.hybridBlockChecker?.invoke(reqUrl, docHost) == true
+                    if (blocked) {
+                        tab.incrementBlocked()
+                        return WebResourceResponse(
+                            "text/plain",
+                            "UTF-8",
+                            204,
+                            "Blocked by Gecko Privacy Shield",
+                            mapOf("Access-Control-Allow-Origin" to "*"),
+                            ByteArrayInputStream(ByteArray(0))
+                        )
                     }
                     return null
                 }
@@ -234,21 +239,15 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     super.onPageStarted(view, url, favicon)
                     if (!url.isNullOrBlank()) {
                         lastBlinkUrl = url
+                        cachedDocHost = UrlUtils.host(url)
                         tab.updateUrl(url)
                         tab.updateSecure(!UrlUtils.isInsecure(url))
                         tab.resetBlocked()
                     }
+                    NativeFastEngine.setGameBoost(true)
                     tab.updateLoading(true)
                     tab.updateCanGoBack(view.canGoBack())
                     tab.updateCanGoForward(view.canGoForward())
-                    val boot = tab.hybridBootstrapProvider?.invoke(url.orEmpty()).orEmpty()
-                    if (boot.isNotEmpty()) {
-                        runCatching { view.evaluateJavascript(boot, null) }
-                    }
-                }
-
-                override fun onPageCommitVisible(view: WebView, url: String?) {
-                    super.onPageCommitVisible(view, url)
                     val boot = tab.hybridBootstrapProvider?.invoke(url.orEmpty()).orEmpty()
                     if (boot.isNotEmpty()) {
                         runCatching { view.evaluateJavascript(boot, null) }
@@ -259,6 +258,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     super.onPageFinished(view, url)
                     if (!url.isNullOrBlank()) {
                         lastBlinkUrl = url
+                        cachedDocHost = UrlUtils.host(url)
                         tab.updateUrl(url)
                         tab.updateSecure(!UrlUtils.isInsecure(url))
                     }
@@ -266,6 +266,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     tab.updateProgress(100)
                     tab.updateCanGoBack(view.canGoBack())
                     tab.updateCanGoForward(view.canGoForward())
+                    NativeFastEngine.setGameBoost(true)
                     val boot = tab.hybridBootstrapProvider?.invoke(url.orEmpty()).orEmpty()
                     if (boot.isNotEmpty()) {
                         runCatching { view.evaluateJavascript(boot, null) }

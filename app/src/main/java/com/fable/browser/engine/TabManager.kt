@@ -77,6 +77,23 @@ class TabManager @Inject constructor(
 
     fun memoryPolicy(): MemoryPolicy = MemoryPolicy.resolve(appContext, settings)
     private var lastScrollY = 0
+    private val hybridTabPrefs by lazy {
+        appContext.getSharedPreferences("fable_hybrid_tab_state", android.content.Context.MODE_PRIVATE)
+    }
+
+    private fun saveTabHybridState(url: String, manualOverride: Boolean?) {
+        val host = UrlUtils.host(url) ?: return
+        runCatching {
+            val ed = hybridTabPrefs.edit()
+            if (manualOverride == null) ed.remove(host) else ed.putBoolean(host, manualOverride)
+            ed.apply()
+        }
+    }
+
+    private fun loadTabHybridState(url: String): Boolean? {
+        val host = UrlUtils.host(url) ?: return null
+        return if (hybridTabPrefs.contains(host)) hybridTabPrefs.getBoolean(host, false) else null
+    }
 
     private companion object {
         const val SUPER_WAIT_MS = 6000L
@@ -144,6 +161,10 @@ class TabManager @Inject constructor(
                     val tab = createTab(incognito = false, open = false)
                     tab.updateTitle(entry.title)
                     tab.updateUrl(entry.url)
+                    val savedManual = loadTabHybridState(entry.url)
+                    tab.manualHybridOverride = savedManual
+                    val wantHybrid = savedManual ?: (current.hybridGeckoBlinkBeta && (!current.hybridAutoForGames || HybridEngineBridge.isHeavy3dGameUrl(entry.url)))
+                    tab.updateHybridBlink(wantHybrid)
                     tab.markUnloaded()
                     tab
                 }
@@ -421,6 +442,7 @@ class TabManager @Inject constructor(
         val tab = activeTab ?: return
         val next = !tab.isHybridBlink.value
         tab.manualHybridOverride = next
+        saveTabHybridState(tab.url.value, next)
         setHybridBlinkMode(tab, next)
     }
 
@@ -649,7 +671,7 @@ class TabManager @Inject constructor(
         val url = UrlUtils.toUrlOrSearch(input, settings.searchEngine)
         tab.updateInterstitial(null)
         wireHybridCallbacks(tab)
-        val manual = tab.manualHybridOverride
+        val manual = tab.manualHybridOverride ?: loadTabHybridState(url)?.also { tab.manualHybridOverride = it }
         if (manual != null) {
             tab.updateHybridBlink(manual)
         } else if (settings.hybridGeckoBlinkBeta) {

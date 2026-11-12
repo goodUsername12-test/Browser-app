@@ -287,7 +287,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val ARCHIVE_MAX_TOTAL_MB = intPreferencesKey("archive_max_total_mb")
         val ARCHIVE_MAX_FILE_MB = intPreferencesKey("archive_max_file_mb")
         val ARCHIVE_STREAM_BUF_MB = intPreferencesKey("archive_stream_buf_mb")
-        val HYBRID_GECKO_BLINK_BETA = booleanPreferencesKey("hybrid_gecko_blink_beta")
+        val HYBRID_GECKO_BLINK_BETA = booleanPreferencesKey("hybrid_gecko_blink_beta_v2")
         val HYBRID_AUTO_FOR_GAMES = booleanPreferencesKey("hybrid_auto_for_games")
     }
 

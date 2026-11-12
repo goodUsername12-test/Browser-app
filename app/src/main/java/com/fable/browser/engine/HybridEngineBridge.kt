@@ -25,7 +25,8 @@ object HybridEngineBridge {
         "krunker.io", "shellshock.io", "1v1.lol", "ev.io", "voxiom.io",
         "venge.io", "kirka.io", "kour.io", "miniblox.io", "vectaria.io",
         "deadshot.io", "babylonjs.com", "playcanvas.com",
-        "threejs.org", "itch.io", "coolmathgames.com"
+        "threejs.org", "itch.io", "coolmathgames.com",
+        "browserbench.org", "web.basemark.com", "html5test.com"
     )
 
     fun isHeavy3dGameUrl(url: String): Boolean {
@@ -238,7 +239,7 @@ object HybridEngineBridge {
                     };
                 } catch (_) {}
             }
-            if (CFG.touchFix) {
+            if (CFG.touchFix && !/browserbench\.org$/i.test(host)) {
                 try {
                     const uiTouchIds = new Set();
                     const camTouchIds = new Set();
@@ -333,20 +334,45 @@ object HybridEngineBridge {
                         });
                     }
 
-                    const origGetRect = Element.prototype.getBoundingClientRect;
-                    Element.prototype.getBoundingClientRect = function() {
-                        if (this.tagName === "CANVAS" || this.id === "noa-container") {
-                            const t = performance.now();
-                            if (cachedRect && (t - cachedRectTime) < 250) {
-                                return cachedRect;
-                            }
-                            cachedRect = origGetRect.call(this);
-                            cachedRectTime = t;
+                    const origCanvasRect = HTMLCanvasElement.prototype.getBoundingClientRect;
+                    HTMLCanvasElement.prototype.getBoundingClientRect = function() {
+                        const t = performance.now();
+                        if (cachedRect && (t - cachedRectTime) < 250) {
                             return cachedRect;
                         }
-                        return origGetRect.call(this);
+                        cachedRect = origCanvasRect.call(this);
+                        cachedRectTime = t;
+                        return cachedRect;
                     };
-                    window.addEventListener("resize", function() { cachedRect = null; }, { passive: true });
+                    let cachedCw = 0, cachedCh = 0;
+                    const cwDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+                    const chDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+                    if (cwDesc && cwDesc.get && chDesc && chDesc.get) {
+                        Object.defineProperty(HTMLCanvasElement.prototype, "clientWidth", {
+                            configurable: true,
+                            get: function() {
+                                if (cachedCw > 0) return cachedCw;
+                                cachedCw = cwDesc.get.call(this);
+                                return cachedCw;
+                            }
+                        });
+                        Object.defineProperty(HTMLCanvasElement.prototype, "clientHeight", {
+                            configurable: true,
+                            get: function() {
+                                if (cachedCh > 0) return cachedCh;
+                                cachedCh = chDesc.get.call(this);
+                                return cachedCh;
+                            }
+                        });
+                    }
+                    window.addEventListener("resize", function() { cachedRect = null; cachedCw = 0; cachedCh = 0; }, { passive: true });
+                    // Zero-delay rapid clicking (20+ CPS): prevent browser double-tap zoom or contextmenu stalls on game canvases
+                    window.addEventListener("dblclick", function(ev) {
+                        if (isCameraLookNode(ev.target) || isUiNode(ev.target)) ev.preventDefault();
+                    }, { capture: true, passive: false });
+                    window.addEventListener("contextmenu", function(ev) {
+                        if (isCameraLookNode(ev.target) || isUiNode(ev.target)) ev.preventDefault();
+                    }, { capture: true, passive: false });
 
                     window.addEventListener("touchstart", function(ev) {
                         lastTapTime = performance.now();

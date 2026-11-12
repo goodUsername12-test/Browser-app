@@ -116,7 +116,7 @@ class PageArchiver @Inject constructor(
             ?.forEach { it.delete() }
         val file = File(dir, "page-$id.zip")
         val zip = ZipOutputStream(BufferedOutputStream(FileOutputStream(file), 512 * 1024))
-        zip.setLevel(6)
+        zip.setLevel(4)
         active = Active(
             id = id,
             file = file,
@@ -128,11 +128,19 @@ class PageArchiver @Inject constructor(
         )
     }
 
+    private fun isPreCompressed(name: String): Boolean {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return ext in PRECOMPRESSED_EXTS
+    }
+
     private fun write(id: String, json: JSONObject) {
         val a = active?.takeIf { it.id == id } ?: return
         a.lastActivity = System.currentTimeMillis()
         val path = cleanPath(json.optString("path"))
         val seq = json.optInt("seq")
+        val isLast = json.optBoolean("last")
+        val data = json.optString("data")
+        val decoded = if (data.isNotEmpty()) NativeFastEngine.decodeBase64(data) else ByteArray(0)
         if (seq == 0 || a.entry == null) {
             if (a.entry != null) a.zip.closeEntry()
             var name = path
@@ -142,16 +150,21 @@ class PageArchiver @Inject constructor(
                 name = if (dot > path.lastIndexOf('/')) path.substring(0, dot) + "_" + n + path.substring(dot) else path + "_" + n
                 n++
             }
-            a.zip.putNextEntry(ZipEntry(name))
+            val ze = ZipEntry(name)
+            if (seq == 0 && isLast && isPreCompressed(name)) {
+                ze.method = ZipEntry.STORED
+                ze.size = decoded.size.toLong()
+                ze.compressedSize = decoded.size.toLong()
+                ze.crc = NativeFastEngine.crc32(decoded)
+            }
+            a.zip.putNextEntry(ze)
             a.entry = name
         }
-        val data = json.optString("data")
-        if (data.isNotEmpty()) {
-            val bytes = NativeFastEngine.decodeBase64(data)
-            a.zip.write(bytes)
-            a.bytes += bytes.size
+        if (decoded.isNotEmpty()) {
+            a.zip.write(decoded)
+            a.bytes += decoded.size
         }
-        if (json.optBoolean("last")) {
+        if (isLast) {
             a.zip.closeEntry()
             a.entry = null
             a.files++
@@ -209,5 +222,9 @@ class PageArchiver @Inject constructor(
         private const val TAG = "PageArchiver"
         private const val IDLE_TIMEOUT_MS = 120_000L
         private const val START_TIMEOUT_MS = 15_000L
+        private val PRECOMPRESSED_EXTS = setOf(
+            "png", "jpg", "jpeg", "gif", "webp", "avif", "woff2",
+            "mp3", "ogg", "mp4", "webm", "zip", "gz", "xz", "br"
+        )
     }
 }

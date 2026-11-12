@@ -170,7 +170,40 @@
     }
   }
 
+  const latin1Dec = (() => {
+    try { return new TextDecoder("latin1"); } catch (e) { return null; }
+  })();
+
+  const wasmHasher = (() => {
+    try {
+      const code = new Uint8Array([0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,3,2,1,0,5,3,1,0,1,7,15,2,3,109,101,109,2,0,5,102,110,118,49,97,0,0,10,61,1,59,1,2,127,65,197,157,242,136,120,33,2,32,0,32,1,106,33,3,2,64,3,64,32,0,32,3,79,13,1,32,2,32,0,45,0,0,115,65,147,131,128,8,108,33,2,32,0,65,1,106,33,0,12,0,11,11,32,2,11]);
+      const inst = new WebAssembly.Instance(new WebAssembly.Module(code));
+      const mem = new Uint8Array(inst.exports.mem.buffer);
+      const fnv = inst.exports.fnv1a;
+      return (bytes) => {
+        if (!bytes || !bytes.length) return "00000000";
+        const n = Math.min(bytes.length, 65536);
+        mem.set(bytes.subarray(0, n), 0);
+        let h = fnv(0, n) >>> 0;
+        if (bytes.length > 65536) {
+          const tail = bytes.subarray(bytes.length - 32768);
+          mem.set(tail, 0);
+          h = ((h ^ (fnv(0, tail.length) >>> 0)) * 16777619) >>> 0;
+        }
+        return (h >>> 0).toString(16).padStart(8, "0") + "-" + bytes.length;
+      };
+    } catch (e) {
+      return (bytes) => String(bytes ? bytes.length : 0);
+    }
+  })();
+
   function b64(bytes) {
+    if (!bytes || !bytes.length) return "";
+    if (latin1Dec && bytes.length <= 2 * 1024 * 1024) {
+      try {
+        return btoa(latin1Dec.decode(bytes));
+      } catch (e) {}
+    }
     let out = "";
     const step = 0x8000;
     for (let i = 0; i < bytes.length; i += step) {
@@ -383,21 +416,26 @@
         queue.push(abs);
       };
 
-      const sendBytes = async (path, bytes) => {
-        if (!bytes.length) {
-          await send({ op: "file", path, seq: 0, last: true, data: "" });
-          return;
-        }
-        let seq = 0;
-        for (let off = 0; off < bytes.length; off += SAVE_CHUNK) {
-          const end = Math.min(bytes.length, off + SAVE_CHUNK);
-          await send({ op: "file", path, seq: seq++, last: end >= bytes.length, data: b64(bytes.subarray(off, end)) });
-          sent += end - off;
-          if (sent > 16 * 1024 * 1024) {
-            sent = 0;
-            await new Promise((r) => setTimeout(r, 4));
+      let sendChain = Promise.resolve();
+      const sendBytes = (path, bytes) => {
+        const job = sendChain.then(async () => {
+          if (!bytes.length) {
+            await send({ op: "file", path, seq: 0, last: true, data: "" });
+            return;
           }
-        }
+          let seq = 0;
+          for (let off = 0; off < bytes.length; off += SAVE_CHUNK) {
+            const end = Math.min(bytes.length, off + SAVE_CHUNK);
+            await send({ op: "file", path, seq: seq++, last: end >= bytes.length, data: b64(bytes.subarray(off, end)) });
+            sent += end - off;
+            if (sent > 16 * 1024 * 1024) {
+              sent = 0;
+              await new Promise((r) => setTimeout(r, 4));
+            }
+          }
+        }).catch(() => {});
+        sendChain = job;
+        return job;
       };
       const enc = new TextEncoder();
 
@@ -665,63 +703,94 @@
       domUrls(add);
       add(location.href, location.href, "page");
 
-      let done = 0;
-      while (queue.length) {
-        const url = queue.shift();
-        const why = seen.get(url) || "";
-        done++;
-        if (done % 10 === 0) await send({ op: "progress", done, total: done + queue.length });
-        if (total >= maxTotalBytes) {
-          index.push({ url, kind: why, skipped: "size limit" });
-          continue;
-        }
-        let res;
-        try {
-          res = await fetch(url, { cache: "force-cache", credentials: "include", redirect: "follow" });
-        } catch (e) {
+      try {
+        const frames = Array.from(document.querySelectorAll("iframe, frame")).slice(0, 16);
+        let fi = 0;
+        for (const fr of frames) {
+          fi++;
           try {
-            res = await fetch(url, { credentials: "omit" });
-          } catch (x) {
-            if (why !== "guess") index.push({ url, kind: why, error: String(x && x.message ? x.message : x) });
+            const fdoc = fr.contentDocument;
+            if (fdoc && fdoc.documentElement) {
+              const fhtml = "<!DOCTYPE html>\n" + fdoc.documentElement.outerHTML;
+              const fbytes = enc.encode(fhtml);
+              const fpath = "memory/frames/frame-" + fi + ".html";
+              total += fbytes.length;
+              await sendBytes(fpath, fbytes);
+              index.push({ path: fpath, url: fr.src || ("frame://" + fi), kind: "memory:iframe-dom", type: "text/html", size: fbytes.length, hash: wasmHasher(fbytes) });
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+
+      let done = 0;
+      const seenHashes = new Map();
+      const processNext = async () => {
+        while (queue.length) {
+          const url = queue.shift();
+          if (!url) continue;
+          const why = seen.get(url) || "";
+          const curDone = ++done;
+          if (curDone % 12 === 0) send({ op: "progress", done: curDone, total: curDone + queue.length });
+          if (total >= maxTotalBytes) {
+            index.push({ url, kind: why, skipped: "size limit" });
             continue;
           }
-        }
-        if (!res.ok && res.type !== "opaque") {
-          if (why !== "guess") index.push({ url, kind: why, status: res.status });
-          continue;
-        }
-        const type = res.headers.get("content-type") || "";
-        if (why === "guess" && /text\/html/i.test(type) && !/\.html?(\?|$)/i.test(url)) continue;
-        let buf;
-        try {
-          buf = new Uint8Array(await res.arrayBuffer());
-        } catch (e) {
-          index.push({ url, kind: why, error: "read failed" });
-          continue;
-        }
-        if (buf.length > maxFileBytes) {
-          index.push({ url, kind: why, skipped: "file too large", size: buf.length });
-          continue;
-        }
-        const path = url === stripHash(location.href) ? "page/original.html" : pathFor(url, type, used);
-        total += buf.length;
-        await sendBytes(path, buf);
-        index.push({ path, url, kind: why, type, size: buf.length });
-        if (isTextual(type, url) && buf.length < 12 * 1024 * 1024) {
-          let text = "";
+          let res;
           try {
-            text = new TextDecoder().decode(buf);
+            res = await fetch(url, { cache: "force-cache", credentials: "include", redirect: "follow" });
           } catch (e) {
+            try {
+              res = await fetch(url, { credentials: "omit" });
+            } catch (x) {
+              if (why !== "guess") index.push({ url, kind: why, error: String(x && x.message ? x.message : x) });
+              continue;
+            }
           }
-          if (text) {
-            if (/css/i.test(type) || /\.css(\?|$)/i.test(url)) cssUrls(text, url, add);
-            else if (/html/i.test(type) && why === "dom") {
-              const re = /(?:src|href)\s*=\s*["']([^"']+)["']/gi;
-              let m;
-              while ((m = re.exec(text))) add(m[1], url, "frame");
-            } else if (/javascript|ecmascript|json/i.test(type) || /\.m?js(\?|$)/i.test(url)) scriptUrls(text, url, add);
+          if (!res.ok && res.type !== "opaque") {
+            if (why !== "guess") index.push({ url, kind: why, status: res.status });
+            continue;
+          }
+          const type = res.headers.get("content-type") || "";
+          if (why === "guess" && /text\/html/i.test(type) && !/\.html?(\?|$)/i.test(url)) continue;
+          let buf;
+          try {
+            buf = new Uint8Array(await res.arrayBuffer());
+          } catch (e) {
+            index.push({ url, kind: why, error: "read failed" });
+            continue;
+          }
+          if (buf.length > maxFileBytes) {
+            index.push({ url, kind: why, skipped: "file too large", size: buf.length });
+            continue;
+          }
+          const fastHash = wasmHasher(buf);
+          const path = url === stripHash(location.href) ? "page/original.html" : pathFor(url, type, used);
+          total += buf.length;
+          await sendBytes(path, buf);
+          seenHashes.set(url, fastHash);
+          index.push({ path, url, kind: why, type, size: buf.length, hash: fastHash });
+          if (isTextual(type, url) && buf.length < 12 * 1024 * 1024) {
+            let text = "";
+            try {
+              text = new TextDecoder().decode(buf);
+            } catch (e) {
+            }
+            if (text) {
+              if (/css/i.test(type) || /\.css(\?|$)/i.test(url)) cssUrls(text, url, add);
+              else if (/html/i.test(type) && why === "dom") {
+                const re = /(?:src|href)\s*=\s*["']([^"']+)["']/gi;
+                let m;
+                while ((m = re.exec(text))) add(m[1], url, "frame");
+              } else if (/javascript|ecmascript|json/i.test(type) || /\.m?js(\?|$)/i.test(url)) scriptUrls(text, url, add);
+            }
           }
         }
+      };
+      while (queue.length) {
+        const workers = [];
+        const nWorkers = Math.min(6, queue.length);
+        for (let w = 0; w < nWorkers; w++) workers.push(processNext());
+        await Promise.all(workers);
       }
 
       try {

@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstring>
 #include <vector>
+#include <array>
 
 #if __has_include(<jni.h>)
 #include <jni.h>
@@ -12,11 +13,6 @@
 
 namespace fable_fast {
 
-// 256-entry lookup table for single-pass Base64 decoding:
-//  0..63  : valid Base64 sextet
-//  0xFE   : whitespace (\r, \n, space, \t) -> skipped
-//  0xFD   : padding ('=')
-//  0xFF   : invalid character
 alignas(64) static constexpr uint8_t kB64Table[256] = {
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFE,0xFE,0xFF,0xFF,0xFE,0xFF,0xFF,
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
@@ -36,12 +32,25 @@ alignas(64) static constexpr uint8_t kB64Table[256] = {
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
 };
 
+constexpr std::array<uint32_t, 256> make_crc32_table() noexcept {
+    std::array<uint32_t, 256> table{};
+    for (uint32_t i = 0; i < 256; ++i) {
+        uint32_t c = i;
+        for (int k = 0; k < 8; ++k) {
+            c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+        }
+        table[i] = c;
+    }
+    return table;
+}
+
+alignas(64) static constexpr std::array<uint32_t, 256> kCrc32Table = make_crc32_table();
+
 size_t decode_base64(const uint8_t* src, size_t len, uint8_t* dst) noexcept {
     if (!src || !dst || len == 0) return 0;
     size_t out = 0;
     size_t i = 0;
 
-    // Fast 4-byte unrolled loop for contiguous non-whitespace Base64
     while (i + 4 <= len) {
         const uint8_t a = kB64Table[src[i]];
         const uint8_t b = kB64Table[src[i + 1]];
@@ -62,7 +71,6 @@ size_t decode_base64(const uint8_t* src, size_t len, uint8_t* dst) noexcept {
         }
     }
 
-    // Tail & whitespace-tolerant state machine
     uint32_t buf = 0;
     int bits = 0;
     for (; i < len; ++i) {
@@ -81,7 +89,23 @@ size_t decode_base64(const uint8_t* src, size_t len, uint8_t* dst) noexcept {
     return out;
 }
 
-// Fast 64-bit hash (8-byte unrolled FNV-1a / Murmur-style avalanche) for asset deduplication
+uint32_t crc32(const uint8_t* data, size_t len) noexcept {
+    uint32_t c = 0xFFFFFFFFu;
+    if (!data || len == 0) return 0u;
+    size_t i = 0;
+    while (i + 4 <= len) {
+        c = kCrc32Table[(c ^ data[i]) & 0xFFu] ^ (c >> 8);
+        c = kCrc32Table[(c ^ data[i + 1]) & 0xFFu] ^ (c >> 8);
+        c = kCrc32Table[(c ^ data[i + 2]) & 0xFFu] ^ (c >> 8);
+        c = kCrc32Table[(c ^ data[i + 3]) & 0xFFu] ^ (c >> 8);
+        i += 4;
+    }
+    for (; i < len; ++i) {
+        c = kCrc32Table[(c ^ data[i]) & 0xFFu] ^ (c >> 8);
+    }
+    return c ^ 0xFFFFFFFFu;
+}
+
 uint64_t hash64(const uint8_t* data, size_t len) noexcept {
     uint64_t h = 0xcbf29ce484222325ULL ^ (static_cast<uint64_t>(len) * 0x9e3779b97f4a7c15ULL);
     if (!data || len == 0) return h;
@@ -104,7 +128,6 @@ uint64_t hash64(const uint8_t* data, size_t len) noexcept {
     return h;
 }
 
-// Fast domain boundary suffix match: returns true if host == domain or host ends with "." + domain
 bool match_domain_suffix(const char* host, size_t host_len, const char* domain, size_t dom_len) noexcept {
     if (!host || !domain || dom_len == 0 || host_len < dom_len) return false;
     if (host_len == dom_len) {
@@ -113,6 +136,47 @@ bool match_domain_suffix(const char* host, size_t host_len, const char* domain, 
     const size_t prefix = host_len - dom_len;
     if (host[prefix - 1] != '.') return false;
     return std::memcmp(host + prefix, domain, dom_len) == 0;
+}
+
+size_t extract_host(const char* url, size_t len, char* out_buf, size_t max_out) noexcept {
+    if (!url || !out_buf || len == 0 || max_out == 0) return 0;
+    size_t start = 0;
+    for (size_t i = 0; i + 2 < len && i < 16; ++i) {
+        if (url[i] == ':' && url[i + 1] == '/' && url[i + 2] == '/') {
+            start = i + 3;
+            break;
+        }
+    }
+    if (start == 0) return 0;
+    size_t end = start;
+    while (end < len) {
+        const char ch = url[end];
+        if (ch == '/' || ch == '?' || ch == '#' || ch == ':') break;
+        if (ch == '@') {
+            start = end + 1;
+        }
+        ++end;
+    }
+    if (end <= start) return 0;
+    if (end - start > 4 &&
+        (url[start] == 'w' || url[start] == 'W') &&
+        (url[start + 1] == 'w' || url[start + 1] == 'W') &&
+        (url[start + 2] == 'w' || url[start + 2] == 'W') &&
+        url[start + 3] == '.') {
+        start += 4;
+    }
+    while (end > start && url[end - 1] == '.') {
+        --end;
+    }
+    size_t out_len = end - start;
+    if (out_len == 0 || out_len >= max_out) return 0;
+    for (size_t i = 0; i < out_len; ++i) {
+        char c = url[start + i];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        out_buf[i] = c;
+    }
+    out_buf[out_len] = '\0';
+    return out_len;
 }
 
 } // namespace fable_fast
@@ -154,6 +218,26 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeDecodeBase64(
         );
     }
     return result;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeCrc32(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jbyteArray bytes
+) {
+    if (!env || !bytes) return 0L;
+    const jsize len = env->GetArrayLength(bytes);
+    if (len <= 0) return 0L;
+    jboolean isCopy = JNI_FALSE;
+    jbyte* ptr = env->GetByteArrayElements(bytes, &isCopy);
+    if (!ptr) return 0L;
+    const uint32_t c = fable_fast::crc32(
+        reinterpret_cast<const uint8_t*>(ptr),
+        static_cast<size_t>(len)
+    );
+    env->ReleaseByteArrayElements(bytes, ptr, JNI_ABORT);
+    return static_cast<jlong>(c) & 0xFFFFFFFFL;
 }
 
 JNIEXPORT jlong JNICALL

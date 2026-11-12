@@ -1,6 +1,7 @@
 package com.fable.browser.engine
 
 import android.util.Base64
+import java.util.zip.CRC32
 
 object NativeFastEngine {
     val isNativeAvailable: Boolean = runCatching {
@@ -10,6 +11,9 @@ object NativeFastEngine {
 
     @JvmStatic
     private external fun nativeDecodeBase64(b64: String): ByteArray?
+
+    @JvmStatic
+    private external fun nativeCrc32(bytes: ByteArray): Long
 
     @JvmStatic
     private external fun nativeHash64(bytes: ByteArray): Long
@@ -23,6 +27,16 @@ object NativeFastEngine {
             runCatching { nativeDecodeBase64(data) }.getOrNull()?.let { return it }
         }
         return Base64.decode(data, Base64.DEFAULT)
+    }
+
+    fun crc32(bytes: ByteArray): Long {
+        if (bytes.isEmpty()) return 0L
+        if (isNativeAvailable) {
+            runCatching { return nativeCrc32(bytes) and 0xFFFFFFFFL }
+        }
+        val crc = CRC32()
+        crc.update(bytes)
+        return crc.value
     }
 
     fun hash64(bytes: ByteArray): Long {

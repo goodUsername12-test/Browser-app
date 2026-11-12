@@ -34,8 +34,7 @@ object HybridEngineBridge {
         val host = UrlUtils.host(url)?.removePrefix("www.") ?: return false
         if (GAME_HOSTS.any { host == it || host.endsWith(".$it") }) return true
         if (customDomains.isNotBlank()) {
-            val extra = customDomains.split(',', ';', ' ', '
-').map { it.trim().lowercase().removePrefix("www.") }.filter { it.isNotEmpty() }
+            val extra = customDomains.split(',', ';', ' ', '\n', '\r', '\t').map { it.trim().lowercase().removePrefix("www.") }.filter { it.isNotEmpty() }
             if (extra.any { host == it || host.endsWith(".$it") }) return true
         }
         return false

@@ -117,6 +117,13 @@ fun SettingsScreen(
         )
         ListDivider()
         SettingRow(
+            title = "Beta: Gecko + Blink Engine",
+            subtitle = if (settings.hybridGeckoBlinkBeta) "Active · Edit all 17 combined engine, CPU, WebGL, camera & click settings" else "Off · Tap to configure combined engine settings",
+            icon = Icons.Outlined.Speed,
+            onClick = { onNavigate(Routes.SETTINGS_HYBRID_BETA) }
+        )
+        ListDivider()
+        SettingRow(
             title = "Privacy & security",
             subtitle = buildString {
                 append(if (settings.adBlockEnabled) "Blocker on" else "Blocker off")

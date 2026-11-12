@@ -333,6 +333,28 @@ class SettingsViewModel @Inject constructor(
     fun setArchiveStreamBufferMb(v: Int) = edit { store.setArchiveStreamBufferMb(v) }
     fun setHybridGeckoBlinkBeta(v: Boolean) = edit { store.setHybridGeckoBlinkBeta(v) }
     fun setHybridAutoForGames(v: Boolean) = edit { store.setHybridAutoForGames(v) }
+    fun setHybridNativeCpuBoost(v: Boolean) = edit { store.setHybridNativeCpuBoost(v) }
+    fun setHybridZeroTimerSlack(v: Boolean) = edit { store.setHybridZeroTimerSlack(v) }
+    fun setHybridReportedCores(v: Int) = edit { store.setHybridReportedCores(v) }
+    fun setHybridOffscreenPreRaster(v: Boolean) = edit { store.setHybridOffscreenPreRaster(v) }
+    fun setHybridHighPerfWebGl(v: Boolean) = edit { store.setHybridHighPerfWebGl(v) }
+    fun setHybridCameraAntiShutter(v: Boolean) = edit { store.setHybridCameraAntiShutter(v) }
+    fun setHybridZeroDelayClicks(v: Boolean) = edit { store.setHybridZeroDelayClicks(v) }
+    fun setHybridCanvasRectCacheMs(v: Int) = edit { store.setHybridCanvasRectCacheMs(v) }
+    fun setHybridSuppressPostRenderTimer(v: Boolean) = edit { store.setHybridSuppressPostRenderTimer(v) }
+    fun setHybridFastFontSwap(v: Boolean) = edit { store.setHybridFastFontSwap(v) }
+    fun setHybridCppFastAssetBypass(v: Boolean) = edit { store.setHybridCppFastAssetBypass(v) }
+    fun setHybridGeckoAdBlock(v: Boolean) = edit { store.setHybridGeckoAdBlock(v) }
+    fun setHybridHideLocalIp(v: Boolean) = edit { store.setHybridHideLocalIp(v) }
+    fun setHybridPersistTabMode(v: Boolean) = edit { store.setHybridPersistTabMode(v) }
+    fun setHybridCustomDomains(v: String) = edit { store.setHybridCustomDomains(v) }
+    fun resetHybridSiteOverrides(context: android.content.Context) {
+        runCatching {
+            context.getSharedPreferences("fable_hybrid_tab_state", android.content.Context.MODE_PRIVATE)
+                .edit().clear().apply()
+            _message.value = "Cleared saved per-site Beta overrides"
+        }
+    }
     fun copyIncognitoFromNormal() = edit { store.copyIncognitoFromNormal(settings.value) }
 
     fun autoMemoryInfo(context: android.content.Context): Pair<com.fable.browser.data.model.MemoryMode, Long> =

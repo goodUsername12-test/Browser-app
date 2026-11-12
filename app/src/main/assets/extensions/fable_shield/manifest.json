@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Fable Shield",
-  "version": "1.22.0",
+  "version": "1.23.0",
   "description": "Network-layer ad/tracker blocking, fingerprint randomization, super incognito identities and optional proxying for Fable Browser.",
   "applications": {
     "gecko": {

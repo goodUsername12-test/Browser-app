@@ -18,6 +18,7 @@ import com.fable.browser.ui.components.SwitchRow
 @Composable
 fun PerformanceSettingsScreen(
     onBack: () -> Unit,
+    onOpenHybridBeta: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -159,10 +160,15 @@ fun PerformanceSettingsScreen(
             onCheckedChange = viewModel::setHybridGeckoBlinkBeta
         )
         SwitchRow(
-            title = "Auto-combine on 3D game sites",
-            subtitle = "When Beta is on, automatically activates Combined Gecko + Blink on 3D WebGL games (Bloxd.io, Poki, CrazyGames, Krunker, WebGL apps) while keeping normal pages on pure GeckoView unless toggled in the menu",
+            title = "Auto-combine on 3D game & benchmark sites",
+            subtitle = "When Beta is on, automatically activates Combined Gecko + Blink on 3D WebGL games and benchmarks (Bloxd.io, Speedometer, Poki, CrazyGames, Krunker) while keeping normal pages on pure GeckoView unless toggled in the menu",
             checked = settings.hybridAutoForGames,
             onCheckedChange = viewModel::setHybridAutoForGames
+        )
+        SettingRow(
+            title = "Edit all Beta Gecko + Blink settings",
+            subtitle = "Configure custom domains, Cortex-A75 CPU boost, 1 ns timer slack, WebAssembly core count, camera anti-shutter, 20+ CPS clicks, and privacy controls",
+            onClick = onOpenHybridBeta
         )
         ListDivider()
 

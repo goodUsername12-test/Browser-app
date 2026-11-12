@@ -152,7 +152,22 @@ data class Settings(
     val archiveMaxFileMb: Int = 120,
     val archiveStreamBufferMb: Int = 160,
     val hybridGeckoBlinkBeta: Boolean = true,
-    val hybridAutoForGames: Boolean = true
+    val hybridAutoForGames: Boolean = true,
+    val hybridNativeCpuBoost: Boolean = true,
+    val hybridZeroTimerSlack: Boolean = true,
+    val hybridReportedCores: Int = 8,
+    val hybridOffscreenPreRaster: Boolean = true,
+    val hybridHighPerfWebGl: Boolean = true,
+    val hybridCameraAntiShutter: Boolean = true,
+    val hybridZeroDelayClicks: Boolean = true,
+    val hybridCanvasRectCacheMs: Int = 250,
+    val hybridSuppressPostRenderTimer: Boolean = true,
+    val hybridFastFontSwap: Boolean = true,
+    val hybridCppFastAssetBypass: Boolean = true,
+    val hybridGeckoAdBlock: Boolean = true,
+    val hybridHideLocalIp: Boolean = true,
+    val hybridPersistTabMode: Boolean = true,
+    val hybridCustomDomains: String = "bloxd.io, staging.bloxd.io, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io"
 ) {
     val performanceProfile: PerformanceProfile
         get() = when {
@@ -289,6 +304,21 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val ARCHIVE_STREAM_BUF_MB = intPreferencesKey("archive_stream_buf_mb")
         val HYBRID_GECKO_BLINK_BETA = booleanPreferencesKey("hybrid_gecko_blink_beta_v2")
         val HYBRID_AUTO_FOR_GAMES = booleanPreferencesKey("hybrid_auto_for_games")
+        val HYBRID_NATIVE_CPU_BOOST = booleanPreferencesKey("hybrid_native_cpu_boost")
+        val HYBRID_ZERO_TIMER_SLACK = booleanPreferencesKey("hybrid_zero_timer_slack")
+        val HYBRID_REPORTED_CORES = intPreferencesKey("hybrid_reported_cores")
+        val HYBRID_OFFSCREEN_PRERASTER = booleanPreferencesKey("hybrid_offscreen_preraster")
+        val HYBRID_HIGH_PERF_WEBGL = booleanPreferencesKey("hybrid_high_perf_webgl")
+        val HYBRID_CAMERA_ANTI_SHUTTER = booleanPreferencesKey("hybrid_camera_anti_shutter")
+        val HYBRID_ZERO_DELAY_CLICKS = booleanPreferencesKey("hybrid_zero_delay_clicks")
+        val HYBRID_CANVAS_RECT_CACHE_MS = intPreferencesKey("hybrid_canvas_rect_cache_ms")
+        val HYBRID_SUPPRESS_POST_TIMER = booleanPreferencesKey("hybrid_suppress_post_timer")
+        val HYBRID_FAST_FONT_SWAP = booleanPreferencesKey("hybrid_fast_font_swap")
+        val HYBRID_CPP_FAST_ASSET = booleanPreferencesKey("hybrid_cpp_fast_asset")
+        val HYBRID_GECKO_AD_BLOCK = booleanPreferencesKey("hybrid_gecko_ad_block")
+        val HYBRID_HIDE_LOCAL_IP = booleanPreferencesKey("hybrid_hide_local_ip")
+        val HYBRID_PERSIST_TAB_MODE = booleanPreferencesKey("hybrid_persist_tab_mode")
+        val HYBRID_CUSTOM_DOMAINS = stringPreferencesKey("hybrid_custom_domains")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -415,7 +445,22 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             archiveMaxFileMb = (p[Keys.ARCHIVE_MAX_FILE_MB] ?: 120).coerceIn(20, 500),
             archiveStreamBufferMb = (p[Keys.ARCHIVE_STREAM_BUF_MB] ?: 160).coerceIn(32, 512),
             hybridGeckoBlinkBeta = p[Keys.HYBRID_GECKO_BLINK_BETA] ?: true,
-            hybridAutoForGames = p[Keys.HYBRID_AUTO_FOR_GAMES] ?: true
+            hybridAutoForGames = p[Keys.HYBRID_AUTO_FOR_GAMES] ?: true,
+            hybridNativeCpuBoost = p[Keys.HYBRID_NATIVE_CPU_BOOST] ?: true,
+            hybridZeroTimerSlack = p[Keys.HYBRID_ZERO_TIMER_SLACK] ?: true,
+            hybridReportedCores = (p[Keys.HYBRID_REPORTED_CORES] ?: 8).coerceIn(2, 16),
+            hybridOffscreenPreRaster = p[Keys.HYBRID_OFFSCREEN_PRERASTER] ?: true,
+            hybridHighPerfWebGl = p[Keys.HYBRID_HIGH_PERF_WEBGL] ?: true,
+            hybridCameraAntiShutter = p[Keys.HYBRID_CAMERA_ANTI_SHUTTER] ?: true,
+            hybridZeroDelayClicks = p[Keys.HYBRID_ZERO_DELAY_CLICKS] ?: true,
+            hybridCanvasRectCacheMs = (p[Keys.HYBRID_CANVAS_RECT_CACHE_MS] ?: 250).coerceIn(0, 1000),
+            hybridSuppressPostRenderTimer = p[Keys.HYBRID_SUPPRESS_POST_TIMER] ?: true,
+            hybridFastFontSwap = p[Keys.HYBRID_FAST_FONT_SWAP] ?: true,
+            hybridCppFastAssetBypass = p[Keys.HYBRID_CPP_FAST_ASSET] ?: true,
+            hybridGeckoAdBlock = p[Keys.HYBRID_GECKO_AD_BLOCK] ?: true,
+            hybridHideLocalIp = p[Keys.HYBRID_HIDE_LOCAL_IP] ?: true,
+            hybridPersistTabMode = p[Keys.HYBRID_PERSIST_TAB_MODE] ?: true,
+            hybridCustomDomains = p[Keys.HYBRID_CUSTOM_DOMAINS] ?: "bloxd.io, staging.bloxd.io, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io"
         )
     }.distinctUntilChanged()
 
@@ -605,6 +650,21 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setArchiveStreamBufferMb(v: Int) = set(Keys.ARCHIVE_STREAM_BUF_MB, v.coerceIn(32, 512))
     suspend fun setHybridGeckoBlinkBeta(v: Boolean) = set(Keys.HYBRID_GECKO_BLINK_BETA, v)
     suspend fun setHybridAutoForGames(v: Boolean) = set(Keys.HYBRID_AUTO_FOR_GAMES, v)
+    suspend fun setHybridNativeCpuBoost(v: Boolean) = set(Keys.HYBRID_NATIVE_CPU_BOOST, v)
+    suspend fun setHybridZeroTimerSlack(v: Boolean) = set(Keys.HYBRID_ZERO_TIMER_SLACK, v)
+    suspend fun setHybridReportedCores(v: Int) = set(Keys.HYBRID_REPORTED_CORES, v.coerceIn(2, 16))
+    suspend fun setHybridOffscreenPreRaster(v: Boolean) = set(Keys.HYBRID_OFFSCREEN_PRERASTER, v)
+    suspend fun setHybridHighPerfWebGl(v: Boolean) = set(Keys.HYBRID_HIGH_PERF_WEBGL, v)
+    suspend fun setHybridCameraAntiShutter(v: Boolean) = set(Keys.HYBRID_CAMERA_ANTI_SHUTTER, v)
+    suspend fun setHybridZeroDelayClicks(v: Boolean) = set(Keys.HYBRID_ZERO_DELAY_CLICKS, v)
+    suspend fun setHybridCanvasRectCacheMs(v: Int) = set(Keys.HYBRID_CANVAS_RECT_CACHE_MS, v.coerceIn(0, 1000))
+    suspend fun setHybridSuppressPostRenderTimer(v: Boolean) = set(Keys.HYBRID_SUPPRESS_POST_TIMER, v)
+    suspend fun setHybridFastFontSwap(v: Boolean) = set(Keys.HYBRID_FAST_FONT_SWAP, v)
+    suspend fun setHybridCppFastAssetBypass(v: Boolean) = set(Keys.HYBRID_CPP_FAST_ASSET, v)
+    suspend fun setHybridGeckoAdBlock(v: Boolean) = set(Keys.HYBRID_GECKO_AD_BLOCK, v)
+    suspend fun setHybridHideLocalIp(v: Boolean) = set(Keys.HYBRID_HIDE_LOCAL_IP, v)
+    suspend fun setHybridPersistTabMode(v: Boolean) = set(Keys.HYBRID_PERSIST_TAB_MODE, v)
+    suspend fun setHybridCustomDomains(v: String) = set(Keys.HYBRID_CUSTOM_DOMAINS, v)
 
     suspend fun copyIncognitoFromNormal(s: Settings) {
         context.dataStore.edit {

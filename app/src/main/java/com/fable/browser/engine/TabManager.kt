@@ -82,6 +82,7 @@ class TabManager @Inject constructor(
     }
 
     private fun saveTabHybridState(url: String, manualOverride: Boolean?) {
+        if (!settings.hybridPersistTabMode) return
         val host = UrlUtils.host(url) ?: return
         runCatching {
             val ed = hybridTabPrefs.edit()
@@ -91,6 +92,7 @@ class TabManager @Inject constructor(
     }
 
     private fun loadTabHybridState(url: String): Boolean? {
+        if (!settings.hybridPersistTabMode) return null
         val host = UrlUtils.host(url) ?: return null
         return if (hybridTabPrefs.contains(host)) hybridTabPrefs.getBoolean(host, false) else null
     }
@@ -163,7 +165,7 @@ class TabManager @Inject constructor(
                     tab.updateUrl(entry.url)
                     val savedManual = loadTabHybridState(entry.url)
                     tab.manualHybridOverride = savedManual
-                    val wantHybrid = savedManual ?: (current.hybridGeckoBlinkBeta && (!current.hybridAutoForGames || HybridEngineBridge.isHeavy3dGameUrl(entry.url)))
+                    val wantHybrid = savedManual ?: (current.hybridGeckoBlinkBeta && (!current.hybridAutoForGames || HybridEngineBridge.isHeavy3dGameUrl(entry.url, current.hybridCustomDomains)))
                     tab.updateHybridBlink(wantHybrid)
                     tab.markUnloaded()
                     tab
@@ -411,7 +413,7 @@ class TabManager @Inject constructor(
     private fun wireHybridCallbacks(tab: BrowserTab) {
         tab.hybridBlockChecker = { reqUrl, docHost ->
             val s = settings
-            val adBlock = if (tab.isIncognito) s.incognitoAdBlock else s.adBlockEnabled
+            val adBlock = s.hybridGeckoAdBlock && (if (tab.isIncognito) s.incognitoAdBlock else s.adBlockEnabled)
             proxyConfig.shouldBlockHybrid(reqUrl, docHost, adBlock)
         }
         tab.hybridBootstrapProvider = { pageUrl ->
@@ -676,7 +678,7 @@ class TabManager @Inject constructor(
             tab.updateHybridBlink(manual)
         } else if (settings.hybridGeckoBlinkBeta) {
             val wantHybrid = if (settings.hybridAutoForGames) {
-                HybridEngineBridge.isHeavy3dGameUrl(url)
+                HybridEngineBridge.isHeavy3dGameUrl(url, settings.hybridCustomDomains)
             } else {
                 true
             }

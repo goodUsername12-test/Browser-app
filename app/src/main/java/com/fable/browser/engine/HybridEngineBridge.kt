@@ -29,10 +29,16 @@ object HybridEngineBridge {
         "browserbench.org", "web.basemark.com", "html5test.com"
     )
 
-    fun isHeavy3dGameUrl(url: String): Boolean {
+    fun isHeavy3dGameUrl(url: String, customDomains: String = ""): Boolean {
         if (url.contains("hybrid=1", ignoreCase = true)) return true
         val host = UrlUtils.host(url)?.removePrefix("www.") ?: return false
-        return GAME_HOSTS.any { host == it || host.endsWith(".$it") }
+        if (GAME_HOSTS.any { host == it || host.endsWith(".$it") }) return true
+        if (customDomains.isNotBlank()) {
+            val extra = customDomains.split(',', ';', ' ', '
+').map { it.trim().lowercase().removePrefix("www.") }.filter { it.isNotEmpty() }
+            if (extra.any { host == it || host.endsWith(".$it") }) return true
+        }
+        return false
     }
 
     fun buildCombinedBootstrapScript(
@@ -42,12 +48,12 @@ object HybridEngineBridge {
         superIdentity: SuperIdentity?,
         pageUrl: String
     ): String {
-        val isGame = isHeavy3dGameUrl(pageUrl)
-        val hideLocalIp = settings.hideLocalIp || isIncognito || isSuper
+        val isGame = isHeavy3dGameUrl(pageUrl, settings.hybridCustomDomains)
+        val hideLocalIp = settings.hybridHideLocalIp && (settings.hideLocalIp || isIncognito || isSuper)
         val gpc = if (isIncognito) settings.incognitoGpc else settings.sendGpc
         val dnt = if (isIncognito) settings.incognitoSendDnt else settings.sendGpc
         val blockBattery = !settings.featureBatteryApi
-        val touchFix = settings.gameTouchFix
+        val touchFix = settings.gameTouchFix && settings.hybridCameraAntiShutter
         val applyIdentity = (isSuper || (isIncognito && settings.incognitoFingerprintProtection)) && !isGame
 
         val cfg = JSONObject().apply {
@@ -61,6 +67,12 @@ object HybridEngineBridge {
             put("isIncognito", isIncognito)
             put("isSuper", isSuper)
             put("applyIdentity", applyIdentity)
+            put("highPerfWebGl", settings.hybridHighPerfWebGl)
+            put("reportedCores", settings.hybridReportedCores.coerceIn(2, 16))
+            put("suppressPostTimer", settings.hybridSuppressPostRenderTimer)
+            put("zeroDelayClicks", settings.hybridZeroDelayClicks)
+            put("canvasCacheMs", settings.hybridCanvasRectCacheMs.coerceIn(0, 1000))
+            put("fastFontSwap", settings.hybridFastFontSwap)
             if (superIdentity != null && applyIdentity) {
                 put("identity", superIdentity.toJson())
             }
@@ -209,7 +221,7 @@ object HybridEngineBridge {
             }
 
             // 3. Blink 3D WebGL High-Performance Promoter (where GeckoView is weaker)
-            try {
+            if (CFG.highPerfWebGl !== false) try {
                 const origGetContext = HTMLCanvasElement.prototype.getContext;
                 HTMLCanvasElement.prototype.getContext = function(type, attrs) {
                     if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
@@ -223,20 +235,22 @@ object HybridEngineBridge {
             // 4. Blink Multi-Touch Joystick + Camera Isolation, Anti-Shutter & Lag-Spike Eliminator for Bloxd / 3D Games
             if (CFG.isGame) {
                 try {
-                    if (!navigator.hardwareConcurrency || navigator.hardwareConcurrency < 8) {
+                    const targetCores = CFG.reportedCores || 8;
+                    if (!navigator.hardwareConcurrency || navigator.hardwareConcurrency < targetCores) {
                         Object.defineProperty(Navigator.prototype, "hardwareConcurrency", {
-                            get: function() { return 8; },
+                            get: function() { return targetCores; },
                             configurable: true
                         });
                     }
-                    // Suppress Bloxd's redundant post-render setTimeout(ip, 0, FF, true) that causes mid-frame physics lag spikes
-                    const origSetTimeout = window.setTimeout;
-                    window.setTimeout = function(fn, delay, arg1, arg2) {
-                        if (arguments.length === 4 && delay === 0 && arg2 === true && arg1 && typeof arg1.lpF === "function" && typeof arg1.fY === "function") {
-                            return 0;
-                        }
-                        return origSetTimeout.apply(this, arguments);
-                    };
+                    if (CFG.suppressPostTimer !== false) {
+                        const origSetTimeout = window.setTimeout;
+                        window.setTimeout = function(fn, delay, arg1, arg2) {
+                            if (arguments.length === 4 && delay === 0 && arg2 === true && arg1 && typeof arg1.lpF === "function" && typeof arg1.fY === "function") {
+                                return 0;
+                            }
+                            return origSetTimeout.apply(this, arguments);
+                        };
+                    }
                 } catch (_) {}
             }
             if (CFG.touchFix && !/browserbench\.org$/i.test(host)) {
@@ -337,7 +351,7 @@ object HybridEngineBridge {
                     const origCanvasRect = HTMLCanvasElement.prototype.getBoundingClientRect;
                     HTMLCanvasElement.prototype.getBoundingClientRect = function() {
                         const t = performance.now();
-                        if (cachedRect && (t - cachedRectTime) < 250) {
+                        if (cachedRect && (t - cachedRectTime) < (CFG.canvasCacheMs || 250)) {
                             return cachedRect;
                         }
                         cachedRect = origCanvasRect.call(this);
@@ -453,10 +467,12 @@ object HybridEngineBridge {
                     });
                 } catch (_) {}
             };
-            if (document.readyState === "loading") {
-                document.addEventListener("DOMContentLoaded", injectFastFonts, { once: true });
-            } else {
-                injectFastFonts();
+            if (CFG.fastFontSwap !== false) {
+                if (document.readyState === "loading") {
+                    document.addEventListener("DOMContentLoaded", injectFastFonts, { once: true });
+                } else {
+                    injectFastFonts();
+                }
             }
         })();
         """.trimIndent()

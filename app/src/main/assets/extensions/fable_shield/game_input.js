@@ -503,7 +503,6 @@
         if (!enabled || !isGameLookElement(e.target)) return;
         const ch = e.changedTouches;
         if (!ch || ch.length === 0) return;
-        const tNow = now();
         let camMoved = false;
         for (let i = 0; i < ch.length; i++) {
           const t = ch[i];
@@ -511,11 +510,8 @@
           const prev = lastCamTouch.get(t.identifier);
           const dx = prev ? Math.abs(t.clientX - prev[0]) : 99;
           const dy = prev ? Math.abs(t.clientY - prev[1]) : 99;
-          if (dx < 0.22 && dy < 0.22) continue;
-          // Blink VSync camera coalescing: max 1 camera update per ~7.2ms frame window unless delta is large
-          if (prev && tNow - lastCamDispatchAt < 7.2 && dx < 6 && dy < 6) continue;
+          if (dx < 0.04 && dy < 0.04) continue;
           lastCamTouch.set(t.identifier, [t.clientX, t.clientY]);
-          lastCamDispatchAt = tNow;
           camMoved = true;
         }
         if (!camMoved) {
@@ -527,16 +523,13 @@
     opts
   );
 
-  // Zero-FPS-Drop Click Engine: suppress synthetic zero-delta mousemove hover raycasts during touch clicks
+  // Suppress synthetic mousemove on touchscreen when not in pointerlock so Bloxd never double-adds camera movement
   window.addEventListener(
     "mousemove",
     (e) => {
       try {
-        if (!enabled || !touchDerived() || !isGameLookElement(e.target)) return;
-        const m = lookup(e);
-        if (m && m[0] === 0 && m[1] === 0 && now() - lastTouchAt < 90) {
-          e.stopImmediatePropagation();
-        }
+        if (!enabled || document.pointerLockElement || !touchDerived() || !isGameLookElement(e.target)) return;
+        e.stopImmediatePropagation();
       } catch (_) {
       }
     },

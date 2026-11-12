@@ -222,13 +222,8 @@ bool filter_camera_move(int pointer_id, float x, float y, int64_t time_ms) noexc
     const float dy = y - s.last_y;
     const float abs_dx = dx < 0.0f ? -dx : dx;
     const float abs_dy = dy < 0.0f ? -dy : dy;
-    // Drop sub-pixel micro-jitter (< 0.22 px) that causes wasted 3D raycasts
-    if (abs_dx < 0.22f && abs_dy < 0.22f) {
-        return false;
-    }
-    // Coalesce sub-frame bursts (< 6 ms apart) unless movement delta is large
-    const int64_t dt = time_ms - s.last_ms;
-    if (dt >= 0 && dt < 6 && abs_dx < 6.0f && abs_dy < 6.0f) {
+    // Only drop exact duplicate zero-delta coordinates; never drop non-zero camera motion
+    if (abs_dx < 0.04f && abs_dy < 0.04f) {
         return false;
     }
     s.last_x = x;

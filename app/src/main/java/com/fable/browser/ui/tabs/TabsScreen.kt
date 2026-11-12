@@ -216,9 +216,20 @@ private fun TabCard(
     val url by tab.url.collectAsStateWithLifecycle()
     val thumbnail by tab.thumbnail.collectAsStateWithLifecycle()
 
-    val dismissState = rememberSwipeToDismissBoxState()
-    LaunchedEffect(dismissState.currentValue) {
-        if (dismissState.currentValue != SwipeToDismissBoxValue.Settled) onClose()
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value != SwipeToDismissBoxValue.Settled) {
+                onClose()
+                false
+            } else {
+                true
+            }
+        }
+    )
+    LaunchedEffect(tab.id) {
+        if (dismissState.currentValue != SwipeToDismissBoxValue.Settled) {
+            runCatching { dismissState.snapTo(SwipeToDismissBoxValue.Settled) }
+        }
     }
 
     SwipeToDismissBox(

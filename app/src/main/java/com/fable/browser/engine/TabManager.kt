@@ -578,9 +578,9 @@ class TabManager @Inject constructor(
             activate(closed.tab)
             resumeIfEvicted(closed.tab)
         }
-        closed.replacementId?.let { rid ->
+        closed.replacementId?.takeIf { it != closed.tab.id }?.let { rid ->
             val extra = tab(rid)
-            if (extra != null && (extra.url.value.isBlank() || extra.url.value.startsWith("about:"))) {
+            if (extra != null && _tabs.value.size > 1 && (extra.url.value.isBlank() || extra.url.value.startsWith("about:"))) {
                 _tabs.value = _tabs.value.filter { it.id != rid }
                 extra.close()
             }

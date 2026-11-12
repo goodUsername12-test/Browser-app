@@ -219,71 +219,119 @@ object HybridEngineBridge {
                 };
             } catch (_) {}
 
-            // 4. Blink Multi-Touch Joystick + Camera Isolation & Layout Cache for Bloxd / 3D Games
+            // 4. Blink Multi-Touch Joystick + Camera Isolation, Anti-Shutter & Lag-Spike Eliminator for Bloxd / 3D Games
+            if (CFG.isGame) {
+                try {
+                    if (!navigator.hardwareConcurrency || navigator.hardwareConcurrency < 8) {
+                        Object.defineProperty(Navigator.prototype, "hardwareConcurrency", {
+                            get: function() { return 8; },
+                            configurable: true
+                        });
+                    }
+                    // Suppress Bloxd's redundant post-render setTimeout(ip, 0, FF, true) that causes mid-frame physics lag spikes
+                    const origSetTimeout = window.setTimeout;
+                    window.setTimeout = function(fn, delay, arg1, arg2) {
+                        if (arguments.length === 4 && delay === 0 && arg2 === true && arg1 && typeof arg1.lpF === "function" && typeof arg1.fY === "function") {
+                            return 0;
+                        }
+                        return origSetTimeout.apply(this, arguments);
+                    };
+                } catch (_) {}
+            }
             if (CFG.touchFix) {
                 try {
-                    const isJoystickNode = function(el) {
-                        let cur = el;
-                        for (let i = 0; cur && i < 7; i++, cur = cur.parentElement) {
-                            const cls = typeof cur.className === "string" ? cur.className : "";
-                            const id = cur.id || "";
-                            if (/joystick|joy-|dpad|Thumbstick|LeftStick|touch-move/i.test(cls + " " + id)) return true;
-                        }
-                        return false;
-                    };
-                    const isCameraLookNode = function(el) {
-                        if (!el) return false;
-                        if (el.tagName === "CANVAS") return true;
-                        let cur = el;
-                        for (let i = 0; cur && i < 5; i++, cur = cur.parentElement) {
-                            const cls = typeof cur.className === "string" ? cur.className : "";
-                            const id = cur.id || "";
-                            if (/WholeAppWrapper|noa-canvas|game-canvas|look|camera/i.test(cls + " " + id)) return true;
-                        }
-                        return false;
-                    };
-                    const filterTouchList = function(list, eventTarget) {
-                        if (!list || list.length <= 1 || !eventTarget) return list;
-                        const onJoy = isJoystickNode(eventTarget);
-                        const onCam = !onJoy && isCameraLookNode(eventTarget);
-                        if (!onJoy && !onCam) return list;
-                        const kept = [];
-                        for (let i = 0; i < list.length; i++) {
-                            const t = list[i];
-                            const tJoy = isJoystickNode(t.target);
-                            if (onJoy && tJoy) kept.push(t);
-                            else if (onCam && !tJoy) kept.push(t);
-                        }
-                        if (kept.length === 0 || kept.length === list.length) return list;
-                        kept.item = function(idx) { return kept[idx] || null; };
-                        return kept;
-                    };
-                    const origTouchesDesc = Object.getOwnPropertyDescriptor(TouchEvent.prototype, "touches");
-                    const origChangedDesc = Object.getOwnPropertyDescriptor(TouchEvent.prototype, "changedTouches");
-                    if (origTouchesDesc && origTouchesDesc.get) {
-                        Object.defineProperty(TouchEvent.prototype, "touches", {
-                            configurable: true,
-                            get: function() {
-                                const raw = origTouchesDesc.get.call(this);
-                                return filterTouchList(raw, this.currentTarget || this.target);
-                            }
-                        });
-                    }
-                    if (origChangedDesc && origChangedDesc.get) {
-                        Object.defineProperty(TouchEvent.prototype, "changedTouches", {
-                            configurable: true,
-                            get: function() {
-                                const raw = origChangedDesc.get.call(this);
-                                return filterTouchList(raw, this.currentTarget || this.target);
-                            }
-                        });
-                    }
-                    // Blink VSync Camera Coalescer + Zero-FPS-Drop Click Engine
-                    const lastPos = new Map();
-                    let lastCamFrameTime = 0;
+                    const uiTouchIds = new Set();
+                    const camTouchIds = new Set();
+                    const lastCamPos = new Map();
                     let lastTapTime = 0;
                     let cachedRect = null;
                     let cachedRectTime = 0;
+
+                    const isUiNode = function(el) {
+                        if (!el || typeof el.closest !== "function") return false;
+                        return !!el.closest(
+                            ".JoystickZone, .Joystick, .TouchMovementWrapper, .TouchComponentsButtons, .FloatingAction, [data-camera-keeper], button, input, select, textarea, a, [role='button']"
+                        );
+                    };
+                    const isCameraLookNode = function(el) {
+                        if (!el || isUiNode(el)) return false;
+                        if (el.tagName === "CANVAS" || el.id === "noa-container" || el.id === "noa-canvas") return true;
+                        if (typeof el.closest === "function" && el.closest("#noa-container")) return true;
+                        return false;
+                    };
+                    const isUiTouch = function(t) {
+                        if (!t) return false;
+                        if (uiTouchIds.has(t.identifier)) return true;
+                        if (camTouchIds.has(t.identifier)) return false;
+                        return isUiNode(t.target);
+                    };
+
+                    const origTouchesDesc = Object.getOwnPropertyDescriptor(TouchEvent.prototype, "touches");
+                    const origChangedDesc = Object.getOwnPropertyDescriptor(TouchEvent.prototype, "changedTouches");
+                    const origTargetDesc = Object.getOwnPropertyDescriptor(TouchEvent.prototype, "targetTouches");
+                    const rawTouchesGet = origTouchesDesc && origTouchesDesc.get;
+                    const rawChangedGet = origChangedDesc && origChangedDesc.get;
+                    const rawTargetGet = origTargetDesc && origTargetDesc.get;
+
+                    if (rawTouchesGet && rawChangedGet && rawTargetGet) {
+                        const makeTouchArray = function(arr) {
+                            arr.item = function(idx) { return arr[idx] || null; };
+                            return arr;
+                        };
+                        Object.defineProperty(TouchEvent.prototype, "touches", {
+                            configurable: true,
+                            get: function() {
+                                const raw = rawTouchesGet.call(this);
+                                if (!raw || raw.length <= 1) return raw;
+                                const tgt = this.currentTarget || this.target;
+                                const onUi = isUiNode(tgt);
+                                const onCam = !onUi && isCameraLookNode(tgt);
+                                if (!onUi && !onCam) return raw;
+                                const kept = [];
+                                for (let i = 0; i < raw.length; i++) {
+                                    const t = raw[i];
+                                    const ui = isUiTouch(t);
+                                    if (onUi && ui) kept.push(t);
+                                    else if (onCam && !ui) kept.push(t);
+                                }
+                                if (kept.length === raw.length) return raw;
+                                return makeTouchArray(kept);
+                            }
+                        });
+                        Object.defineProperty(TouchEvent.prototype, "changedTouches", {
+                            configurable: true,
+                            get: function() {
+                                const raw = rawChangedGet.call(this);
+                                if (!raw) return raw;
+                                const tgt = this.currentTarget || this.target;
+                                const onUi = isUiNode(tgt);
+                                const onCam = !onUi && isCameraLookNode(tgt);
+                                if (!onUi && !onCam) return raw;
+                                const kept = [];
+                                for (let i = 0; i < raw.length; i++) {
+                                    const t = raw[i];
+                                    const ui = isUiTouch(t);
+                                    if (onUi && ui) kept.push(t);
+                                    else if (onCam && !ui) kept.push(t);
+                                }
+                                if (kept.length > 0) {
+                                    return kept.length === raw.length ? raw : makeTouchArray(kept);
+                                }
+                                // Fallback to stationary touch of same role so joystick touch NEVER leaks into camera changedTouches[0]
+                                const all = rawTouchesGet.call(this);
+                                if (all) {
+                                    for (let i = 0; i < all.length; i++) {
+                                        const t = all[i];
+                                        const ui = isUiTouch(t);
+                                        if ((onUi && ui) || (onCam && !ui)) {
+                                            return makeTouchArray([t]);
+                                        }
+                                    }
+                                }
+                                return raw;
+                            }
+                        });
+                    }
 
                     const origGetRect = Element.prototype.getBoundingClientRect;
                     Element.prototype.getBoundingClientRect = function() {
@@ -302,41 +350,59 @@ object HybridEngineBridge {
 
                     window.addEventListener("touchstart", function(ev) {
                         lastTapTime = performance.now();
-                    }, { capture: true, passive: true });
-
-                    window.addEventListener("touchmove", function(ev) {
-                        const ct = ev.changedTouches;
-                        if (!ct || ct.length === 0) return;
-                        const nowMs = performance.now();
+                        const ct = rawChangedGet ? rawChangedGet.call(ev) : ev.changedTouches;
+                        if (!ct) return;
                         for (let i = 0; i < ct.length; i++) {
                             const t = ct[i];
-                            if (isJoystickNode(t.target)) continue;
-                            const x = Math.round(t.clientX * 2);
-                            const y = Math.round(t.clientY * 2);
-                            const prev = lastPos.get(t.identifier);
-                            if (prev && prev.x === x && prev.y === y) {
-                                ev.stopImmediatePropagation();
-                                return;
+                            if (!t) continue;
+                            if (isUiNode(t.target)) {
+                                uiTouchIds.add(t.identifier);
+                                camTouchIds.delete(t.identifier);
+                            } else if (isCameraLookNode(t.target)) {
+                                camTouchIds.add(t.identifier);
+                                uiTouchIds.delete(t.identifier);
+                                lastCamPos.set(t.identifier, { x: t.clientX, y: t.clientY });
                             }
-                            if (prev && (nowMs - lastCamFrameTime) < 7.2 && Math.abs(x - prev.x) < 12 && Math.abs(y - prev.y) < 12) {
-                                ev.stopImmediatePropagation();
-                                return;
-                            }
-                            lastPos.set(t.identifier, { x: x, y: y });
-                            lastCamFrameTime = nowMs;
                         }
                     }, { capture: true, passive: true });
 
-                    window.addEventListener("touchend", function(ev) {
-                        lastTapTime = performance.now();
-                        const ct = ev.changedTouches;
-                        if (!ct) return;
-                        for (let i = 0; i < ct.length; i++) lastPos.delete(ct[i].identifier);
+                    window.addEventListener("touchmove", function(ev) {
+                        if (!isCameraLookNode(ev.target)) return;
+                        const ct = rawChangedGet ? rawChangedGet.call(ev) : ev.changedTouches;
+                        if (!ct || ct.length === 0) return;
+                        let camMoved = false;
+                        for (let i = 0; i < ct.length; i++) {
+                            const t = ct[i];
+                            if (!t || isUiTouch(t)) continue;
+                            const prev = lastCamPos.get(t.identifier);
+                            if (!prev || Math.abs(t.clientX - prev.x) >= 0.04 || Math.abs(t.clientY - prev.y) >= 0.04) {
+                                lastCamPos.set(t.identifier, { x: t.clientX, y: t.clientY });
+                                camMoved = true;
+                            }
+                        }
+                        if (!camMoved) {
+                            ev.stopImmediatePropagation();
+                        }
                     }, { capture: true, passive: true });
 
-                    // Prevent synthetic mousemove/mouseover during touch clicks from triggering 3D hover raycasts
+                    const cleanTouches = function(ev) {
+                        lastTapTime = performance.now();
+                        const ct = rawChangedGet ? rawChangedGet.call(ev) : ev.changedTouches;
+                        if (!ct) return;
+                        for (let i = 0; i < ct.length; i++) {
+                            const t = ct[i];
+                            if (!t) continue;
+                            uiTouchIds.delete(t.identifier);
+                            camTouchIds.delete(t.identifier);
+                            lastCamPos.delete(t.identifier);
+                        }
+                    };
+                    window.addEventListener("touchend", cleanTouches, { capture: true, passive: true });
+                    window.addEventListener("touchcancel", cleanTouches, { capture: true, passive: true });
+
+                    // Prevent synthetic mousemove on touchscreen from double-adding camera deltas or running hover raycasts
                     window.addEventListener("mousemove", function(ev) {
-                        if ((performance.now() - lastTapTime) < 90 && (!ev.movementX && !ev.movementY) && isCameraLookNode(ev.target)) {
+                        if (!document.pointerLockElement && (uiTouchIds.size > 0 || camTouchIds.size > 0 || (performance.now() - lastTapTime) < 500) && isCameraLookNode(ev.target)) {
                             ev.stopImmediatePropagation();
                         }
                     }, { capture: true, passive: true });

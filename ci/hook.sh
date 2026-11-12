@@ -32,11 +32,11 @@ yes | sdkmanager --licenses > "$ART/licenses.log" 2>&1 || true
 AVD_OK=""
 for IMG in "system-images;android-34;google_apis;x86_64" "system-images;android-33;google_apis;x86_64" "system-images;android-34;default;x86_64"; do
   log "Installing $IMG"
-  timeout 900 sdkmanager --install "$IMG" "emulator" "platform-tools" >> "$ART/sdkmanager.log" 2>&1 || log "sdkmanager error for $IMG"
+  timeout 360 sdkmanager --install "$IMG" "emulator" "platform-tools" >> "$ART/sdkmanager.log" 2>&1 || log "sdkmanager error for $IMG"
   IMG_DIR="$SDK/$(echo "$IMG" | tr ';' '/')"
   if [ ! -d "$IMG_DIR" ]; then
     log "Image dir missing, retrying with sudo"
-    sudo -E env "PATH=$PATH" sdkmanager --install "$IMG" "emulator" >> "$ART/sdkmanager.log" 2>&1 || true
+    sudo -E env "PATH=$PATH" timeout 300 sdkmanager --install "$IMG" "emulator" >> "$ART/sdkmanager.log" 2>&1 || true
     sudo chown -R "$(id -u):$(id -g)" "$SDK" >/dev/null 2>&1 || true
   fi
   echo no | avdmanager create avd -n fable -k "$IMG" --force >> "$ART/avdmanager.log" 2>&1 || true
@@ -56,14 +56,14 @@ emulator -avd fable -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftsh
   -camera-back none -camera-front none -memory 4096 -cores 4 > "$ART/emulator.log" 2>&1 &
 timeout 300 adb wait-for-device || log "emulator did not appear"
 for i in $(seq 1 150); do
-  [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+  [ "$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
   sleep 2
 done
 adb shell settings put global window_animation_scale 0
 adb shell settings put global transition_animation_scale 0
 adb shell settings put global animator_duration_scale 0
 adb shell input keyevent 82 || true
-BOOTED="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+BOOTED="$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
 log "Boot completed: $BOOTED"
 if [ "$BOOTED" != "1" ]; then
   { echo "HOOK-RESULT $VERSION emulator did not boot"; echo '```'; tail -n 60 "$ART/emulator.log"; echo '```'; } > "$REPORT"
@@ -74,7 +74,7 @@ timeout 240 adb install -r -g "$APK" > "$ART/install.log" 2>&1 || log "install f
 adb logcat -c
 
 shot() {
-  adb exec-out screencap -p > "$ART/$1.png" 2>/dev/null || return
+  timeout 15 adb exec-out screencap -p > "$ART/$1.png" 2>/dev/null || return
   if command -v convert >/dev/null; then
     convert "$ART/$1.png" -resize 300x -quality 55 "$ART/$1.jpg" 2>/dev/null
     { echo "HOOK-SHOT $VERSION $1"; base64 -w 76 "$ART/$1.jpg"; } > "$ART/$1.shot"
@@ -91,7 +91,7 @@ timeout 90 adb shell am start -W -n "$ACT" > "$ART/start.txt" 2>&1
 sleep 20; step "cold start (new tab page)"; shot 1-start
 
 tap_desc() {
-  adb shell uiautomator dump /sdcard/fable-ui.xml > "$ART/uidump.txt" 2>&1
+  timeout 20 adb shell uiautomator dump /sdcard/fable-ui.xml > "$ART/uidump.txt" 2>&1
   adb pull /sdcard/fable-ui.xml "$ART/ui.xml" >/dev/null 2>&1 || return 1
   local b
   b="$(python3 - "$1" "$ART/ui.xml" <<'PY'
@@ -145,7 +145,7 @@ adb shell am force-stop "$PKG"; sleep 2
 timeout 90 adb shell am start -W -n "$ACT" >> "$ART/start.txt" 2>&1; sleep 20; step "restart after force-stop (session restore)"; shot 3-restore
 
 tap_text() {
-  adb shell uiautomator dump /sdcard/fable-ui.xml > "$ART/uidump.txt" 2>&1
+  timeout 20 adb shell uiautomator dump /sdcard/fable-ui.xml > "$ART/uidump.txt" 2>&1
   adb pull /sdcard/fable-ui.xml "$ART/ui.xml" >/dev/null 2>&1 || return 1
   local b
   b="$(python3 - "$1" "$ART/ui.xml" <<'PY'

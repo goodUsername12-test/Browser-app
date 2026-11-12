@@ -394,12 +394,152 @@
           });
         }
       }
+
+      if (pageWin.HTMLCanvasElement && window.HTMLElement) {
+        const cProto = pageWin.HTMLCanvasElement.prototype;
+        const xElProto = window.HTMLElement.prototype;
+        const xCw = Object.getOwnPropertyDescriptor(xElProto, "clientWidth");
+        const xCh = Object.getOwnPropertyDescriptor(xElProto, "clientHeight");
+        const xCwGet = xCw && xCw.get;
+        const xChGet = xCh && xCh.get;
+        if (xCwGet && xChGet) {
+          Object.defineProperty(cProto, "clientWidth", {
+            get: exportFunction(function () {
+              try {
+                if (enabled && marked.has(this)) {
+                  const d = canvasDims.get(this);
+                  if (d && d[0] > 0) return d[0];
+                  const w = xCwGet.call(this);
+                  const h = xChGet.call(this);
+                  if (w > 0 && h > 0) canvasDims.set(this, [w, h]);
+                  return w;
+                }
+                return xCwGet.call(this);
+              } catch (_) {
+                return 0;
+              }
+            }, window),
+            configurable: true,
+            enumerable: true,
+          });
+          Object.defineProperty(cProto, "clientHeight", {
+            get: exportFunction(function () {
+              try {
+                if (enabled && marked.has(this)) {
+                  const d = canvasDims.get(this);
+                  if (d && d[1] > 0) return d[1];
+                  const w = xCwGet.call(this);
+                  const h = xChGet.call(this);
+                  if (w > 0 && h > 0) canvasDims.set(this, [w, h]);
+                  return h;
+                }
+                return xChGet.call(this);
+              } catch (_) {
+                return 0;
+              }
+            }, window),
+            configurable: true,
+            enumerable: true,
+          });
+        }
+      }
+
+      if (typeof pageWin.setTimeout === "function" && typeof window.setTimeout === "function") {
+        const origSetTimeout = window.setTimeout.bind(window);
+        pageWin.setTimeout = exportFunction(function (fn, delay, a, b) {
+          try {
+            if (
+              enabled &&
+              arguments.length === 4 &&
+              delay === 0 &&
+              b === true &&
+              a &&
+              typeof a === "object" &&
+              typeof a.lpF === "function" &&
+              typeof a.fY === "function"
+            ) {
+              return 0;
+            }
+          } catch (_) {
+          }
+          return origSetTimeout.apply(window, arguments);
+        }, window);
+      }
     }
   } catch (_) {
   }
 
   const marked = new WeakSet();
+  let canvasDims = new WeakMap();
+  const lastCamTouch = new Map();
   let gameRoot = false;
+
+  window.addEventListener(
+    "touchstart",
+    (e) => {
+      try {
+        if (!enabled || !e.changedTouches) return;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (t && !isUiControlElement(t.target)) {
+            lastCamTouch.set(t.identifier, [t.clientX, t.clientY]);
+          }
+        }
+      } catch (_) {
+      }
+    },
+    opts
+  );
+
+  window.addEventListener(
+    "touchmove",
+    (e) => {
+      try {
+        if (!enabled || !isGameLookElement(e.target)) return;
+        const all = e.touches;
+        const ch = e.changedTouches;
+        if (!all || !ch || all.length <= 1) return;
+        let camMoved = false;
+        let hasUi = false;
+        for (let i = 0; i < all.length; i++) {
+          if (all[i] && isUiControlElement(all[i].target)) {
+            hasUi = true;
+            break;
+          }
+        }
+        if (!hasUi) return;
+        for (let i = 0; i < ch.length; i++) {
+          const t = ch[i];
+          if (!t || isUiControlElement(t.target)) continue;
+          const prev = lastCamTouch.get(t.identifier);
+          if (!prev || Math.abs(t.clientX - prev[0]) >= 0.2 || Math.abs(t.clientY - prev[1]) >= 0.2) {
+            lastCamTouch.set(t.identifier, [t.clientX, t.clientY]);
+            camMoved = true;
+          }
+        }
+        if (!camMoved) {
+          e.stopImmediatePropagation();
+        }
+      } catch (_) {
+      }
+    },
+    opts
+  );
+
+  window.addEventListener(
+    "touchend",
+    (e) => {
+      try {
+        if (!e.changedTouches) return;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (t) lastCamTouch.delete(t.identifier);
+        }
+      } catch (_) {
+      }
+    },
+    opts
+  );
   let styleInjected = false;
 
   function injectGamePerfCss() {
@@ -442,6 +582,7 @@
   function markGameCanvases() {
     if (!enabled) return;
     try {
+      canvasDims = new WeakMap();
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       if (!vw || !vh) return;

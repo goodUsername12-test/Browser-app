@@ -519,6 +519,33 @@ function getTabStore(tabId) {
   return s;
 }
 
+function isRealtimePingUrl(url, details) {
+  if (details.type === "websocket" || details.type === "beacon" || details.type === "ping") return true;
+  if (details.method && details.method !== "GET" && details.method !== "HEAD" && url.includes("/keep-alive")) return true;
+  return false;
+}
+
+function materializeEntryBytes(entry) {
+  if (!entry) return null;
+  if (entry.bytes) return entry.bytes;
+  if (!entry.chunks || entry.chunks.length === 0) return null;
+  if (entry.chunks.length === 1) {
+    entry.bytes = entry.chunks[0];
+    entry.chunks = null;
+    return entry.bytes;
+  }
+  const merged = new Uint8Array(entry.size);
+  let off = 0;
+  for (let i = 0; i < entry.chunks.length; i++) {
+    const c = entry.chunks[i];
+    merged.set(c, off);
+    off += c.byteLength;
+  }
+  entry.bytes = merged;
+  entry.chunks = null;
+  return merged;
+}
+
 function captureStreamIfEnabled(details) {
   try {
     if (config.archiveNetworkStream === false) return;
@@ -530,7 +557,7 @@ function captureStreamIfEnabled(details) {
       tabNetStore.set(tabId, { bytes: 0, entries: new Map() });
     }
     const startedAt = Date.now();
-    const shouldStreamBody = details.type === "main_frame" || (config.archiveReadOnly === false && config.archiveDeepHooks === true);
+    const shouldStreamBody = config.archiveIncludeMemory !== false && !isRealtimePingUrl(url, details);
     reqMeta.set(details.requestId, { tabId, url, method: details.method || "GET", resType: details.type || "other", status: 200, mime: "", startedAt, streamed: shouldStreamBody });
     if (!shouldStreamBody) return;
     const wr = browser.webRequest;
@@ -549,7 +576,7 @@ function captureStreamIfEnabled(details) {
       }
       if (!overflow && event.data && event.data.byteLength) {
         if (size + event.data.byteLength <= maxFileBytes) {
-          chunks.push(new Uint8Array(event.data.slice(0)));
+          chunks.push(new Uint8Array(event.data));
           size += event.data.byteLength;
         } else {
           overflow = true;
@@ -575,12 +602,6 @@ function captureStreamIfEnabled(details) {
         store.entries.delete(oldestKey);
       }
       if (store.bytes + size > maxTabBytes) return;
-      const merged = new Uint8Array(size);
-      let off = 0;
-      for (const c of chunks) {
-        merged.set(c, off);
-        off += c.byteLength;
-      }
       store.entries.set(url, {
         url,
         method: meta.method,
@@ -593,7 +614,8 @@ function captureStreamIfEnabled(details) {
         size,
         timeMs: Date.now() - startedAt,
         startedIso: new Date(startedAt).toISOString(),
-        bytes: merged,
+        bytes: chunks.length === 1 ? chunks[0] : null,
+        chunks: chunks.length > 1 ? chunks : null,
       });
       store.bytes += size;
     };
@@ -990,6 +1012,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       let idx = 0;
       for (const [u, entry] of store.entries.entries()) {
         idx++;
+        materializeEntryBytes(entry);
         const qList = [];
         try {
           const parsedQ = new URL(entry.url);

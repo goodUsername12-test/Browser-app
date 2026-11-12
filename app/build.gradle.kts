@@ -27,8 +27,14 @@ android {
         applicationId = "com.fable.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.19.0"
+        versionCode = 16
+        versionName = "1.20.0"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags("-std=c++20", "-O3", "-Wall", "-Wextra")
+            }
+        }
 
         testInstrumentationRunner = "com.fable.browser.HiltTestRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -91,6 +97,17 @@ android {
                 ?: listOf("arm64-v8a")
             include(*abis.toTypedArray())
             isUniversalApk = false
+        }
+    }
+
+    val sdkRoot = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+    val hasNdk = sdkRoot?.let { File(it, "ndk").listFiles()?.any { d -> d.isDirectory } } == true
+    val hasCmake = sdkRoot?.let { File(it, "cmake").exists() } == true || File("/usr/bin/cmake").canExecute()
+    if (hasNdk && hasCmake) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+            }
         }
     }
 

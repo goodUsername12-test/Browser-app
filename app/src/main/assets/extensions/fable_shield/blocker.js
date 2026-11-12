@@ -406,7 +406,22 @@ async function broadcastToActiveTab(message) {
   }
 }
 
+const latin1Decoder = (() => {
+  try {
+    return new TextDecoder("latin1");
+  } catch (e) {
+    return null;
+  }
+})();
+
 function b64Bytes(bytes) {
+  if (!bytes || !bytes.length) return "";
+  if (latin1Decoder && bytes.length <= 2 * 1024 * 1024) {
+    try {
+      return btoa(latin1Decoder.decode(bytes));
+    } catch (e) {
+    }
+  }
   let out = "";
   const step = 0x8000;
   for (let i = 0; i < bytes.length; i += step) {
@@ -568,7 +583,10 @@ function captureStreamIfEnabled(details) {
         method: meta.method,
         resType: meta.resType,
         status: meta.status || 200,
+        statusLine: meta.statusLine || "",
         mime: meta.mime || "",
+        reqHeaders: meta.reqHeaders || [],
+        resHeaders: meta.resHeaders || [],
         size,
         timeMs: Date.now() - startedAt,
         startedIso: new Date(startedAt).toISOString(),
@@ -591,7 +609,12 @@ function onHeadersReceived(details) {
   const m = reqMeta.get(details.requestId);
   if (!m) return;
   m.status = details.statusCode || 200;
+  m.statusLine = String(details.statusLine || "");
   if (Array.isArray(details.responseHeaders)) {
+    m.resHeaders = details.responseHeaders.slice(0, 80).map((h) => ({
+      name: String((h && h.name) || ""),
+      value: String((h && h.value) || ""),
+    }));
     for (const h of details.responseHeaders) {
       if (h && h.name && h.name.toLowerCase() === "content-type") {
         m.mime = String(h.value || "");
@@ -685,7 +708,10 @@ function onBeforeRequest(details) {
     const top = details.frameAncestors && details.frameAncestors.length
       ? details.frameAncestors[details.frameAncestors.length - 1].url
       : details.documentUrl || details.originUrl;
-    if (siteAllowed(hostOf(top))) return {};
+    if (siteAllowed(hostOf(top))) {
+      captureStreamIfEnabled(details);
+      return {};
+    }
   }
   if (shouldBlock(details.url, details.documentUrl || details.originUrl)) {
     if (details.tabId >= 0) {
@@ -695,6 +721,7 @@ function onBeforeRequest(details) {
     }
     return { cancel: true };
   }
+  captureStreamIfEnabled(details);
   return {};
 }
 
@@ -914,7 +941,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     const flushed = [];
     if (store && store.entries.size > 0) {
       const sendNativeChunked = (path, bytes) => {
-        const chunk = 384 * 1024;
+        const chunk = 512 * 1024;
         if (!bytes.length) {
           postNative({ type: "save-page-data", id, op: "file", path, seq: 0, last: true, data: "", incognito });
           return;
@@ -926,14 +953,54 @@ browser.runtime.onMessage.addListener((msg, sender) => {
         }
       };
       const harEntries = [];
+      let harBodyBytes = 0;
+      const maxHarBodyBytes = 48 * 1024 * 1024;
+      const utf8Dec = new TextDecoder("utf-8", { fatal: false });
       let idx = 0;
       for (const [u, entry] of store.entries.entries()) {
         idx++;
+        const qList = [];
+        try {
+          const parsedQ = new URL(entry.url);
+          parsedQ.searchParams.forEach((v, k) => qList.push({ name: k, value: v }));
+        } catch (e) {}
+        const contentObj = { size: entry.size, mimeType: entry.mime || "application/octet-stream" };
+        if (entry.bytes && entry.bytes.length > 0 && entry.bytes.length <= 4 * 1024 * 1024 && harBodyBytes + entry.bytes.length <= maxHarBodyBytes) {
+          harBodyBytes += entry.bytes.length;
+          if (/^(text\/|application\/(javascript|ecmascript|json|xml|xhtml|manifest|ld\+json)|image\/svg)/i.test(entry.mime || "")) {
+            contentObj.text = utf8Dec.decode(entry.bytes);
+          } else {
+            contentObj.text = b64Bytes(entry.bytes);
+            contentObj.encoding = "base64";
+          }
+        }
         harEntries.push({
           startedDateTime: entry.startedIso,
           time: entry.timeMs,
-          request: { method: entry.method, url: entry.url },
-          response: { status: entry.status, content: { size: entry.size, mimeType: entry.mime } },
+          _resourceType: entry.resType,
+          request: {
+            method: entry.method,
+            url: entry.url,
+            httpVersion: "HTTP/2.0",
+            headers: entry.reqHeaders || [],
+            queryString: qList,
+            cookies: [],
+            headersSize: -1,
+            bodySize: 0,
+          },
+          response: {
+            status: entry.status,
+            statusText: entry.statusLine || "OK",
+            httpVersion: "HTTP/2.0",
+            headers: entry.resHeaders || [],
+            cookies: [],
+            content: contentObj,
+            redirectURL: "",
+            headersSize: -1,
+            bodySize: entry.size,
+          },
+          cache: {},
+          timings: { blocked: 0, dns: -1, connect: -1, send: 0, wait: Math.max(0, Math.round(entry.timeMs * 0.4)), receive: Math.max(0, Math.round(entry.timeMs * 0.6)), ssl: -1 },
         });
         if (includeBodies && !already.has(u) && entry.bytes && entry.bytes.length > 0) {
           let p = "network-stream/item-" + idx;

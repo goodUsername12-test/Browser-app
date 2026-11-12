@@ -115,7 +115,7 @@ class PageArchiver @Inject constructor(
         dir.listFiles()?.filter { it.name.startsWith("page-") && System.currentTimeMillis() - it.lastModified() > 3_600_000L }
             ?.forEach { it.delete() }
         val file = File(dir, "page-$id.zip")
-        val zip = ZipOutputStream(BufferedOutputStream(FileOutputStream(file), 256 * 1024))
+        val zip = ZipOutputStream(BufferedOutputStream(FileOutputStream(file), 512 * 1024))
         zip.setLevel(6)
         active = Active(
             id = id,
@@ -147,7 +147,7 @@ class PageArchiver @Inject constructor(
         }
         val data = json.optString("data")
         if (data.isNotEmpty()) {
-            val bytes = Base64.decode(data, Base64.DEFAULT)
+            val bytes = NativeFastEngine.decodeBase64(data)
             a.zip.write(bytes)
             a.bytes += bytes.size
         }

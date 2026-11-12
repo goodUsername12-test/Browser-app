@@ -150,7 +150,7 @@
   const SAVE_MAX_FILES = 2500;
   const SAVE_MAX_TOTAL = 400 * 1024 * 1024;
   const SAVE_MAX_FILE = 80 * 1024 * 1024;
-  const SAVE_CHUNK = 384 * 1024;
+  const SAVE_CHUNK = 512 * 1024;
   const ASSET_EXT = "wasm|js|mjs|cjs|json|css|html|htm|png|jpe?g|webp|avif|gif|svg|ico|bmp|glb|gltf|bin|obj|mtl|fbx|stl|babylon|env|dds|ktx2?|basis|hdr|exr|mp3|ogg|oga|wav|m4a|aac|flac|mp4|webm|woff2?|ttf|otf|eot|data|mem|wat|map|txt|xml|csv|atlas|fnt|frag|vert|glsl|wgsl|zip|pck";
   const ASSET_LITERAL = new RegExp("[\"'`]((?:https?:)?[\\w./%~@:+-]{1,300}\\.(?:" + ASSET_EXT + "))(?:[?#][^\"'`\\s]{0,200})?[\"'`]", "gi");
   let saving = false;
@@ -393,9 +393,9 @@
           const end = Math.min(bytes.length, off + SAVE_CHUNK);
           await send({ op: "file", path, seq: seq++, last: end >= bytes.length, data: b64(bytes.subarray(off, end)) });
           sent += end - off;
-          if (sent > 4 * 1024 * 1024) {
+          if (sent > 16 * 1024 * 1024) {
             sent = 0;
-            await new Promise((r) => setTimeout(r, 40));
+            await new Promise((r) => setTimeout(r, 4));
           }
         }
       };
@@ -610,11 +610,60 @@
         }
       }
 
-      if (mode !== "memory") {
-        perfUrls(add);
-        domUrls(add);
-        add(location.href, location.href, "page");
-      }
+      try {
+        const defaultGlobals = new Set(["window","self","document","name","location","customElements","history","navigation","locationbar","menubar","personalbar","scrollbars","statusbar","toolbar","status","closed","frames","length","top","opener","parent","frameElement","navigator","origin","external","screen","innerWidth","innerHeight","scrollX","pageXOffset","scrollY","pageYOffset","visualViewport","screenX","screenY","outerWidth","outerHeight","devicePixelRatio","event","clientInformation","offscreenBuffering"," styleMedia","performance","crypto","indexedDB","sessionStorage","localStorage","caches","isSecureContext","crossOriginIsolated"," speechSynthesis","fetch","btoa","atob","setTimeout","clearTimeout","setInterval","clearInterval","queueMicrotask","createImageBitmap","structuredClone","requestAnimationFrame","cancelAnimationFrame","postMessage","blur","focus","close","stop","open","alert","confirm","prompt","print","find","getComputedStyle","matchMedia","moveTo","moveBy","resizeTo","resizeBy","scroll","scrollTo","scrollBy","getSelection"]);
+        const customGlobals = {};
+        const winKeys = Object.getOwnPropertyNames(window).slice(0, 2500);
+        let gCount = 0;
+        for (const k of winKeys) {
+          if (defaultGlobals.has(k) || /^(on|webkit|moz|MS|HTML|SVG|CSS|WebGL|Audio|Media|RTC|IDB|DOM|Performance| Readable|Writable|Transform|Text|URL|Blob|File|FormData|Headers|Request|Response|Abort|Event|CustomEvent|Message|Worker|Shared|Service|Broadcast|Notification|Push|Payment|Credential|PublicKey|Storage|History|Location|Navigator|Screen|Visual|BarProp|Crypto|Subtle|Geolocation|Battery|Network|Bluetooth|USB|HID|Serial|NFC|WakeLock|Sensor|Accelerometer|Gyroscope|Magnetometer|Orientation|Device|Gamepad|MIDIAccess|Xr|XR|Speech|Canvas|Offscreen|Image|Path2D|Font|Animation|Keyframe|Intersection|Mutation|Resize|Reporting|Idle|Lock|EyeDropper|Compression|Decompression| Highlight|Selection|Range|Node|Element|Document|CharacterData|Attr|Text|Comment|ShadowRoot|TreeWalker|NodeIterator|XML|XPath|XSLT|Intl|JSON|Math|Reflect|Proxy|Promise|Symbol|Map|Set|WeakMap|WeakSet|Array|Object|Function|String|Number|Boolean|RegExp|Date|Error|TypeError|RangeError|SyntaxError|ReferenceError|EvalError|URIError|AggregateError|BigInt|DataView|Float|Int|Uint|WebAssembly)/.test(k)) continue;
+          if (++gCount > 250) break;
+          try {
+            const v = window[k];
+            const t = typeof v;
+            if (v === null || t === "string" || t === "number" || t === "boolean") {
+              customGlobals[k] = typeof v === "string" ? v.slice(0, 2000) : v;
+            } else if (t === "function") {
+              customGlobals[k] = "[Function " + (v.name || k) + "]";
+            } else if (Array.isArray(v)) {
+              customGlobals[k] = { type: "Array", length: v.length, sample: v.slice(0, 10).map((x) => (typeof x === "object" ? "[Object]" : String(x).slice(0, 200))) };
+            } else if (t === "object") {
+              customGlobals[k] = { type: (v.constructor && v.constructor.name) || "Object", keys: Object.keys(v).slice(0, 40) };
+            }
+          } catch (e) {}
+        }
+        const glStates = [];
+        for (const c of Array.from(document.querySelectorAll("canvas")).slice(0, 8)) {
+          try {
+            const gl = c.getContext("webgl2") || c.getContext("webgl") || c.getContext("experimental-webgl");
+            if (gl && typeof gl.getParameter === "function") {
+              const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+              glStates.push({
+                width: c.width,
+                height: c.height,
+                version: gl.getParameter(gl.VERSION),
+                shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+                vendor: gl.getParameter(gl.VENDOR),
+                renderer: gl.getParameter(gl.RENDERER),
+                unmaskedVendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : null,
+                unmaskedRenderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null,
+                maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+                drawingBufferWidth: gl.drawingBufferWidth,
+                drawingBufferHeight: gl.drawingBufferHeight,
+                extensions: (gl.getSupportedExtensions && gl.getSupportedExtensions()) || [],
+              });
+            }
+          } catch (e) {}
+        }
+        const heapBytes = enc.encode(JSON.stringify({ customWindowGlobals: customGlobals, webglContexts: glStates }, null, 2));
+        total += heapBytes.length;
+        await sendBytes("memory/js-heap-and-webgl.json", heapBytes);
+        index.push({ path: "memory/js-heap-and-webgl.json", url: "memory://js-heap-and-webgl", kind: "memory:heap-webgl", type: "application/json", size: heapBytes.length });
+      } catch (e) {}
+
+      perfUrls(add);
+      domUrls(add);
+      add(location.href, location.href, "page");
 
       let done = 0;
       while (queue.length) {
@@ -679,7 +728,7 @@
         const netRes = await browser.runtime.sendMessage({
           type: "fable-net-flush",
           id,
-          includeBodies: mode !== "memory" && cfg.networkStream !== false,
+          includeBodies: cfg.networkStream !== false,
           seenUrls: Array.from(seen.keys()),
         }).catch(() => null);
         if (netRes && Array.isArray(netRes.flushed)) {

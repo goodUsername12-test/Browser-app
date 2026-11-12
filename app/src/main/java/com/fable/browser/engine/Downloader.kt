@@ -529,7 +529,7 @@ class Downloader @Inject constructor(
         private const val TAG = "FableDownload"
         private const val READ_TIMEOUT_MS = 120_000L
         private const val FETCH_TIMEOUT_MS = 60_000L
-        private const val COPY_BUFFER = 64 * 1024
+        private const val COPY_BUFFER = 256 * 1024
         private val FILENAME_REGEX = Regex("filename\\s*=\\s*\"?([^\";]+)\"?", RegexOption.IGNORE_CASE)
         private val FILENAME_STAR_REGEX =
             Regex("filename\\*\\s*=\\s*([^;]+)", RegexOption.IGNORE_CASE)

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Print
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
@@ -49,6 +50,7 @@ import com.fable.browser.ui.components.SliderRow
 fun MenuSheet(
     isBookmarked: Boolean,
     desktopMode: Boolean,
+    hybridBlinkMode: Boolean = false,
     keepLoaded: Boolean,
     onToggleKeepLoaded: () -> Unit,
     readerMode: Boolean,
@@ -71,7 +73,9 @@ fun MenuSheet(
     onFingerprintTest: () -> Unit,
     onNewSuperTab: () -> Unit = {},
     onSavePageCode: () -> Unit = {},
-    onSaveMemorySnapshot: () -> Unit = {}
+    onSaveMemorySnapshot: () -> Unit = {},
+    onToggleHybridBlink: () -> Unit = {},
+    onOpenBlinkGaming: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -93,6 +97,13 @@ fun MenuSheet(
             MenuItem(Icons.Outlined.Download, "Downloads") { onDownloads(); onDismiss() }
             MenuItem(Icons.Outlined.Code, "Download page code (.zip)") { onSavePageCode(); onDismiss() }
             MenuItem(Icons.Outlined.Memory, "Download memory snapshot (.zip)") { onSaveMemorySnapshot(); onDismiss() }
+            MenuToggle(
+                icon = Icons.Outlined.Speed,
+                label = "Gecko + Blink Combined (Beta)",
+                checked = hybridBlinkMode,
+                onCheckedChange = { onToggleHybridBlink() }
+            )
+            MenuItem(Icons.Outlined.Speed, "Open in Blink Gaming Mode") { onOpenBlinkGaming(); onDismiss() }
             ListDivider()
             MenuItem(Icons.Outlined.Search, "Find in page") { onFind(); onDismiss() }
             MenuToggle(

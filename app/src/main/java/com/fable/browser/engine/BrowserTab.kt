@@ -87,6 +87,15 @@ class BrowserTab(
     private val _findMatch = MutableStateFlow<FindMatch?>(null)
     val findMatch: StateFlow<FindMatch?> = _findMatch.asStateFlow()
 
+    private val _isHybridBlink = MutableStateFlow(false)
+    val isHybridBlink: StateFlow<Boolean> = _isHybridBlink.asStateFlow()
+
+    @Volatile var hybridController: HybridBlinkController? = null
+    @Volatile var hybridBlockChecker: ((String, String?) -> Boolean)? = null
+    @Volatile var hybridBootstrapProvider: ((String) -> String)? = null
+    @Volatile var hybridArchiveScriptProvider: ((String, String) -> String)? = null
+    @Volatile var hybridArchiveMessageHandler: ((String) -> Unit)? = null
+
     private val httpExceptions = mutableSetOf<String>()
 
     var isEvicted: Boolean
@@ -109,6 +118,7 @@ class BrowserTab(
     internal fun updateFullScreen(v: Boolean) { _isFullScreen.value = v }
     internal fun updateReaderMode(v: Boolean) { _isReaderMode.value = v }
     internal fun updateFindMatch(v: FindMatch?) { _findMatch.value = v }
+    internal fun updateHybridBlink(v: Boolean) { _isHybridBlink.value = v }
 
     internal fun allowHttp(host: String) { httpExceptions.add(host) }
     internal fun isHttpAllowed(host: String?): Boolean = host != null && host in httpExceptions
@@ -140,6 +150,7 @@ class BrowserTab(
         updateFindMatch(null)
         httpExceptions.clear()
         savedState = null
+        hybridController = null
         runCatching { session.close() }
     }
 }

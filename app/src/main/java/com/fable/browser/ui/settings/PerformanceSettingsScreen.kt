@@ -151,6 +151,21 @@ fun PerformanceSettingsScreen(
         )
         ListDivider()
 
+        SectionHeader("Beta: GeckoView + Blink Combined Engine")
+        SwitchRow(
+            title = "GeckoView + Blink Combined Mode (Beta)",
+            subtitle = "Runs GeckoView for privacy, tracker blocking, local-IP hiding, and Super/Incognito identity while using Chromium Blink simultaneously for 3D WebGL, WebAssembly, 90/120 Hz gaming, and fast font layout",
+            checked = settings.hybridGeckoBlinkBeta,
+            onCheckedChange = viewModel::setHybridGeckoBlinkBeta
+        )
+        SwitchRow(
+            title = "Auto-combine on 3D game sites",
+            subtitle = "When Beta is on, automatically activates Combined Gecko + Blink on 3D WebGL games (Bloxd.io, Poki, CrazyGames, Krunker, WebGL apps) while keeping normal pages on pure GeckoView unless toggled in the menu",
+            checked = settings.hybridAutoForGames,
+            onCheckedChange = viewModel::setHybridAutoForGames
+        )
+        ListDivider()
+
         SectionHeader("Gaming")
         SwitchRow(
             title = "Game mode in full screen",

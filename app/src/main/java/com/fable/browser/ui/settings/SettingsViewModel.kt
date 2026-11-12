@@ -331,6 +331,8 @@ class SettingsViewModel @Inject constructor(
     fun setArchiveMaxTotalMb(v: Int) = edit { store.setArchiveMaxTotalMb(v) }
     fun setArchiveMaxFileMb(v: Int) = edit { store.setArchiveMaxFileMb(v) }
     fun setArchiveStreamBufferMb(v: Int) = edit { store.setArchiveStreamBufferMb(v) }
+    fun setHybridGeckoBlinkBeta(v: Boolean) = edit { store.setHybridGeckoBlinkBeta(v) }
+    fun setHybridAutoForGames(v: Boolean) = edit { store.setHybridAutoForGames(v) }
     fun copyIncognitoFromNormal() = edit { store.copyIncognitoFromNormal(settings.value) }
 
     fun autoMemoryInfo(context: android.content.Context): Pair<com.fable.browser.data.model.MemoryMode, Long> =

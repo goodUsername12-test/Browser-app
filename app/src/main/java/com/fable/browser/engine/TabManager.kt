@@ -381,9 +381,63 @@ class TabManager @Inject constructor(
             contextId = contextId,
             isSuper = superMode
         )
+        wireHybridCallbacks(tab)
         delegateFactory.attach(tab, scope, { settings }, callbacks)
         _tabs.value = _tabs.value + tab
         return tab
+    }
+
+    private fun wireHybridCallbacks(tab: BrowserTab) {
+        tab.hybridBlockChecker = { reqUrl, docHost ->
+            val s = settings
+            val adBlock = if (tab.isIncognito) s.incognitoAdBlock else s.adBlockEnabled
+            proxyConfig.shouldBlockHybrid(reqUrl, docHost, adBlock)
+        }
+        tab.hybridBootstrapProvider = { pageUrl ->
+            val s = settings
+            val id = if (tab.isSuper) superIncognito.identity.value else null
+            HybridEngineBridge.buildCombinedBootstrapScript(
+                settings = s,
+                isIncognito = tab.isIncognito,
+                isSuper = tab.isSuper,
+                superIdentity = id,
+                pageUrl = pageUrl.ifBlank { tab.url.value }
+            )
+        }
+        tab.hybridArchiveScriptProvider = { reqId, mode ->
+            HybridEngineBridge.buildBlinkArchiveScript(
+                reqId = reqId,
+                mode = mode,
+                incognito = tab.isIncognito,
+                settings = settings
+            )
+        }
+        tab.hybridArchiveMessageHandler = { rawJson ->
+            proxyConfig.onHybridArchiveMessage(rawJson)
+        }
+    }
+
+    fun toggleHybridBlinkMode() {
+        val tab = activeTab ?: return
+        val next = !tab.isHybridBlink.value
+        setHybridBlinkMode(tab, next)
+    }
+
+    fun setHybridBlinkMode(tab: BrowserTab, enabled: Boolean) {
+        wireHybridCallbacks(tab)
+        tab.updateHybridBlink(enabled)
+        if (enabled) {
+            onGameModeStarted()
+            if (tab.session.isOpen) {
+                runCatching { tab.session.stop() }
+            }
+        } else {
+            val currentUrl = tab.url.value
+            if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://")) {
+                ensureLive(tab)
+                tab.session.load(GeckoSession.Loader().uri(currentUrl))
+            }
+        }
     }
 
     private fun activate(tab: BrowserTab) {
@@ -593,6 +647,19 @@ class TabManager @Inject constructor(
     fun load(tab: BrowserTab, input: String) {
         val url = UrlUtils.toUrlOrSearch(input, settings.searchEngine)
         tab.updateInterstitial(null)
+        wireHybridCallbacks(tab)
+        if (settings.hybridGeckoBlinkBeta) {
+            if (!settings.hybridAutoForGames || HybridEngineBridge.isHeavy3dGameUrl(url)) {
+                tab.updateHybridBlink(true)
+            }
+        }
+        if (tab.isHybridBlink.value) {
+            tab.updateUrl(url)
+            tab.hybridController?.loadUrl(url)
+            // Keep GeckoView privacy core session aware of the domain metadata without full heavy render when hybrid is active
+            touchIncognitoActivity()
+            return
+        }
         ensureLive(tab)
         whenSuperReady(tab, url) { tab.session.load(GeckoSession.Loader().uri(url)) }
         touchIncognitoActivity()
@@ -648,6 +715,10 @@ class TabManager @Inject constructor(
             return@let
         }
         tab.updateInterstitial(null)
+        if (tab.isHybridBlink.value) {
+            tab.hybridController?.reload()
+            return@let
+        }
         if (tab.isEvicted || !tab.session.isOpen) {
             if (!tab.isEvicted) tab.markUnloaded()
             resumeIfEvicted(tab)
@@ -656,10 +727,15 @@ class TabManager @Inject constructor(
         }
     }
 
-    fun stop() = activeTab?.session?.stop()
+    fun stop() {
+        val tab = activeTab ?: return
+        if (tab.isHybridBlink.value) tab.hybridController?.stopLoading()
+        runCatching { tab.session.stop() }
+    }
 
     fun exitFullScreen() {
         _manualFullScreen.value = false
+        activeTab?.hybridController?.exitFullScreen()
         activeTab?.session?.takeIf { it.isOpen }?.let { session ->
             runCatching { session.exitFullScreen() }
         }
@@ -686,11 +762,19 @@ class TabManager @Inject constructor(
             return true
         }
         if (!tab.canGoBack.value) return false
+        if (tab.isHybridBlink.value) {
+            tab.hybridController?.goBack()
+            return true
+        }
         tab.session.goBack()
         return true
     }
 
-    fun goForward() = activeTab?.takeIf { it.canGoForward.value }?.session?.goForward()
+    fun goForward() {
+        val tab = activeTab?.takeIf { it.canGoForward.value } ?: return
+        if (tab.isHybridBlink.value) tab.hybridController?.goForward()
+        else tab.session.goForward()
+    }
 
     fun proceedOverHttp(tab: BrowserTab, url: String) {
         UrlUtils.host(url)?.let { tab.allowHttp(it) }
@@ -704,7 +788,8 @@ class TabManager @Inject constructor(
         val desktop = !tab.isDesktopMode.value
         applyDesktopMode(tab.session, desktop)
         tab.updateDesktopMode(desktop)
-        tab.session.reload()
+        if (tab.isHybridBlink.value) tab.hybridController?.setDesktopMode(desktop)
+        else tab.session.reload()
     }
 
     private fun applyDesktopMode(session: GeckoSession, desktop: Boolean) {
@@ -726,6 +811,11 @@ class TabManager @Inject constructor(
         val tab = activeTab ?: return false
         val url = tab.url.value
         if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("file://")) return false
+        if (tab.isHybridBlink.value) {
+            val hc = tab.hybridController ?: return false
+            val reqId = proxyConfig.newHybridArchiveRequest() ?: return true
+            return hc.savePageCode(mode, reqId)
+        }
         return proxyConfig.savePageCode(url, mode)
     }
 
@@ -733,6 +823,10 @@ class TabManager @Inject constructor(
         val tab = activeTab ?: return
         if (query.isBlank()) {
             clearFind()
+            return
+        }
+        if (tab.isHybridBlink.value) {
+            tab.hybridController?.findInPage(query, forward)
             return
         }
         val flags = if (forward) 0 else GeckoSession.FINDER_FIND_BACKWARDS
@@ -743,6 +837,10 @@ class TabManager @Inject constructor(
 
     fun clearFind() {
         val tab = activeTab ?: return
+        if (tab.isHybridBlink.value) {
+            tab.hybridController?.clearFind()
+            return
+        }
         tab.session.finder.clear()
         tab.updateFindMatch(null)
     }

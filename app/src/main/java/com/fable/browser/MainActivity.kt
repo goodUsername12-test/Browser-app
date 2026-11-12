@@ -216,6 +216,10 @@ class MainActivity : FragmentActivity() {
                     tabManager.openSuperTab(url)
                 } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_incognito", false)) {
                     tabManager.openTab(url, incognito = true)
+                } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_hybrid", false)) {
+                    val tab = tabManager.openTab(incognito = false)
+                    tabManager.setHybridBlinkMode(tab, true)
+                    tabManager.load(tab, url)
                 } else {
                     tabManager.openExternalUrl(url)
                 }

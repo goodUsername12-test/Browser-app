@@ -168,6 +168,11 @@ class BrowserViewModel @Inject constructor(
     }
 
     fun toggleDesktopMode() = tabManager.toggleDesktopMode()
+    fun toggleHybridBlinkMode() {
+        tabManager.toggleHybridBlinkMode()
+        val active = activeTab?.isHybridBlink?.value == true
+        toast(if (active) "Gecko + Blink Combined Mode (Beta) active" else "Switched back to GeckoView")
+    }
     fun toggleReaderMode() = tabManager.toggleReaderMode()
 
     fun openTab(url: String? = null, incognito: Boolean = isIncognito.value) {

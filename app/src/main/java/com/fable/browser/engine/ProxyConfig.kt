@@ -65,6 +65,17 @@ class ProxyConfig @Inject constructor(
         port?.postMessage(JSONObject().apply { put("type", "reader-toggle") })
     }
 
+    fun shouldBlockHybrid(url: String, docHost: String?, adBlockActive: Boolean): Boolean {
+        if (!adBlockActive) return false
+        return contentBlocker.shouldBlock(url, docHost)
+    }
+
+    fun newHybridArchiveRequest(): String? = pageArchiver.newRequest()
+
+    fun onHybridArchiveMessage(rawJson: String) {
+        runCatching { pageArchiver.onMessage(JSONObject(rawJson)) }
+    }
+
     fun savePageCode(url: String, mode: String = "all"): Boolean {
         val p = port ?: return false
         val id = pageArchiver.newRequest() ?: return true

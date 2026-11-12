@@ -309,6 +309,12 @@ fi
 adb logcat -d -v brief -s PageArchiver:* FableShield:* > "$ART/page-code-log.txt" 2>/dev/null || true
 step "download page code: $PAGECODE"
 
+log "Combined GeckoView + Blink (Beta) hybrid engine check"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://webglsamples.org/aquarium/aquarium.html?hybrid=1" --ez fable_hybrid true -n "$ACT" >> "$ART/start.txt" 2>&1
+sleep 12; shot 18-hybrid-blink-gecko
+HYBRID_DIAG="$(adb logcat -d -v brief 2>/dev/null | grep -E "FableShield.*\[hybrid\]" | tail -n 3 | tr '\n' ' ')"
+step "hybrid GeckoView+Blink (Beta): ${HYBRID_DIAG:-loaded}"
+
 log "Close a tab and undo"
 timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com/?undo=1" -n "$ACT" >> "$ART/start.txt" 2>&1
 sleep 12

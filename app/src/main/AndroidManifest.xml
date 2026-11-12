@@ -35,6 +35,14 @@
         tools:targetApi="35">
 
         <activity
+            android:name=".BlinkGamingActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:hardwareAccelerated="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|smallestScreenSize|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"

@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
@@ -72,6 +73,7 @@ fun BrowserScreen(
 
     val tab: BrowserTab? = remember(tabs, activeTabId) { tabs.firstOrNull { it.id == activeTabId } }
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     var menuOpen by rememberSaveable { mutableStateOf(false) }
 
     val url = tab?.url?.collectAsStateWithLifecycle()?.value ?: "about:blank"
@@ -82,6 +84,7 @@ fun BrowserScreen(
     val isSecure = tab?.isSecure?.collectAsStateWithLifecycle()?.value ?: true
     val blockedCount = tab?.blockedCount?.collectAsStateWithLifecycle()?.value ?: 0
     val desktopMode = tab?.isDesktopMode?.collectAsStateWithLifecycle()?.value ?: false
+    val hybridBlinkMode = tab?.isHybridBlink?.collectAsStateWithLifecycle()?.value ?: false
     val readerMode = tab?.isReaderMode?.collectAsStateWithLifecycle()?.value ?: false
     val webFullScreen = tab?.isFullScreen?.collectAsStateWithLifecycle()?.value ?: false
     val manualFullScreen by viewModel.manualFullScreen.collectAsStateWithLifecycle()
@@ -327,6 +330,7 @@ fun BrowserScreen(
         MenuSheet(
             isBookmarked = bookmarked,
             desktopMode = desktopMode,
+            hybridBlinkMode = hybridBlinkMode,
             keepLoaded = keepLoaded,
             onToggleKeepLoaded = viewModel::toggleKeepLoaded,
             readerMode = readerMode,
@@ -352,7 +356,13 @@ fun BrowserScreen(
             onFingerprintTest = viewModel::openFingerprintTest,
             onNewSuperTab = { viewModel.openSuperTab() },
             onSavePageCode = viewModel::savePageCode,
-            onSaveMemorySnapshot = viewModel::saveMemorySnapshot
+            onSaveMemorySnapshot = viewModel::saveMemorySnapshot,
+            onToggleHybridBlink = viewModel::toggleHybridBlinkMode,
+            onOpenBlinkGaming = {
+                if (url.startsWith("https://") || url.startsWith("http://")) {
+                    com.fable.browser.BlinkGamingActivity.start(context, url)
+                }
+            }
         )
     }
 

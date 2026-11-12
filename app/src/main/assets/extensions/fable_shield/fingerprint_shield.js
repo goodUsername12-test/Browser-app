@@ -660,12 +660,8 @@
         try {
           const wLoc = waived(locales);
           const len = Number(wLoc.length);
-          if (len > 0) {
-            const out = [];
-            for (let i = 0; i < len && i < 16; i++) {
-              if (wLoc[i] !== undefined && wLoc[i] !== null) out.push(String(wLoc[i]));
-            }
-            return out;
+          if (len > 0 && wLoc[0] !== undefined && wLoc[0] !== null) {
+            return String(wLoc[0]);
           }
         } catch (e) {
         }
@@ -735,7 +731,7 @@
             try {
               return makeDate(args, newTarget);
             } catch (e) {
-              return Reflect.construct(RealDate, waived(args), RealDate);
+              return new RealDate();
             }
           },
           apply() {
@@ -756,7 +752,7 @@
               const v = parseLocal(args[0]);
               if (v !== null) return Reflect.construct(RealDate, [v], waived(newTarget) || RealDate);
             }
-            return Reflect.construct(RealDate, waived(args), waived(newTarget) || RealDate);
+            return args.length === 0 ? new RealDate() : new RealDate(args[0]);
           }
         }
         try {

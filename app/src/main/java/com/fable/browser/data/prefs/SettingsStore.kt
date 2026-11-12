@@ -150,7 +150,9 @@ data class Settings(
     val archiveMaxFiles: Int = 4000,
     val archiveMaxTotalMb: Int = 600,
     val archiveMaxFileMb: Int = 120,
-    val archiveStreamBufferMb: Int = 160
+    val archiveStreamBufferMb: Int = 160,
+    val hybridGeckoBlinkBeta: Boolean = false,
+    val hybridAutoForGames: Boolean = true
 ) {
     val performanceProfile: PerformanceProfile
         get() = when {
@@ -285,6 +287,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val ARCHIVE_MAX_TOTAL_MB = intPreferencesKey("archive_max_total_mb")
         val ARCHIVE_MAX_FILE_MB = intPreferencesKey("archive_max_file_mb")
         val ARCHIVE_STREAM_BUF_MB = intPreferencesKey("archive_stream_buf_mb")
+        val HYBRID_GECKO_BLINK_BETA = booleanPreferencesKey("hybrid_gecko_blink_beta")
+        val HYBRID_AUTO_FOR_GAMES = booleanPreferencesKey("hybrid_auto_for_games")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -409,7 +413,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             archiveMaxFiles = (p[Keys.ARCHIVE_MAX_FILES] ?: 4000).coerceIn(500, 10000),
             archiveMaxTotalMb = (p[Keys.ARCHIVE_MAX_TOTAL_MB] ?: 600).coerceIn(100, 2000),
             archiveMaxFileMb = (p[Keys.ARCHIVE_MAX_FILE_MB] ?: 120).coerceIn(20, 500),
-            archiveStreamBufferMb = (p[Keys.ARCHIVE_STREAM_BUF_MB] ?: 160).coerceIn(32, 512)
+            archiveStreamBufferMb = (p[Keys.ARCHIVE_STREAM_BUF_MB] ?: 160).coerceIn(32, 512),
+            hybridGeckoBlinkBeta = p[Keys.HYBRID_GECKO_BLINK_BETA] ?: false,
+            hybridAutoForGames = p[Keys.HYBRID_AUTO_FOR_GAMES] ?: true
         )
     }.distinctUntilChanged()
 
@@ -597,6 +603,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setArchiveMaxTotalMb(v: Int) = set(Keys.ARCHIVE_MAX_TOTAL_MB, v.coerceIn(100, 2000))
     suspend fun setArchiveMaxFileMb(v: Int) = set(Keys.ARCHIVE_MAX_FILE_MB, v.coerceIn(20, 500))
     suspend fun setArchiveStreamBufferMb(v: Int) = set(Keys.ARCHIVE_STREAM_BUF_MB, v.coerceIn(32, 512))
+    suspend fun setHybridGeckoBlinkBeta(v: Boolean) = set(Keys.HYBRID_GECKO_BLINK_BETA, v)
+    suspend fun setHybridAutoForGames(v: Boolean) = set(Keys.HYBRID_AUTO_FOR_GAMES, v)
 
     suspend fun copyIncognitoFromNormal(s: Settings) {
         context.dataStore.edit {

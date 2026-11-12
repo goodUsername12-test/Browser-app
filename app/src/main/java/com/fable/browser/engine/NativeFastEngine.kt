@@ -21,6 +21,9 @@ object NativeFastEngine {
     @JvmStatic
     private external fun nativeMatchDomain(host: String, domain: String): Boolean
 
+    @JvmStatic
+    private external fun nativeSetGameBoost(enable: Boolean): Boolean
+
     fun decodeBase64(data: String): ByteArray {
         if (data.isEmpty()) return ByteArray(0)
         if (isNativeAvailable) {
@@ -61,5 +64,11 @@ object NativeFastEngine {
         if (host.length == domain.length) return host == domain
         val prefix = host.length - domain.length
         return host[prefix - 1] == '.' && host.endsWith(domain)
+    }
+
+    fun setGameBoost(enable: Boolean) {
+        if (isNativeAvailable) {
+            runCatching { nativeSetGameBoost(enable) }
+        }
     }
 }

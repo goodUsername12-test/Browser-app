@@ -80,6 +80,9 @@ fun GeckoViewHost(
         factory = { ctx ->
             GeckoView(ctx).apply {
                 setAutofillEnabled(false)
+                importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+                isFocusable = true
+                isFocusableInTouchMode = true
                 captureHandle.view = this
             }
         },

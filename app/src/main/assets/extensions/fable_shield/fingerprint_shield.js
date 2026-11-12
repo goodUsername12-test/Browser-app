@@ -273,14 +273,14 @@
     }
 
     function noiseBytes(data, length, salt) {
-      const mod = [0, 101, 53, 29][CANVAS_LEVEL];
-      const pixels = Math.floor(length / 4);
+      const pixels = (length >>> 2);
       if (pixels <= 0) return;
-      const step = pixels > 1200000 ? 7 : 1;
-      for (let p = salt % step; p < pixels; p += step) {
-        const h = mix(SEED, p + salt);
-        if (h % mod !== 0) continue;
-        const i = p * 4;
+      const touches = Math.min(pixels, 16 * CANVAS_LEVEL);
+      const stride = Math.max(1, Math.floor(pixels / touches));
+      for (let k = 0; k < touches; k++) {
+        const h = mix(SEED, k * 131 + salt);
+        const p = (k * stride + (h % stride)) % pixels;
+        const i = p << 2;
         if (data[i + 3] === 0) continue;
         const c = i + ((h >>> 8) % 3);
         const v = data[c];

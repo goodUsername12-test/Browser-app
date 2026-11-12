@@ -127,9 +127,13 @@ class MainActivity : FragmentActivity() {
         } else {
             0
         }
+        val maxRate = if (high) {
+            display.supportedModes.maxOfOrNull { it.refreshRate } ?: 0f
+        } else 0f
         val attrs = window.attributes
-        if (attrs.preferredDisplayModeId != modeId) {
+        if (attrs.preferredDisplayModeId != modeId || attrs.preferredRefreshRate != maxRate) {
             attrs.preferredDisplayModeId = modeId
+            attrs.preferredRefreshRate = maxRate
             window.attributes = attrs
         }
     }
@@ -146,10 +150,30 @@ class MainActivity : FragmentActivity() {
             controller.hide(WindowInsetsCompat.Type.systemBars())
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             setCutoutMode(fullScreen = true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                runCatching { window.setSustainedPerformanceMode(true) }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching {
+                    val a = window.attributes
+                    a.preferMinimalPostProcessing = true
+                    window.attributes = a
+                }
+            }
         } else {
             setCutoutMode(fullScreen = false)
             controller.show(WindowInsetsCompat.Type.systemBars())
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                runCatching { window.setSustainedPerformanceMode(false) }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching {
+                    val a = window.attributes
+                    a.preferMinimalPostProcessing = false
+                    window.attributes = a
+                }
+            }
         }
     }
 

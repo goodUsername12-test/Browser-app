@@ -208,7 +208,16 @@ class EngineManager @Inject constructor(
             "javascript.options.ion" to (!d.noJit || d.superGameMode),
             "javascript.options.native_regexp" to (!d.noJit || d.superGameMode),
             "javascript.options.wasm_optimizingjit" to (!d.noJit || d.superGameMode),
-            "javascript.options.wasm" to (!d.disableWasm || d.superGameMode)
+            "javascript.options.wasm" to (!d.disableWasm || d.superGameMode),
+            "javascript.options.wasm_simd" to (!d.disableWasm || d.superGameMode),
+            "javascript.options.wasm_relaxed_simd" to (!d.disableWasm || d.superGameMode || d.featureWasmExperimental),
+            "gfx.webrender.all" to true,
+            "gfx.webrender.compositor" to true,
+            "gfx.webrender.precache-shaders" to (d.gameMode || d.superGameMode),
+            "webgl.force-enabled" to true,
+            "webgl.msaa-force" to false,
+            "webgl.lose-context-on-memory-pressure" to false,
+            "dom.ipc.processPriorityManager.enabled" to true
         )
     }
 
@@ -234,7 +243,10 @@ class EngineManager @Inject constructor(
             "browser.cache.disk.max_entry_size" to 51_200,
             "network.buffer.cache.size" to 65_536,
             "network.buffer.cache.count" to 48,
-            "dom.ipc.processCount.webIsolated" to if (optimizing(d)) 2 else 4
+            "dom.ipc.processCount.webIsolated" to if (optimizing(d)) 2 else 4,
+            "layout.frame_rate" to 0,
+            "webgl.max-contexts-per-principal" to 32,
+            "javascript.options.mem.gc_incremental_slice_ms" to if (d.gameMode || d.superGameMode) 5 else 10
         )
     }
 
@@ -248,7 +260,7 @@ class EngineManager @Inject constructor(
 
     private fun fingerprintOverrides(d: Settings): String {
         val targets = listOf(
-            d.fpCanvas to listOf("CanvasRandomization"),
+            (d.fpCanvas && !d.gameMode && !d.superGameMode) to listOf("CanvasRandomization"),
             d.fpCanvasThirdParty to listOf("CanvasExtractionFromThirdPartiesIsBlocked"),
             d.fpFonts to listOf("FontVisibilityBaseSystem", "FontVisibilityLangPack"),
             d.hideGpuModel to listOf("WebGLRenderInfo"),
@@ -267,7 +279,7 @@ class EngineManager @Inject constructor(
             d.fpSensors to listOf("DeviceSensors"),
             d.fpTimezone to listOf("JSDateTimeUTC"),
             d.fpLanguage to listOf("JSLocale"),
-            (d.fpTimers && !d.superGameMode) to listOf("ReduceTimerPrecision", "FrameRate"),
+            (d.fpTimers && !d.gameMode && !d.superGameMode) to listOf("ReduceTimerPrecision", "FrameRate"),
             d.fpTouch to listOf("TouchEvents", "PointerEvents", "MaxTouchPoints", "CSSPointerCapabilities"),
             false to listOf("WindowDevicePixelRatio")
         )

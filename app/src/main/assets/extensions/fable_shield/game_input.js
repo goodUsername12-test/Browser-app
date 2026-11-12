@@ -7,18 +7,15 @@
   const last = new Map();
   const before = new WeakMap();
   const moves = new WeakMap();
-  const byKey = new Map();
+  const recentRing = new Float64Array(8 * 4);
+  let ringIdx = 0;
   let activeTouches = 0;
   let lastTouchAt = 0;
   let lastRealMouseAt = 0;
   let mouseLast = null;
 
   function now() {
-    return Date.now();
-  }
-
-  function keyOf(e) {
-    return e.type + "|" + (e.pointerId === undefined ? "m" : e.pointerId) + "|" + e.timeStamp;
+    return typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
   }
 
   function limit() {
@@ -52,27 +49,30 @@
 
   const lastDelta = new Map();
 
+  const ZERO_MOVE = [0, 0];
+
   function remember(e, m, x, y) {
     moves.set(e, m);
-    try {
-      byKey.set(keyOf(e), [m[0], m[1], x, y]);
-      if (byKey.size > 400) {
-        let n = byKey.size - 300;
-        for (const k of byKey.keys()) {
-          byKey.delete(k);
-          if (--n <= 0) break;
-        }
-      }
-    } catch (_) {
-    }
+    const base = (ringIdx & 7) << 2;
+    recentRing[base] = x;
+    recentRing[base + 1] = y;
+    recentRing[base + 2] = m[0];
+    recentRing[base + 3] = m[1];
+    ringIdx = (ringIdx + 1) & 7;
   }
 
   function lookup(ev) {
     const m = moves.get(ev);
     if (m) return m;
     try {
-      const entry = byKey.get(keyOf(ev));
-      if (entry && entry[2] === ev.screenX && entry[3] === ev.screenY) return entry;
+      const sx = ev.screenX;
+      const sy = ev.screenY;
+      for (let i = 0; i < 8; i++) {
+        const base = i << 2;
+        if (recentRing[base] === sx && recentRing[base + 1] === sy) {
+          return [recentRing[base + 2], recentRing[base + 3]];
+        }
+      }
     } catch (_) {
     }
     return null;
@@ -100,14 +100,14 @@
         last.set(id, [x, y]);
         speed.delete(id);
         lastDelta.delete(id);
-        remember(e, [0, 0], x, y);
+        remember(e, ZERO_MOVE, x, y);
         activeTouches = last.size;
         lastTouchAt = now();
       } else {
         last.delete(id);
         speed.delete(id);
         lastDelta.delete(id);
-        remember(e, [0, 0], x, y);
+        remember(e, ZERO_MOVE, x, y);
         activeTouches = last.size;
         lastTouchAt = now();
       }
@@ -142,15 +142,15 @@
         } else if (lastDelta.size === 0 && mouseLast) {
           remember(e, clampMove(x - mouseLast[0], y - mouseLast[1], "mouse"), x, y);
         } else {
-          remember(e, [0, 0], x, y);
+          remember(e, ZERO_MOVE, x, y);
         }
         mouseLast = [x, y];
       } else if (e.type === "mousedown") {
         mouseLast = [x, y];
-        remember(e, [0, 0], x, y);
+        remember(e, ZERO_MOVE, x, y);
       } else {
         mouseLast = null;
-        remember(e, [0, 0], x, y);
+        remember(e, ZERO_MOVE, x, y);
       }
     } catch (_) {
     }

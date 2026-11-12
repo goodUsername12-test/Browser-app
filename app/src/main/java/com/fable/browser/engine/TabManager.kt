@@ -673,6 +673,7 @@ class TabManager @Inject constructor(
 
     private fun onGameModeStarted() {
         if (!settings.gameMode) return
+        NativeFastEngine.setGameBoost(true)
         scope.launch(Dispatchers.Main) {
             runCatching { evictBackgroundTabs() }
         }

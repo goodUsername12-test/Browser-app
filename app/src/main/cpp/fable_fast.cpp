@@ -3,6 +3,9 @@
 #include <cstring>
 #include <vector>
 #include <array>
+#if defined(__unix__) || defined(__ANDROID__)
+#include <sys/resource.h>
+#endif
 
 #if __has_include(<jni.h>)
 #include <jni.h>
@@ -179,6 +182,16 @@ size_t extract_host(const char* url, size_t len, char* out_buf, size_t max_out) 
     return out_len;
 }
 
+bool set_game_thread_boost(bool enable) noexcept {
+#if defined(__unix__) || defined(__ANDROID__)
+    const int prio = enable ? -8 : 0;
+    return ::setpriority(PRIO_PROCESS, 0, prio) == 0;
+#else
+    (void)enable;
+    return false;
+#endif
+}
+
 } // namespace fable_fast
 
 #if FABLE_HAS_JNI
@@ -285,6 +298,15 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeMatchDomain(
     env->ReleaseStringUTFChars(domainStr, dom);
     env->ReleaseStringUTFChars(hostStr, host);
     return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeSetGameBoost(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jboolean enable
+) {
+    return fable_fast::set_game_thread_boost(enable == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
 
 } // extern "C"

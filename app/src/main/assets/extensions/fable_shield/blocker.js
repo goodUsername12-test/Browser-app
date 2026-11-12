@@ -526,19 +526,22 @@ function captureStreamIfEnabled(details) {
     if (typeof tabId !== "number" || tabId < 0) return;
     const url = String(details.url || "").split("#")[0];
     if (!/^https?:/i.test(url)) return;
-    const wr = browser.webRequest;
-    if (!wr || typeof wr.filterResponseData !== "function") return;
     if (details.type === "main_frame") {
       tabNetStore.set(tabId, { bytes: 0, entries: new Map() });
     }
+    const startedAt = Date.now();
+    const shouldStreamBody = details.type === "main_frame" || (config.archiveReadOnly === false && config.archiveDeepHooks === true);
+    reqMeta.set(details.requestId, { tabId, url, method: details.method || "GET", resType: details.type || "other", status: 200, mime: "", startedAt, streamed: shouldStreamBody });
+    if (!shouldStreamBody) return;
+    const wr = browser.webRequest;
+    if (!wr || typeof wr.filterResponseData !== "function") return;
     const maxFileBytes = Math.min(64, Math.max(10, Number(config.archiveMaxFileMb) || 120)) * 1024 * 1024;
     const maxTabBytes = Math.max(16, Number(config.archiveStreamBufferMb) || 160) * 1024 * 1024;
     const filter = wr.filterResponseData(details.requestId);
     const chunks = [];
     let size = 0;
     let overflow = false;
-    const startedAt = Date.now();
-    reqMeta.set(details.requestId, { tabId, url, method: details.method || "GET", resType: details.type || "other", status: 200, mime: "", startedAt });
+
     filter.ondata = (event) => {
       try {
         filter.write(event.data);
@@ -610,16 +613,37 @@ function onHeadersReceived(details) {
   if (!m) return;
   m.status = details.statusCode || 200;
   m.statusLine = String(details.statusLine || "");
+  let contentLen = 0;
   if (Array.isArray(details.responseHeaders)) {
     m.resHeaders = details.responseHeaders.slice(0, 80).map((h) => ({
       name: String((h && h.name) || ""),
       value: String((h && h.value) || ""),
     }));
     for (const h of details.responseHeaders) {
-      if (h && h.name && h.name.toLowerCase() === "content-type") {
-        m.mime = String(h.value || "");
-        break;
-      }
+      if (!h || !h.name) continue;
+      const lower = h.name.toLowerCase();
+      if (lower === "content-type") m.mime = String(h.value || "");
+      else if (lower === "content-length") contentLen = Number(h.value) || 0;
+    }
+  }
+  if (!m.streamed) {
+    reqMeta.delete(details.requestId);
+    const store = getTabStore(m.tabId);
+    if (store.entries.size < 4000 && !store.entries.has(m.url)) {
+      store.entries.set(m.url, {
+        url: m.url,
+        method: m.method,
+        resType: m.resType,
+        status: m.status,
+        statusLine: m.statusLine,
+        mime: m.mime,
+        reqHeaders: m.reqHeaders || [],
+        resHeaders: m.resHeaders || [],
+        size: contentLen,
+        timeMs: Math.max(1, Date.now() - m.startedAt),
+        startedIso: new Date(m.startedAt).toISOString(),
+        bytes: null,
+      });
     }
   }
 }

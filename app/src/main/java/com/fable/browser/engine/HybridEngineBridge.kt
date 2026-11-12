@@ -277,25 +277,67 @@ object HybridEngineBridge {
                             }
                         });
                     }
+                    // Blink VSync Camera Coalescer + Zero-FPS-Drop Click Engine
                     const lastPos = new Map();
+                    let lastCamFrameTime = 0;
+                    let lastTapTime = 0;
+                    let cachedRect = null;
+                    let cachedRectTime = 0;
+
+                    const origGetRect = Element.prototype.getBoundingClientRect;
+                    Element.prototype.getBoundingClientRect = function() {
+                        if (this.tagName === "CANVAS" || this.id === "noa-container") {
+                            const t = performance.now();
+                            if (cachedRect && (t - cachedRectTime) < 250) {
+                                return cachedRect;
+                            }
+                            cachedRect = origGetRect.call(this);
+                            cachedRectTime = t;
+                            return cachedRect;
+                        }
+                        return origGetRect.call(this);
+                    };
+                    window.addEventListener("resize", function() { cachedRect = null; }, { passive: true });
+
+                    window.addEventListener("touchstart", function(ev) {
+                        lastTapTime = performance.now();
+                    }, { capture: true, passive: true });
+
                     window.addEventListener("touchmove", function(ev) {
                         const ct = ev.changedTouches;
-                        if (!ct || ct.length !== 1) return;
-                        const t = ct[0];
-                        if (isJoystickNode(t.target)) return;
-                        const x = Math.round(t.clientX * 2);
-                        const y = Math.round(t.clientY * 2);
-                        const prev = lastPos.get(t.identifier);
-                        if (prev && prev.x === x && prev.y === y) {
-                            ev.stopImmediatePropagation();
-                            return;
+                        if (!ct || ct.length === 0) return;
+                        const nowMs = performance.now();
+                        for (let i = 0; i < ct.length; i++) {
+                            const t = ct[i];
+                            if (isJoystickNode(t.target)) continue;
+                            const x = Math.round(t.clientX * 2);
+                            const y = Math.round(t.clientY * 2);
+                            const prev = lastPos.get(t.identifier);
+                            if (prev && prev.x === x && prev.y === y) {
+                                ev.stopImmediatePropagation();
+                                return;
+                            }
+                            if (prev && (nowMs - lastCamFrameTime) < 7.2 && Math.abs(x - prev.x) < 12 && Math.abs(y - prev.y) < 12) {
+                                ev.stopImmediatePropagation();
+                                return;
+                            }
+                            lastPos.set(t.identifier, { x: x, y: y });
+                            lastCamFrameTime = nowMs;
                         }
-                        lastPos.set(t.identifier, { x: x, y: y });
                     }, { capture: true, passive: true });
+
                     window.addEventListener("touchend", function(ev) {
+                        lastTapTime = performance.now();
                         const ct = ev.changedTouches;
                         if (!ct) return;
                         for (let i = 0; i < ct.length; i++) lastPos.delete(ct[i].identifier);
+                    }, { capture: true, passive: true });
+
+                    // Prevent synthetic mousemove/mouseover during touch clicks from triggering 3D hover raycasts
+                    window.addEventListener("mousemove", function(ev) {
+                        if ((performance.now() - lastTapTime) < 90 && (!ev.movementX && !ev.movementY) && isCameraLookNode(ev.target)) {
+                            ev.stopImmediatePropagation();
+                        }
                     }, { capture: true, passive: true });
                 } catch (_) {}
             }
@@ -307,7 +349,7 @@ object HybridEngineBridge {
                     if (!head || document.getElementById("__fable_hybrid_fast_fonts")) return;
                     const style = document.createElement("style");
                     style.id = "__fable_hybrid_fast_fonts";
-                    style.textContent = "canvas { touch-action: none; -webkit-user-select: none; user-select: none; }";
+                    style.textContent = "*, *::before, *::after { -webkit-tap-highlight-color: transparent !important; } canvas, #noa-container, .WholeAppWrapper { touch-action: none !important; -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; }";
                     head.appendChild(style);
                     ["https://fonts.googleapis.com", "https://fonts.gstatic.com"].forEach(function(href) {
                         const link = document.createElement("link");

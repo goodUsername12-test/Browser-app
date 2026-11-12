@@ -443,6 +443,28 @@
           });
         }
       }
+        const xRectDesc = Object.getOwnPropertyDescriptor(window.Element.prototype, "getBoundingClientRect");
+        const xRectFn = xRectDesc && xRectDesc.value;
+        if (typeof xRectFn === "function") {
+          Object.defineProperty(cProto, "getBoundingClientRect", {
+            value: exportFunction(function () {
+              try {
+                if (enabled && marked.has(this)) {
+                  const hit = canvasRects.get(this);
+                  const t = now();
+                  if (hit && t - hit.t < 250) return hit.r;
+                  const r = xRectFn.call(this);
+                  canvasRects.set(this, { r, t });
+                  return r;
+                }
+              } catch (_) {
+              }
+              return xRectFn.call(this);
+            }, window),
+            configurable: true,
+            writable: true,
+          });
+        }
 
 
     }
@@ -450,8 +472,10 @@
   }
 
   const marked = new WeakSet();
-  let canvasDims = new WeakMap();
+  let canvasDims = new WeakMap(); canvasRects = new WeakMap();
+  let canvasRects = new WeakMap();
   const lastCamTouch = new Map();
+  let lastCamDispatchAt = 0;
   let gameRoot = false;
 
   window.addEventListener(
@@ -476,28 +500,40 @@
     (e) => {
       try {
         if (!enabled || !isGameLookElement(e.target)) return;
-        const all = e.touches;
         const ch = e.changedTouches;
-        if (!all || !ch || all.length <= 1) return;
+        if (!ch || ch.length === 0) return;
+        const tNow = now();
         let camMoved = false;
-        let hasUi = false;
-        for (let i = 0; i < all.length; i++) {
-          if (all[i] && isUiControlElement(all[i].target)) {
-            hasUi = true;
-            break;
-          }
-        }
-        if (!hasUi) return;
         for (let i = 0; i < ch.length; i++) {
           const t = ch[i];
           if (!t || isUiControlElement(t.target)) continue;
           const prev = lastCamTouch.get(t.identifier);
-          if (!prev || Math.abs(t.clientX - prev[0]) >= 0.2 || Math.abs(t.clientY - prev[1]) >= 0.2) {
-            lastCamTouch.set(t.identifier, [t.clientX, t.clientY]);
-            camMoved = true;
-          }
+          const dx = prev ? Math.abs(t.clientX - prev[0]) : 99;
+          const dy = prev ? Math.abs(t.clientY - prev[1]) : 99;
+          if (dx < 0.22 && dy < 0.22) continue;
+          // Blink VSync camera coalescing: max 1 camera update per ~7.2ms frame window unless delta is large
+          if (prev && tNow - lastCamDispatchAt < 7.2 && dx < 6 && dy < 6) continue;
+          lastCamTouch.set(t.identifier, [t.clientX, t.clientY]);
+          lastCamDispatchAt = tNow;
+          camMoved = true;
         }
         if (!camMoved) {
+          e.stopImmediatePropagation();
+        }
+      } catch (_) {
+      }
+    },
+    opts
+  );
+
+  // Zero-FPS-Drop Click Engine: suppress synthetic zero-delta mousemove hover raycasts during touch clicks
+  window.addEventListener(
+    "mousemove",
+    (e) => {
+      try {
+        if (!enabled || !touchDerived() || !isGameLookElement(e.target)) return;
+        const m = lookup(e);
+        if (m && m[0] === 0 && m[1] === 0 && now() - lastTouchAt < 90) {
           e.stopImmediatePropagation();
         }
       } catch (_) {
@@ -530,7 +566,7 @@
       const st = document.createElement("style");
       st.setAttribute("data-fable-game-perf", "1");
       st.textContent =
-        "#noa-container,.JoystickZone,.TouchMovementWrapper,.TouchComponentsButtons{contain:layout style!important;touch-action:none!important;-webkit-user-select:none!important;user-select:none!important}" +
+        "*,*::before,*::after{-webkit-tap-highlight-color:transparent!important}#noa-container,.WholeAppWrapper,.JoystickZone,.TouchMovementWrapper,.TouchComponentsButtons{contain:layout style!important;touch-action:none!important;-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important}" +
         ".Joystick,.JoystickKnob{will-change:transform!important;backface-visibility:hidden!important}";
       parent.appendChild(st);
       styleInjected = true;
@@ -562,7 +598,7 @@
   function markGameCanvases() {
     if (!enabled) return;
     try {
-      canvasDims = new WeakMap();
+      canvasDims = new WeakMap(); canvasRects = new WeakMap();
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       if (!vw || !vh) return;

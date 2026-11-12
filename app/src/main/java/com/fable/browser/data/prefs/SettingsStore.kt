@@ -151,7 +151,7 @@ data class Settings(
     val archiveMaxTotalMb: Int = 600,
     val archiveMaxFileMb: Int = 120,
     val archiveStreamBufferMb: Int = 160,
-    val hybridGeckoBlinkBeta: Boolean = false,
+    val hybridGeckoBlinkBeta: Boolean = true,
     val hybridAutoForGames: Boolean = true
 ) {
     val performanceProfile: PerformanceProfile
@@ -414,7 +414,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             archiveMaxTotalMb = (p[Keys.ARCHIVE_MAX_TOTAL_MB] ?: 600).coerceIn(100, 2000),
             archiveMaxFileMb = (p[Keys.ARCHIVE_MAX_FILE_MB] ?: 120).coerceIn(20, 500),
             archiveStreamBufferMb = (p[Keys.ARCHIVE_STREAM_BUF_MB] ?: 160).coerceIn(32, 512),
-            hybridGeckoBlinkBeta = p[Keys.HYBRID_GECKO_BLINK_BETA] ?: false,
+            hybridGeckoBlinkBeta = p[Keys.HYBRID_GECKO_BLINK_BETA] ?: true,
             hybridAutoForGames = p[Keys.HYBRID_AUTO_FOR_GAMES] ?: true
         )
     }.distinctUntilChanged()

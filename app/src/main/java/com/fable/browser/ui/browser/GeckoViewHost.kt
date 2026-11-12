@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -113,6 +114,8 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
         importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
         isFocusable = true
         isFocusableInTouchMode = true
+        isSoundEffectsEnabled = false
+        isHapticFeedbackEnabled = false
     }
     var blinkView: WebView? = null
     var customFullScreenView: View? = null
@@ -121,7 +124,33 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
     var lastBlinkUrl: String = ""
 
     init {
+        isSoundEffectsEnabled = false
+        isHapticFeedbackEnabled = false
         addView(geckoView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        if (ev != null) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    val idx = ev.actionIndex
+                    NativeFastEngine.resetTouchPointer(ev.getPointerId(idx))
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                    val idx = ev.actionIndex
+                    NativeFastEngine.resetTouchPointer(ev.getPointerId(idx))
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (ev.pointerCount == 1) {
+                        val pid = ev.getPointerId(0)
+                        if (!NativeFastEngine.filterCameraMove(pid, ev.x, ev.y, ev.eventTime)) {
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
@@ -135,6 +164,8 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
             isFocusable = true
             isFocusableInTouchMode = true
+            isSoundEffectsEnabled = false
+            isHapticFeedbackEnabled = false
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true

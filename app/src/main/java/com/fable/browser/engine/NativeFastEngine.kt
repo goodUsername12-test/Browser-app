@@ -24,6 +24,12 @@ object NativeFastEngine {
     @JvmStatic
     private external fun nativeSetGameBoost(enable: Boolean): Boolean
 
+    @JvmStatic
+    private external fun nativeResetTouchPointer(pointerId: Int)
+
+    @JvmStatic
+    private external fun nativeFilterCameraMove(pointerId: Int, x: Float, y: Float, timeMs: Long): Boolean
+
     fun decodeBase64(data: String): ByteArray {
         if (data.isEmpty()) return ByteArray(0)
         if (isNativeAvailable) {
@@ -70,5 +76,18 @@ object NativeFastEngine {
         if (isNativeAvailable) {
             runCatching { nativeSetGameBoost(enable) }
         }
+    }
+
+    fun resetTouchPointer(pointerId: Int) {
+        if (isNativeAvailable) {
+            runCatching { nativeResetTouchPointer(pointerId) }
+        }
+    }
+
+    fun filterCameraMove(pointerId: Int, x: Float, y: Float, timeMs: Long): Boolean {
+        if (isNativeAvailable) {
+            runCatching { return nativeFilterCameraMove(pointerId, x, y, timeMs) }
+        }
+        return true
     }
 }

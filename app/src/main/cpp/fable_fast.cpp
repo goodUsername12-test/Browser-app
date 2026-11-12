@@ -192,6 +192,51 @@ bool set_game_thread_boost(bool enable) noexcept {
 #endif
 }
 
+
+struct TouchSlot {
+    float last_x = 0.0f;
+    float last_y = 0.0f;
+    int64_t last_ms = 0;
+    bool active = false;
+};
+
+alignas(64) static TouchSlot gTouchSlots[16];
+
+void reset_touch_pointer(int pointer_id) noexcept {
+    const int idx = pointer_id & 15;
+    gTouchSlots[idx].active = false;
+    gTouchSlots[idx].last_ms = 0;
+}
+
+bool filter_camera_move(int pointer_id, float x, float y, int64_t time_ms) noexcept {
+    const int idx = pointer_id & 15;
+    TouchSlot& s = gTouchSlots[idx];
+    if (!s.active) {
+        s.active = true;
+        s.last_x = x;
+        s.last_y = y;
+        s.last_ms = time_ms;
+        return true;
+    }
+    const float dx = x - s.last_x;
+    const float dy = y - s.last_y;
+    const float abs_dx = dx < 0.0f ? -dx : dx;
+    const float abs_dy = dy < 0.0f ? -dy : dy;
+    // Drop sub-pixel micro-jitter (< 0.22 px) that causes wasted 3D raycasts
+    if (abs_dx < 0.22f && abs_dy < 0.22f) {
+        return false;
+    }
+    // Coalesce sub-frame bursts (< 6 ms apart) unless movement delta is large
+    const int64_t dt = time_ms - s.last_ms;
+    if (dt >= 0 && dt < 6 && abs_dx < 6.0f && abs_dy < 6.0f) {
+        return false;
+    }
+    s.last_x = x;
+    s.last_y = y;
+    s.last_ms = time_ms;
+    return true;
+}
+
 } // namespace fable_fast
 
 #if FABLE_HAS_JNI
@@ -307,6 +352,33 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeSetGameBoost(
     jboolean enable
 ) {
     return fable_fast::set_game_thread_boost(enable == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+}
+
+
+JNIEXPORT void JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeResetTouchPointer(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jint pointerId
+) {
+    fable_fast::reset_touch_pointer(static_cast<int>(pointerId));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeFilterCameraMove(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jint pointerId,
+    jfloat x,
+    jfloat y,
+    jlong timeMs
+) {
+    return fable_fast::filter_camera_move(
+        static_cast<int>(pointerId),
+        static_cast<float>(x),
+        static_cast<float>(y),
+        static_cast<int64_t>(timeMs)
+    ) ? JNI_TRUE : JNI_FALSE;
 }
 
 } // extern "C"

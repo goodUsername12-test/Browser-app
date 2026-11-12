@@ -27,8 +27,8 @@ android {
         applicationId = "com.fable.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 23
-        versionName = "1.27.0"
+        versionCode = 24
+        versionName = "1.28.0"
 
         externalNativeBuild {
             cmake {

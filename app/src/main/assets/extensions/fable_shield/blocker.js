@@ -724,9 +724,16 @@ function onBeforeRequest(details) {
     captureStreamIfEnabled(details);
     return {};
   }
-  if (details.type === "main_frame") {
+  if (details.type === "main_frame" || details.type === "websocket") {
     captureStreamIfEnabled(details);
     return {};
+  }
+  if (details.method && details.method !== "GET" && details.method !== "HEAD") {
+    const docUrl = details.documentUrl || details.originUrl;
+    if (docUrl && isSameSite(hostOf(details.url), hostOf(docUrl))) {
+      captureStreamIfEnabled(details);
+      return {};
+    }
   }
   if (allowSites.size > 0) {
     const top = details.frameAncestors && details.frameAncestors.length

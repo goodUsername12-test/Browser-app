@@ -26,29 +26,40 @@
       h = screen.height || h;
     } catch (_) {
     }
-    return Math.max(90, Math.min(w, h) * 0.22);
+    return Math.max(120, Math.min(w, h) * 0.35);
   }
 
-  const speed = new Map();
+  function isUiControlElement(el) {
+    if (!el || typeof el.closest !== "function") return false;
+    try {
+      return !!el.closest(
+        ".JoystickZone, .Joystick, .TouchMovementWrapper, .TouchComponentsButtons, [data-camera-keeper], button, input, select, textarea, a"
+      );
+    } catch (_) {
+      return false;
+    }
+  }
 
-  function clampMove(dx, dy, id) {
+  function isGameLookElement(el) {
+    if (!el) return false;
+    try {
+      if (isUiControlElement(el)) return false;
+      if (el.tagName === "CANVAS" || el.id === "noa-container") return true;
+      if (typeof el.closest === "function" && el.closest("#noa-container")) return true;
+      return marked.has(el);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function clampMove(dx, dy) {
     if (!isFinite(dx) || !isFinite(dy)) return [0, 0];
     const max = limit();
     if (Math.abs(dx) > max || Math.abs(dy) > max) return [0, 0];
-    const mag = Math.abs(dx) + Math.abs(dy);
-    if (id !== undefined) {
-      const avg = speed.get(id);
-      if (avg !== undefined && mag > 64 && mag > avg * 8 + 40) {
-        speed.set(id, avg * 0.8 + 24 * 0.2);
-        return [0, 0];
-      }
-      speed.set(id, avg === undefined ? Math.min(mag, 24) : avg * 0.8 + mag * 0.2);
-    }
     return [dx, dy];
   }
 
   const lastDelta = new Map();
-
   const ZERO_MOVE = [0, 0];
 
   function remember(e, m, x, y) {
@@ -78,6 +89,8 @@
     return null;
   }
 
+  const uiPointerIds = new Set();
+
   function trackPointer(e) {
     try {
       if (e.pointerType === "mouse") {
@@ -88,24 +101,35 @@
       const id = e.pointerId;
       const x = e.screenX;
       const y = e.screenY;
-      if (e.type === "pointermove") {
-        const p = last.get(id);
-        before.set(e, p || [x, y]);
-        const m = p ? clampMove(x - p[0], y - p[1], id) : [0, 0];
-        remember(e, m, x, y);
+      if (e.type === "pointerdown") {
+        if (isUiControlElement(e.target)) {
+          uiPointerIds.add(id);
+          remember(e, ZERO_MOVE, x, y);
+          lastTouchAt = now();
+          return;
+        }
+        uiPointerIds.delete(id);
         last.set(id, [x, y]);
-        lastDelta.set(id, [m[0], m[1], x, y, false]);
-        lastTouchAt = now();
-      } else if (e.type === "pointerdown") {
-        last.set(id, [x, y]);
-        speed.delete(id);
         lastDelta.delete(id);
         remember(e, ZERO_MOVE, x, y);
         activeTouches = last.size;
         lastTouchAt = now();
+      } else if (e.type === "pointermove") {
+        if (uiPointerIds.has(id)) {
+          remember(e, ZERO_MOVE, x, y);
+          lastTouchAt = now();
+          return;
+        }
+        const p = last.get(id);
+        before.set(e, p || [x, y]);
+        const m = p ? clampMove(x - p[0], y - p[1]) : ZERO_MOVE;
+        remember(e, m, x, y);
+        last.set(id, [x, y]);
+        lastDelta.set(id, [m[0], m[1], x, y, false]);
+        lastTouchAt = now();
       } else {
+        uiPointerIds.delete(id);
         last.delete(id);
-        speed.delete(id);
         lastDelta.delete(id);
         remember(e, ZERO_MOVE, x, y);
         activeTouches = last.size;
@@ -117,7 +141,7 @@
 
   function touchDerived() {
     if (now() - lastRealMouseAt < 400) return false;
-    return activeTouches > 0 || now() - lastTouchAt < 1200;
+    return activeTouches > 0 || uiPointerIds.size > 0 || now() - lastTouchAt < 1200;
   }
 
   function trackMouse(e) {
@@ -128,6 +152,10 @@
       }
       const x = e.screenX;
       const y = e.screenY;
+      if (isUiControlElement(e.target)) {
+        remember(e, ZERO_MOVE, x, y);
+        return;
+      }
       if (e.type === "mousemove") {
         let match = null;
         for (const d of lastDelta.values()) {
@@ -137,10 +165,10 @@
           }
         }
         if (match) {
-          remember(e, match[4] ? [0, 0] : [match[0], match[1]], x, y);
+          remember(e, match[4] ? ZERO_MOVE : [match[0], match[1]], x, y);
           match[4] = true;
-        } else if (lastDelta.size === 0 && mouseLast) {
-          remember(e, clampMove(x - mouseLast[0], y - mouseLast[1], "mouse"), x, y);
+        } else if (lastDelta.size === 0 && uiPointerIds.size === 0 && mouseLast) {
+          remember(e, clampMove(x - mouseLast[0], y - mouseLast[1]), x, y);
         } else {
           remember(e, ZERO_MOVE, x, y);
         }
@@ -253,12 +281,142 @@
           });
         }
       }
+
+      if (pageWin.TouchEvent && window.TouchEvent) {
+        const tProto = pageWin.TouchEvent.prototype;
+        const xTProto = window.TouchEvent.prototype;
+        const xTouchesDesc = Object.getOwnPropertyDescriptor(xTProto, "touches");
+        const xChangedDesc = Object.getOwnPropertyDescriptor(xTProto, "changedTouches");
+        const xTargetDesc = Object.getOwnPropertyDescriptor(xTProto, "targetTouches");
+        const xTouchesGet = xTouchesDesc && xTouchesDesc.get;
+        const xChangedGet = xChangedDesc && xChangedDesc.get;
+        const xTargetGet = xTargetDesc && xTargetDesc.get;
+
+        if (xTouchesGet && xChangedGet && xTargetGet) {
+          const filterTouchList = (rawList, fallbackList) => {
+            const len = rawList ? rawList.length : 0;
+            if (len <= 1) return null;
+            let hasUi = false;
+            const kept = [];
+            for (let i = 0; i < len; i++) {
+              const t = rawList[i];
+              if (t && isUiControlElement(t.target)) {
+                hasUi = true;
+              } else if (t) {
+                kept.push(t);
+              }
+            }
+            if (!hasUi) return null;
+            if (kept.length === 0 && fallbackList && fallbackList.length > 0) {
+              for (let i = 0; i < fallbackList.length; i++) {
+                const ft = fallbackList[i];
+                if (ft && !isUiControlElement(ft.target)) kept.push(ft);
+              }
+            }
+            if (kept.length === 0) return null;
+            const out = new pageWin.Array();
+            for (let i = 0; i < kept.length; i++) {
+              out.push(kept[i].wrappedJSObject || kept[i]);
+            }
+            out.item = exportFunction(function (idx) {
+              return out[idx] || null;
+            }, window);
+            return out;
+          };
+
+          Object.defineProperty(tProto, "touches", {
+            get: exportFunction(function () {
+              const raw = xTouchesGet.call(this);
+              try {
+                if (enabled && isGameLookElement(this.target)) {
+                  const filtered = filterTouchList(raw, null);
+                  if (filtered) return filtered;
+                }
+              } catch (_) {
+              }
+              return (this.wrappedJSObject ? raw : raw);
+            }, window),
+            configurable: true,
+            enumerable: true,
+          });
+
+          Object.defineProperty(tProto, "changedTouches", {
+            get: exportFunction(function () {
+              const raw = xChangedGet.call(this);
+              try {
+                if (enabled && isGameLookElement(this.target)) {
+                  const allTouches = xTouchesGet.call(this);
+                  if (allTouches && allTouches.length > 1) {
+                    let hasUi = false;
+                    const kept = [];
+                    for (let i = 0; i < raw.length; i++) {
+                      const t = raw[i];
+                      if (t && isUiControlElement(t.target)) {
+                        hasUi = true;
+                      } else if (t) {
+                        kept.push(t);
+                      }
+                    }
+                    if (!hasUi) {
+                      for (let i = 0; i < allTouches.length; i++) {
+                        if (allTouches[i] && isUiControlElement(allTouches[i].target)) {
+                          hasUi = true;
+                          break;
+                        }
+                      }
+                    }
+                    if (hasUi) {
+                      if (kept.length === 0 && this.type === "touchmove") {
+                        const tgt = xTargetGet.call(this);
+                        for (let i = 0; i < tgt.length; i++) {
+                          if (tgt[i] && !isUiControlElement(tgt[i].target)) kept.push(tgt[i]);
+                        }
+                      }
+                      if (kept.length > 0) {
+                        const out = new pageWin.Array();
+                        for (let i = 0; i < kept.length; i++) {
+                          out.push(kept[i].wrappedJSObject || kept[i]);
+                        }
+                        out.item = exportFunction(function (idx) {
+                          return out[idx] || null;
+                        }, window);
+                        return out;
+                      }
+                    }
+                  }
+                }
+              } catch (_) {
+              }
+              return raw;
+            }, window),
+            configurable: true,
+            enumerable: true,
+          });
+        }
+      }
     }
   } catch (_) {
   }
 
   const marked = new WeakSet();
   let gameRoot = false;
+  let styleInjected = false;
+
+  function injectGamePerfCss() {
+    if (styleInjected) return;
+    try {
+      const parent = document.head || document.documentElement;
+      if (!parent) return;
+      const st = document.createElement("style");
+      st.setAttribute("data-fable-game-perf", "1");
+      st.textContent =
+        "#noa-container,.JoystickZone,.TouchMovementWrapper,.TouchComponentsButtons{contain:layout style!important;touch-action:none!important;-webkit-user-select:none!important;user-select:none!important}" +
+        ".Joystick,.JoystickKnob{will-change:transform!important;backface-visibility:hidden!important}";
+      parent.appendChild(st);
+      styleInjected = true;
+    } catch (_) {
+    }
+  }
 
   function lockRoot() {
     if (gameRoot) return;
@@ -275,6 +433,7 @@
         el.style.setProperty("user-select", "none", "important");
         el.style.setProperty("-webkit-touch-callout", "none", "important");
       }
+      injectGamePerfCss();
       gameRoot = true;
     } catch (_) {
     }
@@ -320,7 +479,7 @@
     (e) => {
       try {
         if (!enabled) return;
-        if (activeTouches > 0 || now() - lastTouchAt < 800) {
+        if (activeTouches > 0 || uiPointerIds.size > 0 || now() - lastTouchAt < 800) {
           if (inGame(e.target)) e.preventDefault();
         }
       } catch (_) {
@@ -333,7 +492,7 @@
     "selectstart",
     (e) => {
       try {
-        if (enabled && activeTouches > 1 && inGame(e.target)) e.preventDefault();
+        if (enabled && (activeTouches > 1 || uiPointerIds.size > 0) && inGame(e.target)) e.preventDefault();
       } catch (_) {
       }
     },

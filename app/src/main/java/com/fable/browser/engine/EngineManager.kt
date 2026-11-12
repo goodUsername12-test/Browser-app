@@ -239,14 +239,17 @@ class EngineManager @Inject constructor(
             "dom.min_background_timeout_value" to if (optimizing(d)) 10_000 else 1_000,
             "dom.timeout.background_throttling_max_budget" to if (optimizing(d)) 20 else 50,
             "browser.sessionhistory.max_entries" to if (optimizing(d)) 25 else 50,
-            "image.mem.decode_bytes_at_a_time" to if (d.gameMode || d.superGameMode) 131_072 else 65_536,
+            "image.mem.decode_bytes_at_a_time" to if (d.gameMode || d.superGameMode) 262_144 else 65_536,
             "browser.cache.disk.max_entry_size" to 51_200,
-            "network.buffer.cache.size" to 65_536,
-            "network.buffer.cache.count" to 48,
+            "network.buffer.cache.size" to 262_144,
+            "network.buffer.cache.count" to 128,
+            "network.http.send_window_size" to 1_048_576,
+            "network.websocket.max-connections" to 200,
+            "dom.workers.maxPerDomain" to 64,
             "dom.ipc.processCount.webIsolated" to if (optimizing(d)) 2 else 4,
             "layout.frame_rate" to 0,
             "webgl.max-contexts-per-principal" to 32,
-            "javascript.options.mem.gc_incremental_slice_ms" to if (d.gameMode || d.superGameMode) 5 else 10
+            "javascript.options.mem.gc_incremental_slice_ms" to if (d.gameMode || d.superGameMode) 4 else 10
         )
     }
 
@@ -259,28 +262,29 @@ class EngineManager @Inject constructor(
     }
 
     private fun fingerprintOverrides(d: Settings): String {
+        val activeFp = d.normalTabShield && !d.gameMode && !d.superGameMode
         val targets = listOf(
-            (d.fpCanvas && !d.gameMode && !d.superGameMode) to listOf("CanvasRandomization"),
-            d.fpCanvasThirdParty to listOf("CanvasExtractionFromThirdPartiesIsBlocked"),
-            d.fpFonts to listOf("FontVisibilityBaseSystem", "FontVisibilityLangPack"),
-            d.hideGpuModel to listOf("WebGLRenderInfo"),
-            (d.fpWebGlLimits && !d.superGameMode) to listOf("WebGLRenderCapability"),
-            d.fpUserAgent to listOf(
+            (activeFp && d.fpCanvas) to listOf("CanvasRandomization"),
+            (activeFp && d.fpCanvasThirdParty) to listOf("CanvasExtractionFromThirdPartiesIsBlocked"),
+            (activeFp && d.fpFonts) to listOf("FontVisibilityBaseSystem", "FontVisibilityLangPack"),
+            (activeFp && d.hideGpuModel) to listOf("WebGLRenderInfo"),
+            (activeFp && d.fpWebGlLimits) to listOf("WebGLRenderCapability"),
+            (activeFp && d.fpUserAgent) to listOf(
                 "NavigatorUserAgent", "HttpUserAgent", "NavigatorAppVersion",
                 "NavigatorOscpu", "NavigatorPlatform", "NavigatorBuildID"
             ),
-            d.fpHardware to listOf("NavigatorHWConcurrencyTiered", "MaxTouchPointsCollapse"),
-            d.fpScreen to listOf(
+            (activeFp && d.fpHardware) to listOf("NavigatorHWConcurrencyTiered", "MaxTouchPointsCollapse"),
+            (activeFp && d.fpScreen) to listOf(
                 "ScreenRect", "ScreenAvailRect", "WindowOuterSize", "WindowScreenXY",
                 "ScreenPixelDepth", "CSSDeviceSize"
             ),
-            d.fpAudio to listOf("AudioContext", "AudioSampleRate"),
-            d.fpMedia to listOf("MediaDevices", "MediaCapabilities", "SpeechSynthesis", "NetworkConnection"),
-            d.fpSensors to listOf("DeviceSensors"),
-            d.fpTimezone to listOf("JSDateTimeUTC"),
-            d.fpLanguage to listOf("JSLocale"),
-            (d.fpTimers && !d.gameMode && !d.superGameMode) to listOf("ReduceTimerPrecision", "FrameRate"),
-            d.fpTouch to listOf("TouchEvents", "PointerEvents", "MaxTouchPoints", "CSSPointerCapabilities"),
+            (activeFp && d.fpAudio) to listOf("AudioContext", "AudioSampleRate"),
+            (activeFp && d.fpMedia) to listOf("MediaDevices", "MediaCapabilities", "SpeechSynthesis", "NetworkConnection"),
+            (activeFp && d.fpSensors) to listOf("DeviceSensors"),
+            (activeFp && d.fpTimezone) to listOf("JSDateTimeUTC"),
+            (activeFp && d.fpLanguage) to listOf("JSLocale"),
+            (activeFp && d.fpTimers) to listOf("ReduceTimerPrecision", "FrameRate"),
+            (activeFp && d.fpTouch) to listOf("TouchEvents", "PointerEvents", "MaxTouchPoints", "CSSPointerCapabilities"),
             false to listOf("WindowDevicePixelRatio")
         )
         return targets.flatMap { (on, names) -> names.map { (if (on) "+" else "-") + it } }

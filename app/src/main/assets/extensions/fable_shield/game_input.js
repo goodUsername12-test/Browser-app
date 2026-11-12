@@ -13,6 +13,12 @@
   let lastTouchAt = 0;
   let lastRealMouseAt = 0;
   let mouseLast = null;
+  const marked = new WeakSet();
+  let canvasDims = new WeakMap();
+  let canvasRects = new WeakMap();
+  const lastCamTouch = new Map();
+  let lastCamDispatchAt = 0;
+  let gameRoot = false;
 
   function now() {
     return typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
@@ -471,12 +477,7 @@
   } catch (_) {
   }
 
-  const marked = new WeakSet();
-  let canvasDims = new WeakMap(); canvasRects = new WeakMap();
-  let canvasRects = new WeakMap();
-  const lastCamTouch = new Map();
-  let lastCamDispatchAt = 0;
-  let gameRoot = false;
+
 
   window.addEventListener(
     "touchstart",

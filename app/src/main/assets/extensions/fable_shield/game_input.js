@@ -444,27 +444,7 @@
         }
       }
 
-      if (typeof pageWin.setTimeout === "function" && typeof window.setTimeout === "function") {
-        const origSetTimeout = window.setTimeout.bind(window);
-        pageWin.setTimeout = exportFunction(function (fn, delay, a, b) {
-          try {
-            if (
-              enabled &&
-              arguments.length === 4 &&
-              delay === 0 &&
-              b === true &&
-              a &&
-              typeof a === "object" &&
-              typeof a.lpF === "function" &&
-              typeof a.fY === "function"
-            ) {
-              return 0;
-            }
-          } catch (_) {
-          }
-          return origSetTimeout.apply(window, arguments);
-        }, window);
-      }
+
     }
   } catch (_) {
   }

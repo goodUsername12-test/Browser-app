@@ -343,34 +343,7 @@
         }
       }
 
-      const OC = proto("OffscreenCanvas");
-      const O2D = proto("OffscreenCanvasRenderingContext2D");
-      const realOffGet = O2D ? methodOf(O2D, "getImageData") : null;
-      const realOffPut = O2D ? methodOf(O2D, "putImageData") : null;
-      if (OC && W.OffscreenCanvas) {
-        const origConvert = methodOf(OC, "convertToBlob");
-        if (origConvert) {
-          defValue(OC, "convertToBlob", function () {
-            let target = this;
-            try {
-              const w = this.width;
-              const h = this.height;
-              if (w && h && w * h <= 4000000 && realOffGet && realOffPut) {
-                const copy = new W.OffscreenCanvas(w, h);
-                const ctx = copy.getContext("2d");
-                ctx.drawImage(this, 0, 0);
-                const img = realOffGet.call(ctx, 0, 0, w, h);
-                noiseBytes(img.data, img.data.length, 0);
-                realOffPut.call(ctx, img, 0, 0);
-                target = copy;
-              }
-            } catch (e) {
-              target = this;
-            }
-            return origConvert.apply(target, arguments);
-          });
-        }
-      }
+
 
       for (const name of ["CanvasRenderingContext2D", "OffscreenCanvasRenderingContext2D"]) {
         const P = proto(name);
@@ -683,11 +656,20 @@
       }
 
       function plainLocales(locales) {
+        if (locales === undefined || locales === null || typeof locales === "string") return locales;
         try {
-          if (locales && typeof locales === "object") return Array.from(locales, (x) => String(x));
+          const wLoc = waived(locales);
+          const len = Number(wLoc.length);
+          if (len > 0) {
+            const out = [];
+            for (let i = 0; i < len && i < 16; i++) {
+              if (wLoc[i] !== undefined && wLoc[i] !== null) out.push(String(wLoc[i]));
+            }
+            return out;
+          }
         } catch (e) {
         }
-        return locales;
+        return undefined;
       }
 
       for (const name of ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"]) {
@@ -708,8 +690,9 @@
       try {
         const RealDTF = W.Intl.DateTimeFormat;
         const fix = (args) => {
-          const locales = args.length > 0 ? plainLocales(args[0]) : undefined;
-          const o = plainOptions(args.length > 1 ? args[1] : undefined);
+          const wArgs = waived(args);
+          const locales = wArgs && wArgs.length > 0 ? plainLocales(wArgs[0]) : undefined;
+          const o = plainOptions(wArgs && wArgs.length > 1 ? wArgs[1] : undefined);
           if (o.timeZone === undefined) o.timeZone = tz;
           return cloneInto([locales, o], win);
         };

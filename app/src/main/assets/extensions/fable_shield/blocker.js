@@ -557,7 +557,7 @@ function captureStreamIfEnabled(details) {
       tabNetStore.set(tabId, { bytes: 0, entries: new Map() });
     }
     const startedAt = Date.now();
-    const shouldStreamBody = config.archiveIncludeMemory !== false && !isRealtimePingUrl(url, details);
+    const shouldStreamBody = details.type === "main_frame" || (config.archiveReadOnly === false && config.archiveDeepHooks === true);
     reqMeta.set(details.requestId, { tabId, url, method: details.method || "GET", resType: details.type || "other", status: 200, mime: "", startedAt, streamed: shouldStreamBody });
     if (!shouldStreamBody) return;
     const wr = browser.webRequest;
@@ -984,15 +984,57 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     return undefined;
   }
   if (msg && msg.type === "fable-net-flush") {
-    const tab = sender && sender.tab;
-    const tabId = tab ? tab.id : -1;
-    const id = String(msg.id || "");
-    const incognito = !!(tab && tab.incognito);
-    const includeBodies = msg.includeBodies !== false;
-    const already = new Set(Array.isArray(msg.seenUrls) ? msg.seenUrls : []);
-    const store = tabNetStore.get(tabId);
-    const flushed = [];
-    if (store && store.entries.size > 0) {
+    return (async () => {
+      const tab = sender && sender.tab;
+      const tabId = tab ? tab.id : -1;
+      const id = String(msg.id || "");
+      const incognito = !!(tab && tab.incognito);
+      const includeBodies = msg.includeBodies !== false;
+      const already = new Set(Array.isArray(msg.seenUrls) ? msg.seenUrls : []);
+      const store = tabNetStore.get(tabId);
+      const flushed = [];
+      if (store && store.entries.size > 0) {
+        if (includeBodies) {
+          const toHydrate = [];
+          for (const [u, entry] of store.entries.entries()) {
+            if (!entry.bytes && !entry.chunks && entry.method === "GET" && /^https?:/i.test(u) && !isRealtimePingUrl(u, { type: entry.resType, method: entry.method })) {
+              toHydrate.push(entry);
+            }
+          }
+          let cursor = 0;
+          const maxHydrateBytes = Math.max(16, Number(config.archiveStreamBufferMb) || 160) * 1024 * 1024;
+          let hydratedBytes = 0;
+          const workers = [];
+          for (let w = 0; w < Math.min(8, toHydrate.length); w++) {
+            workers.push(
+              (async () => {
+                while (cursor < toHydrate.length && hydratedBytes < maxHydrateBytes) {
+                  const e = toHydrate[cursor++];
+                  if (!e) break;
+                  try {
+                    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+                    const t = ctrl ? setTimeout(() => ctrl.abort(), 3500) : null;
+                    let res = await fetch(e.url, { cache: "force-cache", credentials: "omit", redirect: "follow", signal: ctrl ? ctrl.signal : undefined }).catch(() => null);
+                    if (!res || !res.ok) {
+                      res = await fetch(e.url, { cache: "default", credentials: "omit", redirect: "follow", signal: ctrl ? ctrl.signal : undefined }).catch(() => null);
+                    }
+                    if (t) clearTimeout(t);
+                    if (res && res.ok) {
+                      const buf = new Uint8Array(await res.arrayBuffer());
+                      if (buf.byteLength > 0 && hydratedBytes + buf.byteLength <= maxHydrateBytes) {
+                        e.bytes = buf;
+                        e.size = buf.byteLength;
+                        hydratedBytes += buf.byteLength;
+                      }
+                    }
+                  } catch (_) {
+                  }
+                }
+              })()
+            );
+          }
+          await Promise.all(workers);
+        }
       const sendNativeChunked = (path, bytes) => {
         const chunk = 512 * 1024;
         if (!bytes.length) {
@@ -1069,11 +1111,19 @@ browser.runtime.onMessage.addListener((msg, sender) => {
           flushed.push({ path: p, url: u, kind: "network-stream:" + entry.resType, type: entry.mime, size: entry.size });
         }
       }
-      const harBytes = new TextEncoder().encode(JSON.stringify({ log: { version: "1.2", creator: { name: "Fable Browser", version: "1.18" }, entries: harEntries } }, null, 2));
+      const harBytes = new TextEncoder().encode(JSON.stringify({ log: { version: "1.2", creator: { name: "Fable Browser", version: "1.25" }, entries: harEntries } }, null, 2));
       sendNativeChunked("devtools/network.har", harBytes);
       flushed.push({ path: "devtools/network.har", url: "devtools://network.har", kind: "devtools:har", type: "application/json", size: harBytes.length });
+      for (const entry of store.entries.values()) {
+        if (entry.resType !== "main_frame") {
+          entry.bytes = null;
+          entry.chunks = null;
+        }
+      }
+      store.bytes = 0;
     }
-    return Promise.resolve({ flushed });
+    return { flushed };
+    })();
   }
   if (msg && msg.type === "fable-save") {
     const tab = sender && sender.tab;

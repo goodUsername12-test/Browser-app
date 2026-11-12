@@ -508,7 +508,7 @@ object SuperIdentityFactory {
             pdfViewer = desktop,
             canvasNoise = 1 + rnd.nextInt(3),
             audioNoise = 1 + rnd.nextInt(3),
-            rectNoise = chance(70),
+            rectNoise = false,
             voiceShare = 40 + rnd.nextInt(61),
             seed = (rnd.nextInt(Int.MAX_VALUE - 1) + 1).toLong()
         )

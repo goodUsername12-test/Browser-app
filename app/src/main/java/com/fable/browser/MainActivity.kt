@@ -151,8 +151,9 @@ class MainActivity : FragmentActivity() {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             setCutoutMode(fullScreen = true)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                runCatching { window.setSustainedPerformanceMode(true) }
+                runCatching { window.setSustainedPerformanceMode(false) }
             }
+            com.fable.browser.engine.NativeFastEngine.setGameBoost(true)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 runCatching {
                     val a = window.attributes
@@ -164,6 +165,7 @@ class MainActivity : FragmentActivity() {
             setCutoutMode(fullScreen = false)
             controller.show(WindowInsetsCompat.Type.systemBars())
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            com.fable.browser.engine.NativeFastEngine.setGameBoost(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 runCatching { window.setSustainedPerformanceMode(false) }
             }

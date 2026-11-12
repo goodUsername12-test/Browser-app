@@ -40,13 +40,47 @@
     else watch();
   }
 
-  try {
-    browser.runtime
-      .sendMessage({ type: "fable-cosmetic", host, top: window === window.top })
-      .then((res) => {
-        if (res && typeof res.css === "string") attach(res.css);
-      })
-      .catch(() => {});
-  } catch (e) {
+  function optimizeFonts() {
+    try {
+      const sheets = document.styleSheets;
+      if (!sheets) return;
+      for (let i = 0; i < sheets.length; i++) {
+        let rules;
+        try {
+          rules = sheets[i].cssRules;
+        } catch (_) {
+          continue;
+        }
+        if (!rules) continue;
+        for (let j = 0; j < rules.length; j++) {
+          const r = rules[j];
+          if (r && r.type === 5 && r.style && !r.style.fontDisplay) {
+            try {
+              r.style.fontDisplay = "swap";
+            } catch (_) {
+            }
+          }
+        }
+      }
+    } catch (_) {
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", optimizeFonts, { once: true, passive: true });
+  } else {
+    optimizeFonts();
+  }
+
+  if (window === window.top) {
+    try {
+      browser.runtime
+        .sendMessage({ type: "fable-cosmetic", host, top: true })
+        .then((res) => {
+          if (res && typeof res.css === "string") attach(res.css);
+        })
+        .catch(() => {});
+    } catch (e) {
+    }
   }
 })();

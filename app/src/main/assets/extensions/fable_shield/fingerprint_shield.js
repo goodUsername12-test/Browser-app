@@ -41,9 +41,14 @@
 
   let HOST = "";
   try {
-    HOST = location.hostname || location.protocol || "local";
+    HOST = (location.hostname || location.protocol || "local").toLowerCase();
   } catch (e) {
   }
+
+  const IS_CHALLENGE_HOST =
+    /(?:^|\.)(challenges\.cloudflare\.com|recaptcha\.net|hcaptcha\.com|arkoselabs\.com|funcaptcha\.com)$/i.test(HOST) ||
+    (HOST.endsWith(".google.com") && /^\/recaptcha\//i.test(location.pathname || "")) ||
+    (HOST.endsWith(".gstatic.com") && /^\/recaptcha\//i.test(location.pathname || ""));
 
   const BASE_SEED = SUPER ? Number(SUPER.seed) >>> 0 : Number(CFG.sessionSeed || 1) >>> 0;
   const SEED = hash32(HOST, BASE_SEED) || 1;
@@ -808,7 +813,7 @@
         try {
           if (el.firstElementChild) return 0;
           const st = el.style;
-          if (!st) return 0;
+          if (!st || (st.position !== "absolute" && st.position !== "fixed")) return 0;
           const fam = st.fontFamily;
           if (!fam) return 0;
           const first = firstFamily(fam);
@@ -984,48 +989,46 @@
           constant(SP, "pixelDepth", S.colorDepth);
           constant(W, "devicePixelRatio", S.pixelRatio);
         }
-        if (hiding("canvas")) shieldCanvas();
+        if (!IS_CHALLENGE_HOST && hiding("canvas")) shieldCanvas();
         if (hiding("graphics")) {
           const named = hiding("webglName");
           shieldWebGl(
             named ? S.glVendor : null,
             named ? S.glRenderer : null,
             hiding("webglLimits") ? S.glLimits || null : null,
-            hiding("webglNoise")
+            !IS_CHALLENGE_HOST && hiding("webglNoise")
           );
         }
-        if (hiding("audio")) shieldAudio();
-        if (hiding("fonts")) shieldFonts();
-        if (hiding("rects") && S.rectNoise) shieldRects();
+        if (!IS_CHALLENGE_HOST && hiding("audio")) shieldAudio();
+        if (!IS_CHALLENGE_HOST && hiding("fonts")) shieldFonts();
+        if (!IS_CHALLENGE_HOST && hiding("rects") && S.rectNoise) shieldRects();
         if (hiding("voices")) shieldVoices(Number(S.voiceShare) || 100);
         if (hiding("webrtc")) shieldWebRtc();
-        if (TIME_ZONE) shieldTimeZone(TIME_ZONE);
+        if (!IS_CHALLENGE_HOST && TIME_ZONE) shieldTimeZone(TIME_ZONE);
       } else {
-        const bucket = (v) => Math.max(100, Math.round(v / 100) * 100);
-        let iw = 1280;
-        let ih = 720;
-        try {
-          iw = win.innerWidth || 1280;
-          ih = win.innerHeight || 720;
-        } catch (e) {
-        }
+        const gpuPool = [
+          ["Qualcomm", "Adreno (TM) 740"],
+          ["ARM", "Mali-G715"],
+          ["ARM", "Mali-G68"],
+          ["Qualcomm", "Adreno (TM) 730"],
+        ];
+        const gpuPick = gpuPool[SEED % gpuPool.length];
         const frozen = W.Object.freeze(pageArray(["en-US", "en"]));
-        constant(SP, "width", bucket(iw));
-        constant(SP, "height", bucket(ih));
-        constant(SP, "availWidth", bucket(iw));
-        constant(SP, "availHeight", bucket(ih));
         constant(SP, "colorDepth", 24);
         constant(SP, "pixelDepth", 24);
-        constant(NP, "hardwareConcurrency", [4, 6, 8, 12][SEED % 4]);
+        constant(NP, "hardwareConcurrency", [6, 8, 8, 12][SEED % 4]);
         constant(NP, "maxTouchPoints", 5);
+        constant(NP, "webdriver", false);
         if (CFG.dnt !== false) constant(NP, "doNotTrack", "1");
         constant(NP, "language", "en-US");
         defGet(NP, "languages", () => frozen);
-        shieldCanvas();
-        shieldWebGl("Mozilla", "Mozilla", null, true);
-        shieldAudio();
+        if (!IS_CHALLENGE_HOST) {
+          shieldCanvas();
+          shieldAudio();
+          if (TIME_ZONE) shieldTimeZone(TIME_ZONE);
+        }
+        shieldWebGl(gpuPick[0], gpuPick[1], null, !IS_CHALLENGE_HOST);
         shieldWebRtc();
-        if (TIME_ZONE) shieldTimeZone(TIME_ZONE);
       }
       shieldFrames();
     } catch (e) {

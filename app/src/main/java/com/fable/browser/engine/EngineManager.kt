@@ -57,7 +57,14 @@ class EngineManager @Inject constructor(
         if (!warmedUp.compareAndSet(false, true)) return
         mainHandler.post {
             runtime
-            scope.launch { applySettings(settingsStore.settings.first()) }
+            scope.launch {
+                val initial = settingsStore.settings.first()
+                applySettings(initial)
+                if (!quietNetwork(initial) && initial.fastConnections) {
+                    speculativeConnect("https://fonts.gstatic.com")
+                    speculativeConnect("https://fonts.googleapis.com")
+                }
+            }
             observeSettings()
         }
     }
@@ -227,8 +234,11 @@ class EngineManager @Inject constructor(
         val d = s ?: Settings()
         val policy = MemoryPolicy.resolve(context, d)
         return listOf(
-            "network.http.speculative-parallel-limit" to if (quietNetwork(d)) 0 else 6,
-            "network.http.max-persistent-connections-per-server" to if (d.fastConnections) 10 else 6,
+            "network.http.speculative-parallel-limit" to if (quietNetwork(d)) 0 else 12,
+            "network.http.max-persistent-connections-per-server" to if (d.fastConnections) 16 else 6,
+            "gfx.downloadable_fonts.fallback_delay" to 0,
+            "gfx.downloadable_fonts.fallback_delay_short" to 0,
+            "gfx.display.max-frame-rate" to if (d.highRefreshRate) 120 else 60,
             "network.http.max-urgent-start-excessive-connections-per-host" to if (d.fastConnections) 5 else 3,
             "media.preload.auto" to if (dataSaverOn(d)) 1 else 2,
             "network.http.referer.XOriginTrimmingPolicy" to if (d.strictReferrer) 2 else 0,
@@ -539,10 +549,12 @@ class EngineManager @Inject constructor(
             "media.peerconnection.ice.proxy_only_if_behind_proxy" to true,
             "network.IDN_show_punycode" to true,
             "network.http.pacing.requests.enabled" to false,
-            "network.dnsCacheEntries" to 1000,
+            "network.dnsCacheEntries" to 2048,
             "network.dnsCacheExpiration" to 3600,
-            "network.ssl_tokens_cache_capacity" to 10240,
-            "content.notify.interval" to 100000,
+            "network.ssl_tokens_cache_capacity" to 16384,
+            "content.notify.interval" to 50000,
+            "gfx.downloadable_fonts.enabled" to true,
+            "gfx.font_rendering.opentype_svg.enabled" to true,
             "gfx.canvas.accelerated" to true,
             "dom.gamepad.enabled" to true
         )

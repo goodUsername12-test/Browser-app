@@ -161,7 +161,6 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
         boundTab = tab
         val wv = WebView(context).apply {
             setBackgroundColor(Color.BLACK)
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
             isFocusable = true
             isFocusableInTouchMode = true
             isSoundEffectsEnabled = false

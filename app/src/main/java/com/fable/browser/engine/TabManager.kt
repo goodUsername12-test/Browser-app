@@ -420,6 +420,7 @@ class TabManager @Inject constructor(
     fun toggleHybridBlinkMode() {
         val tab = activeTab ?: return
         val next = !tab.isHybridBlink.value
+        tab.manualHybridOverride = next
         setHybridBlinkMode(tab, next)
     }
 
@@ -648,10 +649,20 @@ class TabManager @Inject constructor(
         val url = UrlUtils.toUrlOrSearch(input, settings.searchEngine)
         tab.updateInterstitial(null)
         wireHybridCallbacks(tab)
-        if (settings.hybridGeckoBlinkBeta) {
-            if (!settings.hybridAutoForGames || HybridEngineBridge.isHeavy3dGameUrl(url)) {
-                tab.updateHybridBlink(true)
+        val manual = tab.manualHybridOverride
+        if (manual != null) {
+            tab.updateHybridBlink(manual)
+        } else if (settings.hybridGeckoBlinkBeta) {
+            val wantHybrid = if (settings.hybridAutoForGames) {
+                HybridEngineBridge.isHeavy3dGameUrl(url)
+            } else {
+                true
             }
+            if (tab.isHybridBlink.value != wantHybrid) {
+                tab.updateHybridBlink(wantHybrid)
+            }
+        } else if (tab.isHybridBlink.value) {
+            tab.updateHybridBlink(false)
         }
         if (tab.isHybridBlink.value) {
             tab.updateUrl(url)

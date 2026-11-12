@@ -89,6 +89,7 @@ class BrowserTab(
 
     private val _isHybridBlink = MutableStateFlow(false)
     val isHybridBlink: StateFlow<Boolean> = _isHybridBlink.asStateFlow()
+    @Volatile var manualHybridOverride: Boolean? = null
 
     @Volatile var hybridController: HybridBlinkController? = null
     @Volatile var hybridBlockChecker: ((String, String?) -> Boolean)? = null

@@ -24,11 +24,12 @@ object HybridEngineBridge {
         "bloxd.io", "staging.bloxd.io", "poki.com", "crazygames.com",
         "krunker.io", "shellshock.io", "1v1.lol", "ev.io", "voxiom.io",
         "venge.io", "kirka.io", "kour.io", "miniblox.io", "vectaria.io",
-        "deadshot.io", "webglsamples.org", "babylonjs.com", "playcanvas.com",
+        "deadshot.io", "babylonjs.com", "playcanvas.com",
         "threejs.org", "itch.io", "coolmathgames.com"
     )
 
     fun isHeavy3dGameUrl(url: String): Boolean {
+        if (url.contains("hybrid=1", ignoreCase = true)) return true
         val host = UrlUtils.host(url)?.removePrefix("www.") ?: return false
         return GAME_HOSTS.any { host == it || host.endsWith(".$it") }
     }

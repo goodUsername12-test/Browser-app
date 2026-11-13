@@ -121,7 +121,7 @@ fun BrowserScreen(
 
     val toggleScreenRecording = {
         if (isScreenRecording) {
-            ScreenRecorderManager.stopRecording { msg -> viewModel.toast(msg) }
+            ScreenRecorderManager.stopRecording { msg -> if (!msg.isNullOrBlank()) viewModel.toast("Saved: $msg") }
         } else {
             val cfg = settings.toRecorderConfig()
             val needMic = cfg.audioSource == RecAudioSource.MIC || cfg.audioSource == RecAudioSource.SYSTEM_AND_MIC
@@ -387,7 +387,7 @@ fun BrowserScreen(
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
                     .padding(top = if (toolbarAtTop && showToolbar) 68.dp else 8.dp, end = 12.dp)
-                    .clickable { ScreenRecorderManager.stopRecording { msg -> viewModel.toast(msg) } }
+                    .clickable { ScreenRecorderManager.stopRecording { msg -> if (!msg.isNullOrBlank()) viewModel.toast("Saved: $msg") } }
             ) {
                 val mm = recElapsedSec / 60
                 val ss = recElapsedSec % 60

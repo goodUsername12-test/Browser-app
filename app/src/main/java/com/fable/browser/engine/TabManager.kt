@@ -482,7 +482,7 @@ class TabManager @Inject constructor(
     fun setHybridBlinkMode(tab: BrowserTab, enabled: Boolean) {
         wireHybridCallbacks(tab)
         if (enabled && tab.retainedBlinkView == null) {
-            tab.lastLoadedBlinkUrl = null
+            tab.lastLoadedBlinkUrl = ""
         }
         tab.updateHybridBlink(enabled)
         if (enabled) {
@@ -730,7 +730,7 @@ class TabManager @Inject constructor(
             tab.updateHybridBlink(false)
         }
         if (tab.isHybridBlink.value) {
-            tab.lastLoadedBlinkUrl = null
+            tab.lastLoadedBlinkUrl = ""
             tab.updateUrl(url)
             if (tab.session.isOpen && settings.hybridHibernateGecko) {
                 runCatching {

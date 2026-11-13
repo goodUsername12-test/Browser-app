@@ -296,7 +296,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     val reqUrl = request.url?.toString() ?: return null
                     val docHost = cachedDocHost
                         ?: UrlUtils.host(tab.url.value)
-                        ?: UrlUtils.host(tab.lastLoadedBlinkUrl.orEmpty())
+                        ?: UrlUtils.host(tab.lastLoadedBlinkUrl)
                     val reqHost = UrlUtils.host(reqUrl)
                     if (docHost != null && reqHost != null && UrlUtils.isSameSite(reqHost, docHost)) return null
                     if (tab.fastAssetBypassEnabled && NativeFastEngine.isFastAsset(reqUrl, docHost)) return null
@@ -592,7 +592,7 @@ fun GeckoViewHost(
                 captureHandle.blinkView = wv
                 if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://") || currentUrl.startsWith("file://")) {
                     val currentWvUrl = wv.url
-                    if (tab.lastLoadedBlinkUrl == null && currentWvUrl.isNullOrBlank()) {
+                    if (tab.lastLoadedBlinkUrl.isBlank() && currentWvUrl.isNullOrBlank()) {
                         tab.lastLoadedBlinkUrl = currentUrl
                         val headers = tab.hybridExtraHeadersProvider?.invoke(currentUrl).orEmpty()
                         if (headers.isNotEmpty()) wv.loadUrl(currentUrl, headers) else wv.loadUrl(currentUrl)

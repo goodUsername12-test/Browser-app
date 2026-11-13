@@ -96,9 +96,12 @@ object HybridEngineBridge {
             try {
                 if (window.FableHybridBridge && window.FableHybridBridge.logDiagnostic) {
                     window.FableHybridBridge.logDiagnostic(
-                        "hybrid-active url=" + (location.href || "").slice(0, 120) +
+                        "hybrid-active url=" + (location.href || "").slice(0, 100) +
                         " privacy=GeckoView-144 render=Blink hideLocalIp=" + CFG.hideLocalIp +
-                        " game=" + CFG.isGame
+                        " dnt=" + CFG.dnt + " gpc=" + CFG.gpc +
+                        " shield=" + CFG.applyIdentity + " game=" + CFG.isGame +
+                        " webgpu=" + CFG.webGpuBoost + " accel3d2d=" + CFG.accel3d2d +
+                        " teleport=" + CFG.teleportStabilizer + " wasmCache=true"
                     );
                 }
             } catch (_) {}
@@ -340,6 +343,22 @@ object HybridEngineBridge {
                             const origReqDevice = adapter.requestDevice.bind(adapter);
                             adapter.requestDevice = function(desc) {
                                 return origReqDevice(desc).then(function(device) {
+                                    if (device && typeof device.createShaderModule === "function" && !device.__fableShaderCached) {
+                                        const shaderCache = new Map();
+                                        const origCreateShader = device.createShaderModule.bind(device);
+                                        device.createShaderModule = function(sDesc) {
+                                            if (sDesc && typeof sDesc.code === "string" && sDesc.code.length > 0 && sDesc.code.length <= 131072) {
+                                                const hit = shaderCache.get(sDesc.code);
+                                                if (hit) return hit;
+                                                const mod = origCreateShader(sDesc);
+                                                if (shaderCache.size > 256) shaderCache.clear();
+                                                shaderCache.set(sDesc.code, mod);
+                                                return mod;
+                                            }
+                                            return origCreateShader(sDesc);
+                                        };
+                                        device.__fableShaderCached = true;
+                                    }
                                     if (device && device.lost && typeof device.lost.then === "function") {
                                         device.lost.then(function() {
                                             if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
@@ -355,6 +374,90 @@ object HybridEngineBridge {
                         return adapter;
                     });
                 };
+            } catch (_) {}
+
+            // 3b. WebAssembly Module Cache, Streaming Fallback & C++ 8-Core Burst
+            if (typeof window.WebAssembly === "object" && window.WebAssembly) try {
+                const wasmCache = new Map();
+                const hashWasmBytes = function(buf) {
+                    const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer || buf, buf.byteOffset || 0, buf.byteLength || 0);
+                    const len = u8.byteLength || 0;
+                    if (len < 64) return null;
+                    let h = (2166136261 ^ len) >>> 0;
+                    const step = Math.max(1, Math.floor(len / 64));
+                    for (let i = 0; i < len; i += step) {
+                        h ^= u8[i];
+                        h = Math.imul(h, 16777619) >>> 0;
+                    }
+                    return len + ":" + h.toString(16);
+                };
+                const origCompile = WebAssembly.compile;
+                const origInstantiate = WebAssembly.instantiate;
+                if (typeof origCompile === "function") {
+                    WebAssembly.compile = function(bytes) {
+                        try {
+                            if (bytes && bytes.byteLength > 32768 && window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                window.FableHybridBridge.onHeavyBurst();
+                            }
+                            const key = bytes ? hashWasmBytes(bytes) : null;
+                            if (key && wasmCache.has(key)) return Promise.resolve(wasmCache.get(key));
+                            return origCompile.call(WebAssembly, bytes).then(function(mod) {
+                                if (key && mod) {
+                                    if (wasmCache.size > 16) wasmCache.clear();
+                                    wasmCache.set(key, mod);
+                                }
+                                return mod;
+                            });
+                        } catch (_) {
+                            return origCompile.apply(WebAssembly, arguments);
+                        }
+                    };
+                }
+                if (typeof origInstantiate === "function") {
+                    WebAssembly.instantiate = function(first, imports) {
+                        try {
+                            if (first && !(first instanceof WebAssembly.Module) && first.byteLength > 32768) {
+                                if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                    window.FableHybridBridge.onHeavyBurst();
+                                }
+                                const key = hashWasmBytes(first);
+                                if (key && wasmCache.has(key)) {
+                                    const cachedMod = wasmCache.get(key);
+                                    return origInstantiate.call(WebAssembly, cachedMod, imports).then(function(inst) {
+                                        return { module: cachedMod, instance: inst };
+                                    });
+                                }
+                            }
+                        } catch (_) {}
+                        return origInstantiate.apply(WebAssembly, arguments);
+                    };
+                }
+                if (typeof WebAssembly.compileStreaming === "function") {
+                    const origCompStream = WebAssembly.compileStreaming;
+                    WebAssembly.compileStreaming = function(source) {
+                        if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                            window.FableHybridBridge.onHeavyBurst();
+                        }
+                        return origCompStream.call(WebAssembly, source).catch(function() {
+                            return Promise.resolve(source).then(function(r) { return r.clone().arrayBuffer(); }).then(function(b) {
+                                return WebAssembly.compile(b);
+                            });
+                        });
+                    };
+                }
+                if (typeof WebAssembly.instantiateStreaming === "function") {
+                    const origInstStream = WebAssembly.instantiateStreaming;
+                    WebAssembly.instantiateStreaming = function(source, imports) {
+                        if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                            window.FableHybridBridge.onHeavyBurst();
+                        }
+                        return origInstStream.call(WebAssembly, source, imports).catch(function() {
+                            return Promise.resolve(source).then(function(r) { return r.clone().arrayBuffer(); }).then(function(b) {
+                                return WebAssembly.instantiate(b, imports);
+                            });
+                        });
+                    };
+                }
             } catch (_) {}
 
             // 4. Blink Multi-Touch Joystick + Camera Isolation, Anti-Shutter & Lag-Spike Eliminator for Bloxd / 3D Games
@@ -394,6 +497,69 @@ object HybridEngineBridge {
                                 return cb(ts);
                             });
                         };
+                    }
+                    if (CFG.teleportStabilizer !== false && window.Worker && Worker.prototype.postMessage) {
+                        let lastWorkerBurst = 0;
+                        const origPostMsg = Worker.prototype.postMessage;
+                        Worker.prototype.postMessage = function(msg, transfer) {
+                            try {
+                                const len = (msg && (msg.byteLength || (msg.buffer && msg.buffer.byteLength))) || 0;
+                                if (len > 65536) {
+                                    const now = performance.now();
+                                    if ((now - lastWorkerBurst) > 350 && window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                        lastWorkerBurst = now;
+                                        window.FableHybridBridge.onHeavyBurst();
+                                    }
+                                }
+                            } catch (_) {}
+                            return origPostMsg.apply(this, arguments);
+                        };
+                    }
+                    if (CFG.accel3d2d !== false) {
+                        const patchGlStateCache = function(Proto) {
+                            if (!Proto || Proto.__fableStateCached) return;
+                            const origUseProg = Proto.useProgram;
+                            if (typeof origUseProg === "function") {
+                                Proto.useProgram = function(prog) {
+                                    if (this.__fableLastProg === prog && prog !== null) return;
+                                    this.__fableLastProg = prog;
+                                    return origUseProg.call(this, prog);
+                                };
+                            }
+                            const origDepthFunc = Proto.depthFunc;
+                            if (typeof origDepthFunc === "function") {
+                                Proto.depthFunc = function(fn) {
+                                    if (this.__fableLastDepthFn === fn) return;
+                                    this.__fableLastDepthFn = fn;
+                                    return origDepthFunc.call(this, fn);
+                                };
+                            }
+                            const origViewport = Proto.viewport;
+                            if (typeof origViewport === "function") {
+                                Proto.viewport = function(x, y, w, h) {
+                                    const k = x + "," + y + "," + w + "," + h;
+                                    if (this.__fableLastVp === k) return;
+                                    this.__fableLastVp = k;
+                                    return origViewport.call(this, x, y, w, h);
+                                };
+                            }
+                            Proto.__fableStateCached = true;
+                        };
+                        if (window.WebGLRenderingContext) patchGlStateCache(WebGLRenderingContext.prototype);
+                        if (window.WebGL2RenderingContext) patchGlStateCache(WebGL2RenderingContext.prototype);
+                    }
+                    if (window.HTMLImageElement && HTMLImageElement.prototype) {
+                        const origSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+                        if (origSrcDesc && origSrcDesc.set) {
+                            Object.defineProperty(HTMLImageElement.prototype, "src", {
+                                configurable: true,
+                                get: origSrcDesc.get,
+                                set: function(v) {
+                                    if (!this.decoding || this.decoding === "auto") this.decoding = "async";
+                                    return origSrcDesc.set.call(this, v);
+                                }
+                            });
+                        }
                     }
                 } catch (_) {}
             }

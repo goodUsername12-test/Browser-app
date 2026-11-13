@@ -8,9 +8,12 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -43,9 +46,42 @@ class BlinkGamingActivity : ComponentActivity() {
         NativeFastEngine.setGameBoost(true)
         hideSystemUi()
 
-        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val root = object : FrameLayout(this) {
+            override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+                if (ev != null) {
+                    when (ev.actionMasked) {
+                        MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN,
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                            val idx = ev.actionIndex
+                            NativeFastEngine.resetTouchPointer(ev.getPointerId(idx))
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val count = ev.pointerCount
+                            if (count >= 1) {
+                                var anyMoved = false
+                                val t = ev.eventTime
+                                for (i in 0 until count) {
+                                    val pid = ev.getPointerId(i)
+                                    if (NativeFastEngine.filterCameraMove(pid, ev.getX(i), ev.getY(i), t)) {
+                                        anyMoved = true
+                                    }
+                                }
+                                if (!anyMoved) return true
+                            }
+                        }
+                    }
+                }
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
+            setBackgroundColor(Color.BLACK)
+            isMotionEventSplittingEnabled = true
+        }
         val view = WebView(this).apply {
             setBackgroundColor(Color.BLACK)
+            isSoundEffectsEnabled = false
+            isHapticFeedbackEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
@@ -57,13 +93,36 @@ class BlinkGamingActivity : ComponentActivity() {
             settings.setSupportZoom(false)
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                runCatching { settings.offscreenPreRaster = true }
+            }
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
             settings.cacheMode = WebSettings.LOAD_DEFAULT
+            runCatching {
+                val cleanedUa = settings.userAgentString
+                    .replace("; wv)", ")")
+                    .replace("Version/4.0 ", "")
+                if (cleanedUa.isNotBlank()) settings.userAgentString = cleanedUa
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 runCatching { setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false) }
             }
             runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(this, false) }
+            addJavascriptInterface(
+                object {
+                    @JavascriptInterface
+                    fun onHeavyBurst() {
+                        NativeFastEngine.notifyHeavyLoadBurst()
+                    }
+
+                    @JavascriptInterface
+                    fun logDiagnostic(msg: String) {
+                        Log.i("FableShield", "[blink-game] $msg")
+                    }
+                },
+                "FableHybridBridge"
+            )
             val bootScript = HybridEngineBridge.buildCombinedBootstrapScript(
                 settings = Settings(),
                 isIncognito = false,
@@ -117,7 +176,9 @@ class BlinkGamingActivity : ComponentActivity() {
         })
 
         val url = intent.getStringExtra(EXTRA_URL).orEmpty()
-        if (url.startsWith("https://") || url.startsWith("http://")) view.loadUrl(url)
+        if (url.startsWith("https://") || url.startsWith("http://")) {
+            view.loadUrl(url, mapOf("DNT" to "1", "Sec-GPC" to "1"))
+        }
     }
 
     private fun applyRefreshRate() {

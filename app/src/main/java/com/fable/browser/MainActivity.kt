@@ -1,12 +1,15 @@
 package com.fable.browser
 
 import android.app.ActivityManager
+import android.content.Context
 import android.content.Intent
+import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.os.Build
 import android.os.Bundle
 import android.view.Choreographer
+import android.view.Display
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -45,6 +48,23 @@ class MainActivity : FragmentActivity() {
     @Inject lateinit var settingsStore: SettingsStore
     @Inject lateinit var cacheCleaner: CacheCleaner
 
+    private var displayListener: DisplayManager.DisplayListener? = null
+
+    private fun checkScreenRecordingState() {
+        runCatching {
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
+            val recording = dm.displays.any { d ->
+                d.displayId != Display.DEFAULT_DISPLAY && (
+                    (d.flags and Display.FLAG_PRESENTATION) != 0 ||
+                        d.name.contains("record", ignoreCase = true) ||
+                        d.name.contains("screen", ignoreCase = true) ||
+                        d.name.contains("virtual", ignoreCase = true)
+                    )
+            }
+            com.fable.browser.engine.NativeFastEngine.setScreenRecording(recording)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -74,6 +94,19 @@ class MainActivity : FragmentActivity() {
 
         observeFullScreen()
         observeRefreshRate()
+        runCatching {
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            if (dm != null) {
+                val listener = object : DisplayManager.DisplayListener {
+                    override fun onDisplayAdded(displayId: Int) = checkScreenRecordingState()
+                    override fun onDisplayRemoved(displayId: Int) = checkScreenRecordingState()
+                    override fun onDisplayChanged(displayId: Int) = checkScreenRecordingState()
+                }
+                displayListener = listener
+                dm.registerDisplayListener(listener, null)
+                checkScreenRecordingState()
+            }
+        }
         lifecycleScope.launch {
             settingsStore.settings
                 .map { it.freezeDetector }
@@ -293,6 +326,11 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onDestroy() {
+        runCatching {
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            displayListener?.let { dm?.unregisterDisplayListener(it) }
+            displayListener = null
+        }
         activityBridge.unbind(this)
         if (isFinishing) tabManager.onAppExit()
         super.onDestroy()

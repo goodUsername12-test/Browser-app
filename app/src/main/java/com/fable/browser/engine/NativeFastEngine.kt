@@ -28,6 +28,9 @@ object NativeFastEngine {
     private external fun nativeNotifyHeavyLoadBurst(): Boolean
 
     @JvmStatic
+    private external fun nativeSetScreenRecording(recording: Boolean): Boolean
+
+    @JvmStatic
     private external fun nativeResetTouchPointer(pointerId: Int)
 
     @JvmStatic
@@ -87,6 +90,12 @@ object NativeFastEngine {
     fun notifyHeavyLoadBurst() {
         if (isNativeAvailable) {
             runCatching { nativeNotifyHeavyLoadBurst() }
+        }
+    }
+
+    fun setScreenRecording(recording: Boolean) {
+        if (isNativeAvailable) {
+            runCatching { nativeSetScreenRecording(recording) }
         }
     }
 

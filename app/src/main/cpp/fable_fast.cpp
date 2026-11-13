@@ -241,6 +241,7 @@ struct PointerState {
 constexpr std::size_t MAX_POINTER_SLOTS = 16;
 std::array<PointerState, MAX_POINTER_SLOTS> g_pointers{};
 std::atomic<bool> g_game_boost_enabled{false};
+std::atomic<bool> g_screen_recording{false};
 std::atomic<std::uint32_t> g_big_core_mask{0};
 std::atomic<std::uint32_t> g_little_core_mask{0};
 std::atomic<std::uint32_t> g_all_core_mask{0};
@@ -309,8 +310,11 @@ void pin_tid_to_mask(pid_t tid, std::uint32_t mask) noexcept {
 void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexcept {
     detect_cpu_topology();
     const std::uint32_t big_mask = g_big_core_mask.load(std::memory_order_relaxed);
-    const std::uint32_t little_mask = g_little_core_mask.load(std::memory_order_relaxed);
+    const std::uint32_t raw_little_mask = g_little_core_mask.load(std::memory_order_relaxed);
     const std::uint32_t all_mask = g_all_core_mask.load(std::memory_order_relaxed);
+    const bool rec = g_screen_recording.load(std::memory_order_relaxed);
+    const std::uint32_t little_mask = (rec && (raw_little_mask & ~1u) != 0) ? (raw_little_mask & ~1u) : raw_little_mask;
+    const std::uint32_t burst_worker_mask = (rec && (all_mask & ~1u) != 0) ? (all_mask & ~1u) : all_mask;
 
     DIR* dir = opendir("/proc/self/task");
     if (!dir) return;
@@ -428,7 +432,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         for (const auto& prefix : WORKER_BOOST_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
                 setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -15 : -10);
-                pin_tid_to_mask(static_cast<pid_t>(tid), heavy_burst ? all_mask : little_mask);
+                pin_tid_to_mask(static_cast<pid_t>(tid), heavy_burst ? burst_worker_mask : little_mask);
                 matched_worker = true;
                 break;
             }
@@ -615,6 +619,20 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeNotifyHeavyLoadBurst(
     jclass
 ) {
     return notify_heavy_load_burst() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeSetScreenRecording(
+    JNIEnv*,
+    jclass,
+    jboolean recording
+) {
+    const bool rec = (recording == JNI_TRUE);
+    g_screen_recording.store(rec, std::memory_order_relaxed);
+    if (g_game_boost_enabled.load(std::memory_order_relaxed)) {
+        boost_critical_engine_threads(true, false);
+    }
+    return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL

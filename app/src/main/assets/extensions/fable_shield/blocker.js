@@ -165,17 +165,24 @@ let rules = {
   exceptionSubstrings: indexSubstrings([]),
 };
 
+function pack4Js(s) {
+  return (((s.charCodeAt(0) & 0xff) << 24) |
+    ((s.charCodeAt(1) & 0xff) << 16) |
+    ((s.charCodeAt(2) & 0xff) << 8) |
+    (s.charCodeAt(3) & 0xff)) >>> 0;
+}
+
 function indexSubstrings(list) {
   const all = Array.isArray(list) ? list.filter((s) => typeof s === "string" && s.length > 0) : [];
-  if (all.length < 64) return { all, map: null, short: all };
+  if (all.length === 0) return { all, map: null, short: [] };
   const map = new Map();
   const short = [];
   for (const s of all) {
-    if (s.length < 2) {
+    if (s.length < 4) {
       short.push(s);
       continue;
     }
-    const key = s.slice(0, 2);
+    const key = pack4Js(s);
     const bucket = map.get(key);
     if (bucket) bucket.push(s);
     else map.set(key, [s]);
@@ -184,16 +191,24 @@ function indexSubstrings(list) {
 }
 
 function containsAny(url, index) {
-  for (const s of index.short) {
-    if (url.includes(s)) return true;
+  const short = index.short;
+  for (let i = 0; i < short.length; i++) {
+    if (url.indexOf(short[i]) !== -1) return true;
   }
   const map = index.map;
-  if (!map) return false;
-  for (let i = 0; i < url.length - 1; i++) {
-    const bucket = map.get(url.slice(i, i + 2));
+  if (!map || map.size === 0) return false;
+  const len = url.length;
+  if (len < 4) return false;
+  let w = (((url.charCodeAt(0) & 0xff) << 16) |
+    ((url.charCodeAt(1) & 0xff) << 8) |
+    (url.charCodeAt(2) & 0xff)) >>> 0;
+  for (let i = 3; i < len; i++) {
+    w = (((w << 8) | (url.charCodeAt(i) & 0xff)) >>> 0);
+    const bucket = map.get(w);
     if (!bucket) continue;
-    for (const s of bucket) {
-      if (url.startsWith(s, i)) return true;
+    const start = i - 3;
+    for (let j = 0; j < bucket.length; j++) {
+      if (url.startsWith(bucket[j], start)) return true;
     }
   }
   return false;
@@ -703,6 +718,25 @@ async function triggerSavePage(id, url, mode) {
 }
 
 function hostOf(url) {
+  if (!url || typeof url !== "string") return null;
+  const schemeIdx = url.indexOf("://");
+  if (schemeIdx > 0) {
+    let start = schemeIdx + 3;
+    let end = start;
+    const len = url.length;
+    while (end < len) {
+      const c = url.charCodeAt(end);
+      if (c === 47 || c === 58 || c === 63 || c === 35) break;
+      end++;
+    }
+    if (end > start) {
+      const raw = url.slice(start, end);
+      if (raw.indexOf("@") === -1 && raw.indexOf("[") === -1) {
+        const lo = raw.toLowerCase();
+        return lo.startsWith("www.") ? lo.slice(4) : lo;
+      }
+    }
+  }
   try {
     return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
   } catch (e) {
@@ -729,16 +763,15 @@ function isSameSite(a, b) {
 function shouldBlock(url, documentUrl) {
   const host = hostOf(url);
   if (!host) return false;
+  const docHost = documentUrl ? hostOf(documentUrl) : null;
+  if (docHost && isSameSite(host, docHost)) return false;
+
+  const blockedCandidate = matchesDomain(host, rules.blockedDomains) || containsAny(url, rules.blockedSubstrings);
+  if (!blockedCandidate) return false;
 
   if (matchesDomain(host, rules.exceptionDomains)) return false;
   if (containsAny(url, rules.exceptionSubstrings)) return false;
-
-  const docHost = documentUrl ? hostOf(documentUrl) : null;
-  if (matchesDomain(host, rules.blockedDomains)) {
-    if (isSameSite(host, docHost)) return false;
-    return true;
-  }
-  return containsAny(url, rules.blockedSubstrings);
+  return true;
 }
 
 function onBeforeRequest(details) {

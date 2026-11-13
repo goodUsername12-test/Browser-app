@@ -17,6 +17,73 @@ import javax.inject.Singleton
 
 @Singleton
 class ContentBlocker @Inject constructor(@ApplicationContext private val context: Context) {
+    internal class SubstringIndex(rules: List<String>) {
+        private val shortRules: Array<String>
+        private val buckets: Map<Int, Array<String>>
+        private val empty: Boolean = rules.isEmpty()
+
+        init {
+            if (rules.isEmpty()) {
+                shortRules = emptyArray()
+                buckets = emptyMap()
+            } else {
+                val shorts = ArrayList<String>()
+                val map = HashMap<Int, ArrayList<String>>(rules.size.coerceAtLeast(16))
+                for (r in rules) {
+                    if (r.isEmpty()) continue
+                    if (r.length < 4) {
+                        shorts.add(r)
+                    } else {
+                        val key = pack4(r, 0)
+                        map.getOrPut(key) { ArrayList(2) }.add(r)
+                    }
+                }
+                shortRules = shorts.toTypedArray()
+                val built = HashMap<Int, Array<String>>(map.size.coerceAtLeast(16))
+                for ((k, v) in map) {
+                    built[k] = v.toTypedArray()
+                }
+                buckets = built
+            }
+        }
+
+        fun matches(url: String): Boolean {
+            if (empty) return false
+            for (s in shortRules) {
+                if (url.contains(s)) return true
+            }
+            val map = buckets
+            if (map.isEmpty()) return false
+            val len = url.length
+            if (len < 4) return false
+            var w = ((url[0].code and 0xFF) shl 16) or ((url[1].code and 0xFF) shl 8) or (url[2].code and 0xFF)
+            var i = 3
+            while (i < len) {
+                w = (w shl 8) or (url[i].code and 0xFF)
+                val candidates = map[w]
+                if (candidates != null) {
+                    val start = i - 3
+                    for (rule in candidates) {
+                        val rLen = rule.length
+                        if (start + rLen <= len && url.regionMatches(start, rule, 0, rLen, ignoreCase = false)) {
+                            return true
+                        }
+                    }
+                }
+                i++
+            }
+            return false
+        }
+
+        companion object {
+            private fun pack4(s: String, off: Int): Int =
+                ((s[off].code and 0xFF) shl 24) or
+                    ((s[off + 1].code and 0xFF) shl 16) or
+                    ((s[off + 2].code and 0xFF) shl 8) or
+                    (s[off + 3].code and 0xFF)
+        }
+    }
+
     class FilterSet internal constructor(
         internal val blockedDomains: Set<String>,
         internal val blockedSubstrings: List<String>,
@@ -27,6 +94,9 @@ class ContentBlocker @Inject constructor(@ApplicationContext private val context
         internal val cosmeticExceptions: Map<String, Set<String>> = emptyMap(),
         internal val genericHideDomains: Set<String> = emptySet()
     ) {
+        internal val blockedSubstringIndex = SubstringIndex(blockedSubstrings)
+        internal val exceptionSubstringIndex = SubstringIndex(exceptionSubstrings)
+
         val ruleCount: Int
             get() = blockedDomains.size + blockedSubstrings.size
         val cosmeticCount: Int
@@ -316,10 +386,11 @@ class ContentBlocker @Inject constructor(@ApplicationContext private val context
         fun shouldBlock(f: FilterSet, url: String, documentHost: String? = null): Boolean {
             val host = UrlUtils.host(url) ?: return false
             if (UrlUtils.isSameSite(host, documentHost)) return false
+            val blockedCandidate = matchesDomain(host, f.blockedDomains) || f.blockedSubstringIndex.matches(url)
+            if (!blockedCandidate) return false
             if (matchesDomain(host, f.exceptionDomains)) return false
-            if (f.exceptionSubstrings.any { url.contains(it) }) return false
-            if (matchesDomain(host, f.blockedDomains)) return true
-            return f.blockedSubstrings.any { url.contains(it) }
+            if (f.exceptionSubstringIndex.matches(url)) return false
+            return true
         }
 
         private fun matchesDomain(host: String, domains: Set<String>): Boolean {

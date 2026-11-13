@@ -582,6 +582,8 @@ class EngineManager @Inject constructor(
             "gfx.canvas.accelerated" to true,
             "gfx.canvas.accelerated.cache-items" to 4096,
             "gfx.canvas.accelerated.cache-size" to 512,
+            "layout.css.stylo-threads" to 4,
+            "gfx.webrender.max-shared-surface-size" to 2048,
             "image.mem.shared" to true,
             "javascript.options.mem.gc_ParallelMarkingEnabled" to true,
             "dom.gamepad.enabled" to true

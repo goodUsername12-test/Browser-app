@@ -348,7 +348,10 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     request: WebResourceRequest
                 ): Boolean {
                     val target = request.url?.toString() ?: return false
-                    if (UrlUtils.isExternalScheme(target)) return true
+                    if (UrlUtils.isExternalScheme(target)) {
+                        tab.hybridExternalUrlHandler?.invoke(target)
+                        return true
+                    }
                     val cleaned = UrlUtils.stripTrackingParams(target)
                     val extraHeaders = tab.hybridExtraHeadersProvider?.invoke(cleaned).orEmpty()
                     val needDntHeader = extraHeaders["DNT"] == "1" && request.requestHeaders["DNT"] != "1"
@@ -428,6 +431,28 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
 
                 override fun onPermissionRequest(request: PermissionRequest?) {
                     request?.deny()
+                }
+
+                override fun onShowFileChooser(
+                    webView: WebView?,
+                    filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
+                    fileChooserParams: FileChooserParams?
+                ): Boolean {
+                    val cb = filePathCallback ?: return false
+                    val handler = tab.hybridFileChooserHandler
+                    if (handler == null) {
+                        cb.onReceiveValue(null)
+                        return false
+                    }
+                    val types = fileChooserParams?.acceptTypes
+                        ?.filter { it.isNotBlank() }
+                        ?.toTypedArray()
+                        ?: arrayOf("*/*")
+                    val multiple = fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+                    handler.invoke(types, multiple) { uris ->
+                        cb.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
+                    }
+                    return true
                 }
 
                 override fun onShowCustomView(view: View, callback: CustomViewCallback) {
@@ -602,6 +627,7 @@ fun GeckoViewHost(
             captureHandle.hybridActive = hybridBlink
             HighRefreshRateEnforcer.applyToViewTree(container)
             val target = session
+            FableUnifiedEngine.setFrameMonitorActive(hybridBlink)
             if (hybridBlink) {
                 NativeFastEngine.setGameBoost(true)
                 if (tab.hibernateGeckoWhenHybrid) {
@@ -645,6 +671,7 @@ fun GeckoViewHost(
             }
         },
         onRelease = { container ->
+            FableUnifiedEngine.setFrameMonitorActive(false)
             if (captureHandle.view === container.geckoView) captureHandle.view = null
             captureHandle.blinkView = null
             captureHandle.hybridActive = false

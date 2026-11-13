@@ -401,6 +401,42 @@ object HybridEngineBridge {
                                             }
                                             return origCreateShader(sDesc);
                                         };
+                                        if (typeof device.createRenderPipelineAsync === "function") {
+                                            const pipeCache = new Map();
+                                            const origRenderAsync = device.createRenderPipelineAsync.bind(device);
+                                            device.createRenderPipelineAsync = function(pDesc) {
+                                                let key = null;
+                                                try { key = pDesc && pDesc.label ? ("L:" + pDesc.label) : JSON.stringify(pDesc); } catch (_) { key = null; }
+                                                if (!key || key.length > 16384) return origRenderAsync(pDesc);
+                                                const hit = pipeCache.get(key);
+                                                if (hit) return hit;
+                                                const p = origRenderAsync(pDesc).catch(function(err) {
+                                                    pipeCache.delete(key);
+                                                    throw err;
+                                                });
+                                                if (pipeCache.size >= 128) pipeCache.delete(pipeCache.keys().next().value);
+                                                pipeCache.set(key, p);
+                                                return p;
+                                            };
+                                        }
+                                        if (typeof device.createComputePipelineAsync === "function") {
+                                            const compCache = new Map();
+                                            const origCompAsync = device.createComputePipelineAsync.bind(device);
+                                            device.createComputePipelineAsync = function(cDesc) {
+                                                let key = null;
+                                                try { key = cDesc && cDesc.label ? ("C:" + cDesc.label) : JSON.stringify(cDesc); } catch (_) { key = null; }
+                                                if (!key || key.length > 16384) return origCompAsync(cDesc);
+                                                const hit = compCache.get(key);
+                                                if (hit) return hit;
+                                                const p = origCompAsync(cDesc).catch(function(err) {
+                                                    compCache.delete(key);
+                                                    throw err;
+                                                });
+                                                if (compCache.size >= 128) compCache.delete(compCache.keys().next().value);
+                                                compCache.set(key, p);
+                                                return p;
+                                            };
+                                        }
                                         device.__fableShaderCached = true;
                                     }
                                     if (device && device.lost && typeof device.lost.then === "function") {
@@ -673,18 +709,32 @@ object HybridEngineBridge {
                             const origBindTex = Proto.bindTexture;
                             if (typeof origBindTex === "function") {
                                 Proto.bindTexture = function(target, tex) {
-                                    const u = this.__fableActiveUnit || 0x84C0;
-                                    const map = this.__fableTexMap || (this.__fableTexMap = new Map());
-                                    const key = (u << 16) ^ target;
-                                    if (tex !== null && map.get(key) === tex) return;
-                                    map.set(key, tex);
+                                    if (this.__fableTexBypass === true) return origBindTex.call(this, target, tex);
+                                    const slot = ((this.__fableActiveUnit || 0x84C0) - 0x84C0) & 31;
+                                    if (target === 0x0DE1) {
+                                        const arr = this.__fableTex2d || (this.__fableTex2d = new Array(32));
+                                        const samples = (this.__fableTexSamples = (this.__fableTexSamples || 0) + 1);
+                                        if (tex !== null && arr[slot] === tex) {
+                                            this.__fableTexSkipped = (this.__fableTexSkipped || 0) + 1;
+                                            return;
+                                        }
+                                        if (samples === 512 && ((this.__fableTexSkipped || 0) * 5) < samples) {
+                                            this.__fableTexBypass = true;
+                                        }
+                                        arr[slot] = tex;
+                                    } else if (target === 0x8513) {
+                                        const arr = this.__fableTexCube || (this.__fableTexCube = new Array(32));
+                                        if (tex !== null && arr[slot] === tex) return;
+                                        arr[slot] = tex;
+                                    }
                                     return origBindTex.call(this, target, tex);
                                 };
                             }
                             const origDeleteTex = Proto.deleteTexture;
                             if (typeof origDeleteTex === "function") {
                                 Proto.deleteTexture = function(tex) {
-                                    if (this.__fableTexMap) this.__fableTexMap.clear();
+                                    if (this.__fableTex2d) this.__fableTex2d.fill(undefined);
+                                    if (this.__fableTexCube) this.__fableTexCube.fill(undefined);
                                     return origDeleteTex.call(this, tex);
                                 };
                             }
@@ -741,33 +791,33 @@ object HybridEngineBridge {
                             const origDisable = Proto.disable;
                             if (typeof origEnable === "function" && typeof origDisable === "function") {
                                 Proto.enable = function(cap) {
-                                    const caps = this.__fableCapMap || (this.__fableCapMap = new Map());
-                                    if (caps.get(cap) === true) return;
-                                    caps.set(cap, true);
+                                    if (cap === 0x0B71) { if (this.__cDepth === 1) return; this.__cDepth = 1; }
+                                    else if (cap === 0x0B44) { if (this.__cCull === 1) return; this.__cCull = 1; }
+                                    else if (cap === 0x0BE2) { if (this.__cBlend === 1) return; this.__cBlend = 1; }
+                                    else if (cap === 0x0C11) { if (this.__cScis === 1) return; this.__cScis = 1; }
                                     return origEnable.call(this, cap);
                                 };
                                 Proto.disable = function(cap) {
-                                    const caps = this.__fableCapMap || (this.__fableCapMap = new Map());
-                                    if (caps.get(cap) === false) return;
-                                    caps.set(cap, false);
+                                    if (cap === 0x0B71) { if (this.__cDepth === 0) return; this.__cDepth = 0; }
+                                    else if (cap === 0x0B44) { if (this.__cCull === 0) return; this.__cCull = 0; }
+                                    else if (cap === 0x0BE2) { if (this.__cBlend === 0) return; this.__cBlend = 0; }
+                                    else if (cap === 0x0C11) { if (this.__cScis === 0) return; this.__cScis = 0; }
                                     return origDisable.call(this, cap);
                                 };
                             }
                             const origViewport = Proto.viewport;
                             if (typeof origViewport === "function") {
                                 Proto.viewport = function(x, y, w, h) {
-                                    const k = x + "," + y + "," + w + "," + h;
-                                    if (this.__fableLastVp === k) return;
-                                    this.__fableLastVp = k;
+                                    if (this.__vpX === x && this.__vpY === y && this.__vpW === w && this.__vpH === h) return;
+                                    this.__vpX = x; this.__vpY = y; this.__vpW = w; this.__vpH = h;
                                     return origViewport.call(this, x, y, w, h);
                                 };
                             }
                             const origScissor = Proto.scissor;
                             if (typeof origScissor === "function") {
                                 Proto.scissor = function(x, y, w, h) {
-                                    const k = x + "," + y + "," + w + "," + h;
-                                    if (this.__fableLastScissor === k) return;
-                                    this.__fableLastScissor = k;
+                                    if (this.__scX === x && this.__scY === y && this.__scW === w && this.__scH === h) return;
+                                    this.__scX = x; this.__scY = y; this.__scW = w; this.__scH = h;
                                     return origScissor.call(this, x, y, w, h);
                                 };
                             }
@@ -1000,22 +1050,82 @@ object HybridEngineBridge {
                 } catch (_) {}
             }
 
-            // 5. Instant Font & Text Acceleration (font-display: swap + CDN preconnect)
+            // 5. Privacy-Safe Smart Font Loader, Same-Origin WOFF2 Preload & Dynamic Text Batching
+            try {
+                const pendingTextNodes = new Map();
+                let textFlushQueued = false;
+                window.__fableBatchTextUpdate = function(node, val) {
+                    if (!node) return;
+                    pendingTextNodes.set(node, String(val));
+                    if (textFlushQueued) return;
+                    textFlushQueued = true;
+                    requestAnimationFrame(function() {
+                        textFlushQueued = false;
+                        pendingTextNodes.forEach(function(txt, el) {
+                            if (el.textContent !== txt) el.textContent = txt;
+                        });
+                        pendingTextNodes.clear();
+                    });
+                };
+            } catch (_) {}
             const injectFastFonts = function() {
                 try {
                     const head = document.head || document.documentElement;
                     if (!head || document.getElementById("__fable_hybrid_fast_fonts")) return;
                     const style = document.createElement("style");
                     style.id = "__fable_hybrid_fast_fonts";
-                    style.textContent = "*, *::before, *::after { -webkit-tap-highlight-color: transparent !important; } canvas, #noa-container { touch-action: none !important; -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; } input, textarea, [contenteditable], [contenteditable='true'] { -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important; touch-action: auto !important; }";
+                    const gameHudCss = CFG.isGame ? " #noa-container, .hud, .chat, .scoreboard { font-kerning: none; text-rendering: optimizeSpeed; }" : "";
+                    style.textContent = "*, *::before, *::after { -webkit-tap-highlight-color: transparent !important; } canvas, #noa-container { touch-action: none !important; -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; } input, textarea, [contenteditable], [contenteditable='true'] { -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important; touch-action: auto !important; }" + gameHudCss;
                     head.appendChild(style);
-                    ["https://fonts.googleapis.com", "https://fonts.gstatic.com"].forEach(function(href) {
+
+                    const sheets = document.styleSheets || [];
+                    const preloadedFonts = new Set();
+                    let usesGoogleFonts = false;
+                    const links = document.querySelectorAll("link[href]");
+                    for (let i = 0; i < links.length; i++) {
+                        const h = links[i].href || "";
+                        if (h.indexOf("fonts.googleapis.com") !== -1 || h.indexOf("fonts.gstatic.com") !== -1) {
+                            usesGoogleFonts = true;
+                            break;
+                        }
+                    }
+                    if (usesGoogleFonts) {
                         const link = document.createElement("link");
                         link.rel = "preconnect";
-                        link.href = href;
+                        link.href = "https://fonts.gstatic.com";
                         link.crossOrigin = "anonymous";
                         head.appendChild(link);
-                    });
+                    }
+                    for (let i = 0; i < sheets.length; i++) {
+                        let rules = null;
+                        try { rules = sheets[i].cssRules; } catch (_) { continue; }
+                        if (!rules) continue;
+                        for (let j = 0; j < rules.length; j++) {
+                            const r = rules[j];
+                            if (r && r.type === 5 && r.style) {
+                                try {
+                                    if (!r.style.fontDisplay) r.style.fontDisplay = "swap";
+                                    if (preloadedFonts.size < 2) {
+                                        const srcVal = r.style.getPropertyValue("src") || "";
+                                        const m = /url\(["']?([^"')]+?\.woff2(?:\?[^"')]*)?)["']?\)/i.exec(srcVal);
+                                        if (m && m[1]) {
+                                            const parsed = new URL(m[1], location.href);
+                                            if (parsed.origin === location.origin && !preloadedFonts.has(parsed.href)) {
+                                                preloadedFonts.add(parsed.href);
+                                                const pl = document.createElement("link");
+                                                pl.rel = "preload";
+                                                pl.as = "font";
+                                                pl.type = "font/woff2";
+                                                pl.crossOrigin = "anonymous";
+                                                pl.href = parsed.href;
+                                                head.appendChild(pl);
+                                            }
+                                        }
+                                    }
+                                } catch (_) {}
+                            }
+                        }
+                    }
                 } catch (_) {}
             };
             if (CFG.fastFontSwap !== false) {

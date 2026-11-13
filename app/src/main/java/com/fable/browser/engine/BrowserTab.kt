@@ -108,6 +108,8 @@ class BrowserTab(
     @Volatile var hybridDownloadHandler: ((String, String?, String?) -> Unit)? = null
     @Volatile var hybridScrollHandler: ((Int) -> Unit)? = null
     @Volatile var hybridContextMenuHandler: ((ContextMenuTarget) -> Unit)? = null
+    @Volatile var hybridFileChooserHandler: ((Array<String>, Boolean, (List<android.net.Uri>) -> Unit) -> Unit)? = null
+    @Volatile var hybridExternalUrlHandler: ((String) -> Boolean)? = null
 
     private val httpExceptions = mutableSetOf<String>()
 

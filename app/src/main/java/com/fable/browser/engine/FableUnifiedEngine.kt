@@ -1,6 +1,9 @@
 package com.fable.browser.engine
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.view.Choreographer
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.WebSettings
@@ -14,6 +17,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.net.InetAddress
+import java.util.Collections
+import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 enum class UnifiedEngineOwner {
@@ -27,14 +33,21 @@ data class UnifiedEngineStatus(
     val estimatedFps: Int = 120,
     val nativeCppActive: Boolean = NativeFastEngine.isNativeAvailable,
     val blinkPrewarmed: Boolean = false,
+    val frameMonitorActive: Boolean = false,
     val webGpuPipelineCache: Boolean = true,
-    val webGlStateDeduplication: Boolean = true,
+    val webGlAdaptiveStateCache: Boolean = true,
     val wasmModuleCache: Boolean = true
 )
 
 object FableUnifiedEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val prewarmed = AtomicBoolean(false)
+    private val dnsWarmCache: MutableMap<String, Long> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 64
+        }
+    )
 
     @Volatile
     var defaultBlinkUserAgent: String = ""
@@ -45,6 +58,46 @@ object FableUnifiedEngine {
 
     private val _status = MutableStateFlow(UnifiedEngineStatus())
     val status: StateFlow<UnifiedEngineStatus> = _status.asStateFlow()
+
+    @Volatile
+    private var monitorActive = false
+    private var lastFrameNs = 0L
+    private var uiPublishCounter = 0
+
+    private val choreographerCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!monitorActive) return
+            val prev = lastFrameNs
+            lastFrameNs = frameTimeNanos
+            if (prev > 0L) {
+                val delta = frameTimeNanos - prev
+                if (delta in 1_000_000L..500_000_000L) {
+                    val fps = NativeFastEngine.recordFrameDeltaNs(delta, frameTimeNanos)
+                    uiPublishCounter++
+                    if ((uiPublishCounter and 15) == 0 && _estimatedFps.value != fps) {
+                        _estimatedFps.value = fps
+                    }
+                }
+            }
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    fun setFrameMonitorActive(active: Boolean) {
+        if (monitorActive == active) return
+        monitorActive = active
+        mainHandler.post {
+            if (active) {
+                lastFrameNs = 0L
+                Choreographer.getInstance().removeFrameCallback(choreographerCallback)
+                Choreographer.getInstance().postFrameCallback(choreographerCallback)
+            } else {
+                Choreographer.getInstance().removeFrameCallback(choreographerCallback)
+                lastFrameNs = 0L
+            }
+            _status.value = _status.value.copy(frameMonitorActive = active)
+        }
+    }
 
     fun prewarmAsync(context: Context) {
         if (!prewarmed.compareAndSet(false, true)) return
@@ -67,6 +120,18 @@ object FableUnifiedEngine {
                 blinkPrewarmed = true,
                 nativeCppActive = NativeFastEngine.isNativeAvailable
             )
+        }
+    }
+
+    fun preconnectOriginAsync(url: String) {
+        val host = UrlUtils.host(url) ?: return
+        if (host.isBlank() || host == "localhost") return
+        val now = System.currentTimeMillis()
+        val last = dnsWarmCache[host]
+        if (last != null && now - last < 120_000L) return
+        dnsWarmCache[host] = now
+        scope.launch(Dispatchers.IO) {
+            runCatching { InetAddress.getAllByName(host) }
         }
     }
 

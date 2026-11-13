@@ -28,6 +28,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import android.content.ClipData
 import android.content.ClipboardManager
 import com.fable.browser.data.prefs.Settings
+import com.fable.browser.engine.FableUnifiedEngine
 import com.fable.browser.engine.HybridEngineBridge
 import com.fable.browser.engine.NativeFastEngine
 import com.fable.browser.util.HighRefreshRateEnforcer
@@ -103,9 +104,11 @@ class BlinkGamingActivity : ComponentActivity() {
             settings.loadWithOverviewMode = true
             settings.cacheMode = WebSettings.LOAD_DEFAULT
             runCatching {
-                val cleanedUa = settings.userAgentString
-                    .replace("; wv)", ")")
-                    .replace("Version/4.0 ", "")
+                val cleanedUa = FableUnifiedEngine.defaultBlinkUserAgent.ifBlank {
+                    settings.userAgentString
+                        .replace("; wv)", ")")
+                        .replace("Version/4.0 ", "")
+                }
                 if (cleanedUa.isNotBlank()) settings.userAgentString = cleanedUa
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -201,6 +204,8 @@ class BlinkGamingActivity : ComponentActivity() {
 
         val url = intent.getStringExtra(EXTRA_URL).orEmpty()
         if (url.startsWith("https://") || url.startsWith("http://")) {
+            FableUnifiedEngine.preconnectOriginAsync(url)
+            FableUnifiedEngine.setFrameMonitorActive(true)
             view.loadUrl(url, mapOf("DNT" to "1", "Sec-GPC" to "1"))
         }
     }
@@ -220,7 +225,20 @@ class BlinkGamingActivity : ComponentActivity() {
         if (hasFocus) hideSystemUi()
     }
 
+    override fun onPause() {
+        FableUnifiedEngine.setFrameMonitorActive(false)
+        FableUnifiedEngine.flushBlinkCookies()
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        FableUnifiedEngine.setFrameMonitorActive(true)
+    }
+
     override fun onDestroy() {
+        FableUnifiedEngine.setFrameMonitorActive(false)
+        FableUnifiedEngine.flushBlinkCookies()
         webView?.apply {
             stopLoading()
             webChromeClient = null

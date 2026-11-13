@@ -38,7 +38,8 @@ class TabManager @Inject constructor(
     private val promptBridge: PromptBridge,
     private val settingsStore: SettingsStore,
     private val passwordManager: PasswordManager,
-    private val downloader: Downloader
+    private val downloader: Downloader,
+    private val activityBridge: com.fable.browser.util.ActivityBridge
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -299,12 +300,15 @@ class TabManager @Inject constructor(
     }
 
     fun onAppPaused() {
+        FableUnifiedEngine.setFrameMonitorActive(false)
+        FableUnifiedEngine.flushBlinkCookies()
         runCatching { activeTab?.session?.takeIf { it.isOpen }?.setActive(false) }
     }
 
     fun onAppResumed() {
         val tab = activeTab ?: return
         if (tab.isEvicted || isGated(tab)) return
+        FableUnifiedEngine.setFrameMonitorActive(tab.isHybridBlink.value)
         runCatching { tab.session.takeIf { it.isOpen }?.setActive(true) }
     }
 
@@ -484,6 +488,12 @@ class TabManager @Inject constructor(
         }
         tab.hybridContextMenuHandler = { target ->
             callbacks.onContextMenu(target)
+        }
+        tab.hybridFileChooserHandler = { mimeTypes, allowMultiple, onResult ->
+            activityBridge.requestFiles(mimeTypes, allowMultiple, onResult)
+        }
+        tab.hybridExternalUrlHandler = { externalUrl ->
+            activityBridge.openExternal(externalUrl)
         }
     }
 
@@ -729,6 +739,10 @@ class TabManager @Inject constructor(
     fun load(tab: BrowserTab, input: String) {
         val url = UrlUtils.toUrlOrSearch(input, settings.searchEngine)
         tab.updateInterstitial(null)
+        if (settings.fastConnections && (url.startsWith("https://", ignoreCase = true) || url.startsWith("http://", ignoreCase = true))) {
+            FableUnifiedEngine.preconnectOriginAsync(url)
+            UrlUtils.origin(url)?.let { engineManager.speculativeConnect(it) }
+        }
         wireHybridCallbacks(tab)
         val manual = tab.manualHybridOverride ?: loadTabHybridState(url)?.also { tab.manualHybridOverride = it }
         if (manual != null) {

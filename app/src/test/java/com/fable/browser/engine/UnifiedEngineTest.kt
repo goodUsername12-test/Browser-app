@@ -48,12 +48,28 @@ class UnifiedEngineTest {
     }
 
     @Test
+    fun `rolling 4-byte substring index matches thousands of rules and honors exceptions`() {
+        val sb = StringBuilder()
+        for (i in 0 until 2000) {
+            sb.append("/SyntheticTrackerPath_").append(i).append("_\n")
+        }
+        sb.append("/pagead/adview\n")
+        sb.append("@@||trusted-cdn.example.org/pagead/adview\n")
+        val f = ContentBlocker.parse(sb.toString())
+
+        assertFalse(ContentBlocker.shouldBlock(f, "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "bloxd.io"))
+        assertTrue(ContentBlocker.shouldBlock(f, "https://evil-ads.net/SyntheticTrackerPath_1999_pixel.gif", "bloxd.io"))
+        assertTrue(ContentBlocker.shouldBlock(f, "https://other-ads.net/pagead/adview?x=1", "bloxd.io"))
+        assertFalse(ContentBlocker.shouldBlock(f, "https://trusted-cdn.example.org/pagead/adview?x=1", "bloxd.io"))
+    }
+
+    @Test
     fun `native fast engine domain matching and hashing work deterministically`() {
         assertTrue(NativeFastEngine.matchDomain("staging.bloxd.io", "bloxd.io"))
         assertTrue(NativeFastEngine.matchDomain("bloxd.io", "bloxd.io"))
         assertFalse(NativeFastEngine.matchDomain("notbloxd.io", "bloxd.io"))
 
-        val bytes = "fable-unified-engine-v38".toByteArray(Charsets.UTF_8)
+        val bytes = "fable-unified-engine-v39".toByteArray(Charsets.UTF_8)
         val crc1 = NativeFastEngine.crc32(bytes)
         val crc2 = NativeFastEngine.crc32(bytes)
         assertEquals(crc1, crc2)

@@ -103,6 +103,11 @@ private class FableHybridJsBridge(private val tab: BrowserTab) {
     }
 
     @JavascriptInterface
+    fun onHeavyBurst() {
+        NativeFastEngine.notifyHeavyLoadBurst()
+    }
+
+    @JavascriptInterface
     fun logDiagnostic(msg: String) {
         Log.i("FableShield", "[hybrid] $msg")
     }
@@ -112,6 +117,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
     val geckoView: GeckoView = GeckoView(context).apply {
         setAutofillEnabled(false)
         importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        overScrollMode = View.OVER_SCROLL_NEVER
         isFocusable = true
         isFocusableInTouchMode = true
         isSoundEffectsEnabled = false
@@ -124,6 +130,8 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
     var lastBlinkUrl: String = ""
 
     init {
+        setWillNotDraw(true)
+        isMotionEventSplittingEnabled = true
         isSoundEffectsEnabled = false
         isHapticFeedbackEnabled = false
         addView(geckoView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -141,9 +149,17 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     NativeFastEngine.resetTouchPointer(ev.getPointerId(idx))
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (ev.pointerCount == 1) {
-                        val pid = ev.getPointerId(0)
-                        if (!NativeFastEngine.filterCameraMove(pid, ev.x, ev.y, ev.eventTime)) {
+                    val count = ev.pointerCount
+                    if (count >= 1) {
+                        var anyMoved = false
+                        val t = ev.eventTime
+                        for (i in 0 until count) {
+                            val pid = ev.getPointerId(i)
+                            if (NativeFastEngine.filterCameraMove(pid, ev.getX(i), ev.getY(i), t)) {
+                                anyMoved = true
+                            }
+                        }
+                        if (!anyMoved) {
                             return true
                         }
                     }
@@ -161,10 +177,17 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
         boundTab = tab
         val wv = WebView(context).apply {
             setBackgroundColor(Color.BLACK)
+            setLayerType(View.LAYER_TYPE_NONE, null)
             isFocusable = true
             isFocusableInTouchMode = true
             isSoundEffectsEnabled = false
             isHapticFeedbackEnabled = false
+            isLongClickable = false
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                isContextClickable = false
+            }
+            overScrollMode = View.OVER_SCROLL_NEVER
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
@@ -205,7 +228,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     if (request.isForMainFrame) return null
                     val reqUrl = request.url?.toString() ?: return null
                     val docHost = cachedDocHost
-                    if (NativeFastEngine.isFastAsset(reqUrl, docHost)) return null
+                    if (tab.fastAssetBypassEnabled && NativeFastEngine.isFastAsset(reqUrl, docHost)) return null
                     val blocked = tab.hybridBlockChecker?.invoke(reqUrl, docHost) == true
                     if (blocked) {
                         tab.incrementBlocked()
@@ -228,8 +251,15 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     val target = request.url?.toString() ?: return false
                     if (UrlUtils.isExternalScheme(target)) return true
                     val cleaned = UrlUtils.stripTrackingParams(target)
-                    if (cleaned != target) {
-                        view.post { view.loadUrl(cleaned) }
+                    val extraHeaders = tab.hybridExtraHeadersProvider?.invoke(cleaned).orEmpty()
+                    val needDntHeader = extraHeaders["DNT"] == "1" && request.requestHeaders["DNT"] != "1"
+                    val isMainGet = request.isForMainFrame &&
+                        request.method.equals("GET", ignoreCase = true) &&
+                        (cleaned.startsWith("http://") || cleaned.startsWith("https://"))
+                    if (cleaned != target || (isMainGet && needDntHeader)) {
+                        view.post {
+                            if (extraHeaders.isNotEmpty()) view.loadUrl(cleaned, extraHeaders) else view.loadUrl(cleaned)
+                        }
                         return true
                     }
                     return false
@@ -304,17 +334,34 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                 }
             }
         }
-        val defaultUa = runCatching { wv.settings.userAgentString }.getOrDefault("")
+        val rawDefaultUa = runCatching { wv.settings.userAgentString }.getOrDefault("")
+            .replace("; wv)", ")")
+            .replace("Version/4.0 ", "")
+        val initialPrivacyUa = tab.hybridCustomUserAgent?.invoke()?.takeIf { it.isNotBlank() } ?: rawDefaultUa
+        if (initialPrivacyUa.isNotBlank()) {
+            runCatching { wv.settings.userAgentString = initialPrivacyUa }
+        }
         val controller = object : HybridBlinkController {
             override fun loadUrl(url: String) {
                 wv.post {
+                    if (!tab.isDesktopMode.value) {
+                        val ua = tab.hybridCustomUserAgent?.invoke()?.takeIf { it.isNotBlank() } ?: rawDefaultUa
+                        if (ua.isNotBlank() && wv.settings.userAgentString != ua) {
+                            runCatching { wv.settings.userAgentString = ua }
+                        }
+                    }
                     lastBlinkUrl = url
-                    wv.loadUrl(url)
+                    val headers = tab.hybridExtraHeadersProvider?.invoke(url).orEmpty()
+                    if (headers.isNotEmpty()) wv.loadUrl(url, headers) else wv.loadUrl(url)
                 }
             }
 
             override fun reload() {
-                wv.post { wv.reload() }
+                wv.post {
+                    val cur = wv.url ?: lastBlinkUrl
+                    val headers = tab.hybridExtraHeadersProvider?.invoke(cur).orEmpty()
+                    if (cur.isNotBlank() && headers.isNotEmpty()) wv.loadUrl(cur, headers) else wv.reload()
+                }
             }
 
             override fun stopLoading() {
@@ -334,7 +381,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     wv.settings.userAgentString = if (desktop) {
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
                     } else {
-                        defaultUa
+                        tab.hybridCustomUserAgent?.invoke()?.takeIf { it.isNotBlank() } ?: rawDefaultUa
                     }
                     wv.settings.useWideViewPort = true
                     wv.settings.loadWithOverviewMode = desktop
@@ -442,13 +489,19 @@ fun GeckoViewHost(
             captureHandle.view = gv
             captureHandle.hybridActive = hybridBlink
             val target = session
-            if (attachTick >= 0 && gv.session !== target && target.isOpen) {
-                if (gv.session != null) gv.releaseSession()
-                gv.setSession(target)
-            }
             if (hybridBlink) {
                 NativeFastEngine.setGameBoost(true)
-                // Keep GeckoView privacy session attached in background while Blink renders 3D/WebGL foreground
+                if (tab.hibernateGeckoWhenHybrid) {
+                    if (gv.session != null) {
+                        runCatching { gv.releaseSession() }
+                    }
+                    if (target.isOpen) {
+                        runCatching { target.setActive(false) }
+                    }
+                } else if (attachTick >= 0 && gv.session !== target && target.isOpen) {
+                    if (gv.session != null) gv.releaseSession()
+                    gv.setSession(target)
+                }
                 gv.visibility = View.GONE
                 val wv = container.ensureBlinkView(tab)
                 wv.tag = if (tab.isIncognito) "incognito" else "normal"
@@ -457,13 +510,21 @@ fun GeckoViewHost(
                 if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://") || currentUrl.startsWith("file://")) {
                     if (container.lastBlinkUrl != currentUrl && wv.url != currentUrl) {
                         container.lastBlinkUrl = currentUrl
-                        wv.loadUrl(currentUrl)
+                        val headers = tab.hybridExtraHeadersProvider?.invoke(currentUrl).orEmpty()
+                        if (headers.isNotEmpty()) wv.loadUrl(currentUrl, headers) else wv.loadUrl(currentUrl)
                     }
                 }
             } else {
                 captureHandle.blinkView = null
                 if (container.blinkView != null) {
                     container.destroyBlinkView()
+                }
+                if (attachTick >= 0 && gv.session !== target && target.isOpen) {
+                    if (gv.session != null) gv.releaseSession()
+                    gv.setSession(target)
+                }
+                if (target.isOpen) {
+                    runCatching { target.setActive(true) }
                 }
                 gv.visibility = View.VISIBLE
             }

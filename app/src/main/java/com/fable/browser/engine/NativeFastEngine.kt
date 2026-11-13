@@ -25,6 +25,9 @@ object NativeFastEngine {
     private external fun nativeSetGameBoost(enable: Boolean): Boolean
 
     @JvmStatic
+    private external fun nativeNotifyHeavyLoadBurst(): Boolean
+
+    @JvmStatic
     private external fun nativeResetTouchPointer(pointerId: Int)
 
     @JvmStatic
@@ -78,6 +81,12 @@ object NativeFastEngine {
     fun setGameBoost(enable: Boolean) {
         if (isNativeAvailable) {
             runCatching { nativeSetGameBoost(enable) }
+        }
+    }
+
+    fun notifyHeavyLoadBurst() {
+        if (isNativeAvailable) {
+            runCatching { nativeNotifyHeavyLoadBurst() }
         }
     }
 

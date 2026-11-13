@@ -47,10 +47,10 @@ data class Settings(
     val vibrationApi: Boolean = true,
     val featureBatteryApi: Boolean = false,
     val featureNetworkInfo: Boolean = false,
-    val featureWebGpu: Boolean = false,
+    val featureWebGpu: Boolean = true,
     val featureSpeechRecognition: Boolean = false,
     val featureWebGlDraft: Boolean = false,
-    val featureWasmExperimental: Boolean = false,
+    val featureWasmExperimental: Boolean = true,
     val fpCanvas: Boolean = true,
     val fpCanvasThirdParty: Boolean = true,
     val fpFonts: Boolean = true,
@@ -167,6 +167,10 @@ data class Settings(
     val hybridGeckoAdBlock: Boolean = true,
     val hybridHideLocalIp: Boolean = true,
     val hybridPersistTabMode: Boolean = true,
+    val hybridWebGpuBoost: Boolean = true,
+    val hybrid3d2dAccel: Boolean = true,
+    val hybridTeleportStabilizer: Boolean = true,
+    val hybridHibernateGecko: Boolean = true,
     val hybridCustomDomains: String = "bloxd.io, staging.bloxd.io, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io"
 ) {
     val performanceProfile: PerformanceProfile
@@ -318,6 +322,10 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val HYBRID_GECKO_AD_BLOCK = booleanPreferencesKey("hybrid_gecko_ad_block")
         val HYBRID_HIDE_LOCAL_IP = booleanPreferencesKey("hybrid_hide_local_ip")
         val HYBRID_PERSIST_TAB_MODE = booleanPreferencesKey("hybrid_persist_tab_mode")
+        val HYBRID_WEBGPU_BOOST = booleanPreferencesKey("hybrid_webgpu_boost")
+        val HYBRID_3D_2D_ACCEL = booleanPreferencesKey("hybrid_3d_2d_accel")
+        val HYBRID_TELEPORT_STABILIZER = booleanPreferencesKey("hybrid_teleport_stabilizer")
+        val HYBRID_HIBERNATE_GECKO = booleanPreferencesKey("hybrid_hibernate_gecko")
         val HYBRID_CUSTOM_DOMAINS = stringPreferencesKey("hybrid_custom_domains")
     }
 
@@ -340,7 +348,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             vibrationApi = p[Keys.VIBRATION_API] ?: true,
             featureBatteryApi = p[Keys.FEAT_BATTERY] ?: false,
             featureNetworkInfo = p[Keys.FEAT_NETINFO] ?: false,
-            featureWebGpu = p[Keys.FEAT_WEBGPU] ?: false,
+            featureWebGpu = p[Keys.FEAT_WEBGPU] ?: true,
             featureSpeechRecognition = p[Keys.FEAT_SPEECH] ?: false,
             featureWebGlDraft = p[Keys.FEAT_WEBGL_DRAFT] ?: false,
             featureWasmExperimental = p[Keys.FEAT_WASM_EXP] ?: false,
@@ -460,6 +468,10 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             hybridGeckoAdBlock = p[Keys.HYBRID_GECKO_AD_BLOCK] ?: true,
             hybridHideLocalIp = p[Keys.HYBRID_HIDE_LOCAL_IP] ?: true,
             hybridPersistTabMode = p[Keys.HYBRID_PERSIST_TAB_MODE] ?: true,
+            hybridWebGpuBoost = p[Keys.HYBRID_WEBGPU_BOOST] ?: true,
+            hybrid3d2dAccel = p[Keys.HYBRID_3D_2D_ACCEL] ?: true,
+            hybridTeleportStabilizer = p[Keys.HYBRID_TELEPORT_STABILIZER] ?: true,
+            hybridHibernateGecko = p[Keys.HYBRID_HIBERNATE_GECKO] ?: true,
             hybridCustomDomains = p[Keys.HYBRID_CUSTOM_DOMAINS] ?: "bloxd.io, staging.bloxd.io, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io"
         )
     }.distinctUntilChanged()
@@ -664,6 +676,10 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setHybridGeckoAdBlock(v: Boolean) = set(Keys.HYBRID_GECKO_AD_BLOCK, v)
     suspend fun setHybridHideLocalIp(v: Boolean) = set(Keys.HYBRID_HIDE_LOCAL_IP, v)
     suspend fun setHybridPersistTabMode(v: Boolean) = set(Keys.HYBRID_PERSIST_TAB_MODE, v)
+    suspend fun setHybridWebGpuBoost(v: Boolean) = set(Keys.HYBRID_WEBGPU_BOOST, v)
+    suspend fun setHybrid3d2dAccel(v: Boolean) = set(Keys.HYBRID_3D_2D_ACCEL, v)
+    suspend fun setHybridTeleportStabilizer(v: Boolean) = set(Keys.HYBRID_TELEPORT_STABILIZER, v)
+    suspend fun setHybridHibernateGecko(v: Boolean) = set(Keys.HYBRID_HIBERNATE_GECKO, v)
     suspend fun setHybridCustomDomains(v: String) = set(Keys.HYBRID_CUSTOM_DOMAINS, v)
 
     suspend fun copyIncognitoFromNormal(s: Settings) {

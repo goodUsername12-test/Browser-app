@@ -48,7 +48,7 @@ fun HybridBetaSettingsScreen(
         SectionHeader("Master Engine Mode")
         SwitchRow(
             title = "Enable GeckoView + Blink Combined Engine (Beta)",
-            subtitle = "Runs GeckoView for privacy, tracker blocking, local-IP hiding, and Super/Incognito identity while running Chromium Blink for 3D WebGL, WebAssembly, 90/120 Hz gaming, and fast DOM/font layout",
+            subtitle = "Runs GeckoView for privacy, tracker blocking, local-IP hiding, and Super/Incognito identity while running Chromium Blink for WebGPU, 3D WebGL, 2D Canvas, WebAssembly, 90/120 Hz gaming, and fast UI/font layout",
             checked = s.hybridGeckoBlinkBeta,
             icon = Icons.Outlined.Speed,
             onCheckedChange = viewModel::setHybridGeckoBlinkBeta
@@ -56,13 +56,19 @@ fun HybridBetaSettingsScreen(
         SwitchRow(
             title = "Auto-combine only on 3D games & benchmarks",
             subtitle = if (s.hybridAutoForGames)
-                "ON: Automatically activates Combined Blink + Gecko on listed game/benchmark domains (Bloxd, Speedometer, Poki, CrazyGames, etc.) while keeping other sites on GeckoView unless toggled in the menu"
+                "ON: Automatically activates Combined Blink + Gecko on listed game/benchmark domains while keeping other sites on GeckoView unless toggled in the menu"
             else
                 "OFF: Runs EVERY website and tab in the Combined Blink + Gecko Engine by default",
             checked = s.hybridAutoForGames,
             enabled = s.hybridGeckoBlinkBeta,
             icon = Icons.Outlined.Tune,
             onCheckedChange = viewModel::setHybridAutoForGames
+        )
+        SwitchRow(
+            title = "Hibernate background GeckoView surface while Blink renders",
+            subtitle = "Releases GeckoView's hidden GPU surface and pauses background Gecko layout while Blink is active, freeing RAM and GPU bandwidth while keeping Gecko privacy rules active",
+            checked = s.hybridHibernateGecko,
+            onCheckedChange = viewModel::setHybridHibernateGecko
         )
         SwitchRow(
             title = "Save per-tab & per-site Beta state across app updates",
@@ -97,17 +103,23 @@ fun HybridBetaSettingsScreen(
         }
         ListDivider()
 
-        SectionHeader("CPU, Scheduler & Speed Boost (mt6768 / Cortex-A75 Tuned)")
+        SectionHeader("CPU, Big-Core Affinity & Teleport Heavy-Load Stabilizer")
         SwitchRow(
-            title = "Native C++ Big-Core (Cortex-A75) Thread Boost",
-            subtitle = "Boosts CrRendererMain, CrGpuMain, VizCompositor, GeckoMain, and UI threads to priority -16 in C++ (libfable_fast.so) so Android schedules them on your 2.0 GHz Cortex-A75 big cores",
+            title = "Native C++ Big-Core (Cortex-A75) Affinity & Priority -18",
+            subtitle = "Pins CrRendererMain, CrGpuMain, VizCompositor, RenderThread, and GeckoMain to 2.0 GHz Cortex-A75 big cores via sched_setaffinity and priority -18 in C++",
             checked = s.hybridNativeCpuBoost,
             icon = Icons.Outlined.Memory,
             onCheckedChange = viewModel::setHybridNativeCpuBoost
         )
         SwitchRow(
+            title = "Teleport & heavy-load lag-spike eliminator",
+            subtitle = "Eliminates lag spikes during teleports, chunk bursts, and crowded multiplayer scenes using async texture decoding, frame-budget idle scheduling, and C++ worker thread boosting",
+            checked = s.hybridTeleportStabilizer,
+            onCheckedChange = viewModel::setHybridTeleportStabilizer
+        )
+        SwitchRow(
             title = "1 ns Kernel Timer Slack (PR_SET_TIMERSLACK)",
-            subtitle = "Eliminates Android's default 50,000 ns timer slack so setTimeout(0) and requestAnimationFrame fire with microsecond precision in games and Speedometer 3.0",
+            subtitle = "Eliminates Android's default 50,000 ns timer slack so setTimeout(0) and requestAnimationFrame fire with microsecond precision",
             checked = s.hybridZeroTimerSlack,
             onCheckedChange = viewModel::setHybridZeroTimerSlack
         )
@@ -126,19 +138,31 @@ fun HybridBetaSettingsScreen(
             onCheckedChange = viewModel::setHybridOffscreenPreRaster
         )
         SwitchRow(
-            title = "Native C++ same-origin & font CDN fast-path",
-            subtitle = "Approves same-origin game/benchmark assets and Google Fonts in C++ in nanoseconds without Kotlin allocations",
+            title = "Native C++ same-origin, 3D asset & font CDN fast-path",
+            subtitle = "Approves same-origin assets, .wasm/.glb/.ktx2/.wgsl/.woff2 files, and font/game CDNs in C++ in nanoseconds without Kotlin allocations",
             checked = s.hybridCppFastAssetBypass,
             onCheckedChange = viewModel::setHybridCppFastAssetBypass
         )
         ListDivider()
 
-        SectionHeader("3D Graphics, Camera Anti-Shutter & High-CPS Clicks")
+        SectionHeader("WebGPU, 3D WebGL, 2D Canvas, Camera & Zero-Cost Clicks")
         SwitchRow(
-            title = "Force High-Performance WebGL / WebGPU context",
-            subtitle = "Promotes canvas.getContext('webgl' / 'webgl2') to powerPreference: 'high-performance' for maximum Mali-G52 GPU clock speed",
+            title = "WebGPU high-performance adapter & WGSL shader cache",
+            subtitle = "Forces high-performance WebGPU adapters, unlocks hardware buffer/texture limits, caches compiled WGSL shader modules, and auto-recovers on device loss",
+            checked = s.hybridWebGpuBoost,
+            onCheckedChange = viewModel::setHybridWebGpuBoost
+        )
+        SwitchRow(
+            title = "Force High-Performance 3D WebGL / WebGL2 context",
+            subtitle = "Promotes canvas.getContext('webgl' / 'webgl2') to powerPreference: 'high-performance' and disables forced MSAA on heavy 3D games",
             checked = s.hybridHighPerfWebGl,
             onCheckedChange = viewModel::setHybridHighPerfWebGl
+        )
+        SwitchRow(
+            title = "3D WebGL state deduplication & 2D Canvas GPU/text cache",
+            subtitle = "Caches WebGL getParameter/getExtension calls, deduplicates redundant GL state/program binds, GPU-accelerates 2D canvases, and caches 2D measureText",
+            checked = s.hybrid3d2dAccel,
+            onCheckedChange = viewModel::setHybrid3d2dAccel
         )
         SwitchRow(
             title = "Camera anti-shutter & multi-touch ID lock",
@@ -147,8 +171,8 @@ fun HybridBetaSettingsScreen(
             onCheckedChange = viewModel::setHybridCameraAntiShutter
         )
         SwitchRow(
-            title = "Ultra-fast multi-click (20+ CPS zero delay)",
-            subtitle = "Disables Android's 300 ms double-tap zoom gesture recognizer, suppresses dblclick/contextmenu stalls, and caches canvas dimensions so rapid clicking eats 0 FPS",
+            title = "Ultra-fast multi-click (20+ CPS zero FPS drop)",
+            subtitle = "Disables Android's double-tap zoom and long-press detectors, caches canvas getBoundingClientRect/getComputedStyle, and suppresses synthetic hover raycasts so clicking eats 0 FPS",
             checked = s.hybridZeroDelayClicks,
             onCheckedChange = viewModel::setHybridZeroDelayClicks
         )
@@ -162,13 +186,13 @@ fun HybridBetaSettingsScreen(
         )
         SwitchRow(
             title = "Suppress redundant post-render physics timer",
-            subtitle = "Skips Bloxd's redundant post-render setTimeout(ip, 0) call so physics ticks stay strictly VSync-aligned inside requestAnimationFrame without mid-frame lag spikes",
+            subtitle = "Skips Bloxd's redundant post-render setTimeout(ip, 0) call so physics ticks stay strictly VSync-aligned inside requestAnimationFrame",
             checked = s.hybridSuppressPostRenderTimer,
             onCheckedChange = viewModel::setHybridSuppressPostRenderTimer
         )
         SwitchRow(
-            title = "Instant font swap (font-display: swap) & CDN preconnect",
-            subtitle = "Renders text immediately and preconnects to Google Fonts / GStatic so font loading never blocks game frames",
+            title = "Instant UI & font rendering accelerator (font-display: swap)",
+            subtitle = "Accelerates basic UI layout, applies text-rendering: optimizeSpeed and font-display: swap, and preconnects to Google Fonts, Cloudflare, and jsDelivr",
             checked = s.hybridFastFontSwap,
             onCheckedChange = viewModel::setHybridFastFontSwap
         )

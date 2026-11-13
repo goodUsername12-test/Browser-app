@@ -48,6 +48,7 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        window.setFormat(android.graphics.PixelFormat.OPAQUE)
         enableEdgeToEdge()
 
         activityBridge.bind(this)

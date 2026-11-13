@@ -53,7 +53,7 @@ object HybridEngineBridge {
         val dnt = if (isIncognito) settings.incognitoSendDnt else settings.sendGpc
         val blockBattery = !settings.featureBatteryApi
         val touchFix = settings.gameTouchFix && settings.hybridCameraAntiShutter
-        val applyIdentity = (isSuper || (isIncognito && settings.incognitoFingerprintProtection)) && !isGame
+        val applyIdentity = (isSuper || (isIncognito && settings.incognitoFingerprintProtection) || settings.normalTabShield) && !isGame
 
         val cfg = JSONObject().apply {
             put("hideLocalIp", hideLocalIp)
@@ -67,6 +67,9 @@ object HybridEngineBridge {
             put("isSuper", isSuper)
             put("applyIdentity", applyIdentity)
             put("highPerfWebGl", settings.hybridHighPerfWebGl)
+            put("webGpuBoost", settings.hybridWebGpuBoost)
+            put("accel3d2d", settings.hybrid3d2dAccel)
+            put("teleportStabilizer", settings.hybridTeleportStabilizer)
             put("reportedCores", settings.hybridReportedCores.coerceIn(2, 16))
             put("suppressPostTimer", settings.hybridSuppressPostRenderTimer)
             put("zeroDelayClicks", settings.hybridZeroDelayClicks)
@@ -201,33 +204,156 @@ object HybridEngineBridge {
 
             const host = (location.hostname || "").toLowerCase();
             const isAuthOrCaptcha = /cloudflare|turnstile|challenges\.cloudflare|recaptcha|hcaptcha|workos|auth0|accounts\.google/.test(host + " " + location.href);
-            if (CFG.applyIdentity && CFG.identity && !isAuthOrCaptcha) {
-                const id = CFG.identity;
+            if (CFG.applyIdentity && !isAuthOrCaptcha) {
+                const id = CFG.identity || {};
+                const shieldCores = id.cores || 8;
+                const shieldPlatform = id.platform || "Linux armv81";
+                const shieldLangs = (Array.isArray(id.languages) && id.languages.length > 0) ? id.languages : ["en-US", "en"];
+                const shieldLang = shieldLangs[0] || "en-US";
+                const shieldTz = id.timeZone || "UTC";
+                const shieldGlVendor = id.glVendor || "Qualcomm";
+                const shieldGlRenderer = id.glRenderer || "Adreno (TM) 650";
+                const shieldW = id.screenWidth || 360;
+                const shieldH = id.screenHeight || 800;
+                const shieldAvailH = id.availHeight || 752;
+                const shieldDepth = id.colorDepth || 24;
+                const shieldTouch = (typeof id.touchPoints === "number") ? id.touchPoints : 5;
+                const noiseDelta = ((id.seed ? Number(id.seed & 7) : 3) % 5) + 1;
+
                 try {
-                    if (id.cores) {
-                        Object.defineProperty(Navigator.prototype, "hardwareConcurrency", {
-                            get: function() { return id.cores; },
-                            configurable: true
-                        });
+                    Object.defineProperty(Navigator.prototype, "hardwareConcurrency", { get: function() { return shieldCores; }, configurable: true });
+                    Object.defineProperty(Navigator.prototype, "deviceMemory", { get: function() { return 8; }, configurable: true });
+                    Object.defineProperty(Navigator.prototype, "platform", { get: function() { return shieldPlatform; }, configurable: true });
+                    Object.defineProperty(Navigator.prototype, "language", { get: function() { return shieldLang; }, configurable: true });
+                    Object.defineProperty(Navigator.prototype, "languages", { get: function() { return shieldLangs.slice(); }, configurable: true });
+                    Object.defineProperty(Navigator.prototype, "maxTouchPoints", { get: function() { return shieldTouch; }, configurable: true });
+                    if ("userAgentData" in Navigator.prototype) {
+                        Object.defineProperty(Navigator.prototype, "userAgentData", { get: function() { return undefined; }, configurable: true });
                     }
-                    if (id.platform) {
-                        Object.defineProperty(Navigator.prototype, "platform", {
-                            get: function() { return id.platform; },
-                            configurable: true
-                        });
+                } catch (_) {}
+
+                try {
+                    Object.defineProperty(Screen.prototype, "width", { get: function() { return shieldW; }, configurable: true });
+                    Object.defineProperty(Screen.prototype, "height", { get: function() { return shieldH; }, configurable: true });
+                    Object.defineProperty(Screen.prototype, "availWidth", { get: function() { return shieldW; }, configurable: true });
+                    Object.defineProperty(Screen.prototype, "availHeight", { get: function() { return shieldAvailH; }, configurable: true });
+                    Object.defineProperty(Screen.prototype, "colorDepth", { get: function() { return shieldDepth; }, configurable: true });
+                    Object.defineProperty(Screen.prototype, "pixelDepth", { get: function() { return shieldDepth; }, configurable: true });
+                } catch (_) {}
+
+                try {
+                    if (shieldTz === "UTC") {
+                        Date.prototype.getTimezoneOffset = function() { return 0; };
+                    }
+                    if (window.Intl && Intl.DateTimeFormat) {
+                        const origResolved = Intl.DateTimeFormat.prototype.resolvedOptions;
+                        Intl.DateTimeFormat.prototype.resolvedOptions = function() {
+                            const res = origResolved.apply(this, arguments);
+                            if (res && typeof res === "object") res.timeZone = shieldTz;
+                            return res;
+                        };
+                    }
+                } catch (_) {}
+
+                try {
+                    const patchWebGl = function(Proto) {
+                        if (!Proto || !Proto.getParameter) return;
+                        const origGetParam = Proto.getParameter;
+                        Proto.getParameter = function(p) {
+                            if (p === 37445) return shieldGlVendor;
+                            if (p === 37446) return shieldGlRenderer;
+                            return origGetParam.apply(this, arguments);
+                        };
+                    };
+                    if (window.WebGLRenderingContext) patchWebGl(WebGLRenderingContext.prototype);
+                    if (window.WebGL2RenderingContext) patchWebGl(WebGL2RenderingContext.prototype);
+                } catch (_) {}
+
+                try {
+                    const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+                    CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {
+                        const img = origGetImageData.apply(this, arguments);
+                        if (img && img.data && img.data.length >= 16 && sw <= 600 && sh <= 400) {
+                            img.data[0] = (img.data[0] + noiseDelta) & 255;
+                            img.data[4] = (img.data[4] ^ noiseDelta) & 255;
+                        }
+                        return img;
+                    };
+                    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+                    HTMLCanvasElement.prototype.toDataURL = function() {
+                        try {
+                            if (this.width > 0 && this.width <= 600 && this.height > 0 && this.height <= 400) {
+                                const ctx2d = this.getContext("2d");
+                                if (ctx2d) {
+                                    const px = origGetImageData.call(ctx2d, 0, 0, 1, 1);
+                                    px.data[0] = (px.data[0] + noiseDelta) & 255;
+                                    ctx2d.putImageData(px, 0, 0);
+                                }
+                            }
+                        } catch (_) {}
+                        return origToDataURL.apply(this, arguments);
+                    };
+                } catch (_) {}
+
+                try {
+                    if (window.AudioBuffer && AudioBuffer.prototype.getChannelData) {
+                        const origChannel = AudioBuffer.prototype.getChannelData;
+                        AudioBuffer.prototype.getChannelData = function() {
+                            const data = origChannel.apply(this, arguments);
+                            if (data && data.length > 0 && !data.__fableNoised) {
+                                data[0] = data[0] + (noiseDelta * 1e-7);
+                                Object.defineProperty(data, "__fableNoised", { value: true });
+                            }
+                            return data;
+                        };
+                    }
+                    if (window.speechSynthesis) {
+                        window.speechSynthesis.getVoices = function() { return []; };
                     }
                 } catch (_) {}
             }
 
-            // 3. Blink 3D WebGL High-Performance Promoter (where GeckoView is weaker)
-            if (CFG.highPerfWebGl !== false) try {
+            // 3. Blink 3D/2D WebGL & WebGPU High-Performance Promoter
+            if (CFG.highPerfWebGl !== false || CFG.accel3d2d !== false) try {
                 const origGetContext = HTMLCanvasElement.prototype.getContext;
                 HTMLCanvasElement.prototype.getContext = function(type, attrs) {
                     if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
-                        const nextAttrs = Object.assign({ powerPreference: "high-performance" }, attrs || {});
+                        const nextAttrs = Object.assign({
+                            powerPreference: "high-performance",
+                            desynchronized: !!CFG.isGame && (CFG.accel3d2d !== false)
+                        }, attrs || {});
                         return origGetContext.call(this, type, nextAttrs);
                     }
+                    if (type === "2d" && CFG.isGame && CFG.accel3d2d !== false) {
+                        const next2d = Object.assign({ desynchronized: true }, attrs || {});
+                        return origGetContext.call(this, type, next2d);
+                    }
                     return origGetContext.call(this, type, attrs);
+                };
+            } catch (_) {}
+            if (CFG.webGpuBoost !== false && navigator.gpu && typeof navigator.gpu.requestAdapter === "function") try {
+                const origReqAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
+                navigator.gpu.requestAdapter = function(opts) {
+                    const nextOpts = Object.assign({ powerPreference: "high-performance" }, opts || {});
+                    return origReqAdapter(nextOpts).then(function(adapter) {
+                        if (adapter && typeof adapter.requestDevice === "function" && !adapter.__fableWrapped) {
+                            const origReqDevice = adapter.requestDevice.bind(adapter);
+                            adapter.requestDevice = function(desc) {
+                                return origReqDevice(desc).then(function(device) {
+                                    if (device && device.lost && typeof device.lost.then === "function") {
+                                        device.lost.then(function() {
+                                            if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                                window.FableHybridBridge.onHeavyBurst();
+                                            }
+                                        });
+                                    }
+                                    return device;
+                                });
+                            };
+                            adapter.__fableWrapped = true;
+                        }
+                        return adapter;
+                    });
                 };
             } catch (_) {}
 
@@ -248,6 +374,25 @@ object HybridEngineBridge {
                                 return 0;
                             }
                             return origSetTimeout.apply(this, arguments);
+                        };
+                    }
+                    if (CFG.teleportStabilizer !== false && window.requestAnimationFrame) {
+                        let lastFrameTs = 0;
+                        let lastBurstTs = 0;
+                        const origRaf = window.requestAnimationFrame;
+                        window.requestAnimationFrame = function(cb) {
+                            return origRaf.call(window, function(ts) {
+                                if (lastFrameTs > 0 && (ts - lastFrameTs) > 28 && (ts - lastBurstTs) > 400) {
+                                    lastBurstTs = ts;
+                                    try {
+                                        if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                            window.FableHybridBridge.onHeavyBurst();
+                                        }
+                                    } catch (_) {}
+                                }
+                                lastFrameTs = ts;
+                                return cb(ts);
+                            });
                         };
                     }
                 } catch (_) {}

@@ -347,6 +347,10 @@ class SettingsViewModel @Inject constructor(
     fun setHybridGeckoAdBlock(v: Boolean) = edit { store.setHybridGeckoAdBlock(v) }
     fun setHybridHideLocalIp(v: Boolean) = edit { store.setHybridHideLocalIp(v) }
     fun setHybridPersistTabMode(v: Boolean) = edit { store.setHybridPersistTabMode(v) }
+    fun setHybridWebGpuBoost(v: Boolean) = edit { store.setHybridWebGpuBoost(v) }
+    fun setHybrid3d2dAccel(v: Boolean) = edit { store.setHybrid3d2dAccel(v) }
+    fun setHybridTeleportStabilizer(v: Boolean) = edit { store.setHybridTeleportStabilizer(v) }
+    fun setHybridHibernateGecko(v: Boolean) = edit { store.setHybridHibernateGecko(v) }
     fun setHybridCustomDomains(v: String) = edit { store.setHybridCustomDomains(v) }
     fun resetHybridSiteOverrides(context: android.content.Context) {
         runCatching {

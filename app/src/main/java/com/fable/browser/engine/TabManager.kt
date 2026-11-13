@@ -411,14 +411,45 @@ class TabManager @Inject constructor(
     }
 
     private fun wireHybridCallbacks(tab: BrowserTab) {
+        tab.hibernateGeckoWhenHybrid = settings.hybridHibernateGecko
+        tab.fastAssetBypassEnabled = settings.hybridCppFastAssetBypass
         tab.hybridBlockChecker = { reqUrl, docHost ->
             val s = settings
             val adBlock = s.hybridGeckoAdBlock && (if (tab.isIncognito) s.incognitoAdBlock else s.adBlockEnabled)
             proxyConfig.shouldBlockHybrid(reqUrl, docHost, adBlock)
         }
+        tab.hybridCustomUserAgent = {
+            val s = settings
+            when {
+                tab.isSuper -> superIncognito.current(s).ua.takeIf { it.isNotBlank() }
+                tab.isIncognito && s.incognitoFingerprintProtection ->
+                    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36"
+                s.normalTabShield ->
+                    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36"
+                else -> null
+            }
+        }
+        tab.hybridExtraHeadersProvider = { _ ->
+            val s = settings
+            val sendDnt = if (tab.isIncognito) s.incognitoSendDnt else s.sendGpc
+            val sendGpc = if (tab.isIncognito) s.incognitoGpc else s.sendGpc
+            val shield = tab.isSuper || (tab.isIncognito && s.incognitoFingerprintProtection) || s.normalTabShield
+            buildMap {
+                if (sendDnt) put("DNT", "1")
+                if (sendGpc) put("Sec-GPC", "1")
+                if (shield) {
+                    val lang = if (tab.isSuper) {
+                        superIncognito.current(s).acceptLanguage().ifBlank { "en-US,en;q=0.9" }
+                    } else {
+                        "en-US,en;q=0.9"
+                    }
+                    put("Accept-Language", lang)
+                }
+            }
+        }
         tab.hybridBootstrapProvider = { pageUrl ->
             val s = settings
-            val id = if (tab.isSuper) superIncognito.identity.value else null
+            val id = if (tab.isSuper) superIncognito.current(s) else null
             HybridEngineBridge.buildCombinedBootstrapScript(
                 settings = s,
                 isIncognito = tab.isIncognito,
@@ -454,7 +485,13 @@ class TabManager @Inject constructor(
         if (enabled) {
             onGameModeStarted()
             if (tab.session.isOpen) {
-                runCatching { tab.session.stop() }
+                runCatching {
+                    tab.session.stop()
+                    if (settings.hybridHibernateGecko) {
+                        tab.session.setActive(false)
+                        setPriority(tab, high = false)
+                    }
+                }
             }
         } else {
             val currentUrl = tab.url.value
@@ -690,8 +727,14 @@ class TabManager @Inject constructor(
         }
         if (tab.isHybridBlink.value) {
             tab.updateUrl(url)
+            if (tab.session.isOpen && settings.hybridHibernateGecko) {
+                runCatching {
+                    tab.session.stop()
+                    tab.session.setActive(false)
+                    setPriority(tab, high = false)
+                }
+            }
             tab.hybridController?.loadUrl(url)
-            // Keep GeckoView privacy core session aware of the domain metadata without full heavy render when hybrid is active
             touchIncognitoActivity()
             return
         }

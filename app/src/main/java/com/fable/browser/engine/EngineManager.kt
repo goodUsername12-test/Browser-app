@@ -63,6 +63,8 @@ class EngineManager @Inject constructor(
                 if (!quietNetwork(initial) && initial.fastConnections) {
                     speculativeConnect("https://fonts.gstatic.com")
                     speculativeConnect("https://fonts.googleapis.com")
+                    speculativeConnect("https://cdn.jsdelivr.net")
+                    speculativeConnect("https://cdnjs.cloudflare.com")
                 }
             }
             observeSettings()
@@ -192,6 +194,8 @@ class EngineManager @Inject constructor(
         val d = s ?: Settings()
         val quiet = quietNetwork(d)
         val anyProxy = superProxyOn(d) || (d.incognitoProxyEnabled && d.incognitoProxyHost.isNotBlank())
+        val wasmOn = !d.disableWasm || d.superGameMode
+        val wasmAdv = wasmOn && (d.featureWasmExperimental || d.gameMode || d.superGameMode || d.hybridGeckoBlinkBeta)
         return listOf(
             "media.peerconnection.ice.no_host" to (d.hideLocalIp || superProxyOn(d)),
             "media.peerconnection.ice.default_address_only" to (d.hideLocalIp || superProxyOn(d)),
@@ -215,9 +219,19 @@ class EngineManager @Inject constructor(
             "javascript.options.ion" to (!d.noJit || d.superGameMode),
             "javascript.options.native_regexp" to (!d.noJit || d.superGameMode),
             "javascript.options.wasm_optimizingjit" to (!d.noJit || d.superGameMode),
-            "javascript.options.wasm" to (!d.disableWasm || d.superGameMode),
-            "javascript.options.wasm_simd" to (!d.disableWasm || d.superGameMode),
-            "javascript.options.wasm_relaxed_simd" to (!d.disableWasm || d.superGameMode || d.featureWasmExperimental),
+            "javascript.options.wasm" to wasmOn,
+            "javascript.options.wasm_simd" to wasmOn,
+            "javascript.options.wasm_relaxed_simd" to wasmAdv,
+            "javascript.options.wasm_gc" to wasmAdv,
+            "javascript.options.wasm_tail_calls" to wasmAdv,
+            "javascript.options.wasm_exceptions" to wasmAdv,
+            "javascript.options.wasm_function_references" to wasmAdv,
+            "javascript.options.wasm_multi_memory" to wasmAdv,
+            "javascript.options.wasm_memory64" to wasmAdv,
+            "javascript.options.wasm_extended_const" to wasmAdv,
+            "javascript.options.wasm_branch_hinting" to wasmAdv,
+            "javascript.options.wasm_js_string_builtins" to wasmAdv,
+            "javascript.options.shared_memory" to wasmOn,
             "gfx.webrender.all" to true,
             "gfx.webrender.compositor" to true,
             "gfx.webrender.precache-shaders" to (d.gameMode || d.superGameMode),
@@ -249,7 +263,7 @@ class EngineManager @Inject constructor(
             "dom.min_background_timeout_value" to if (optimizing(d)) 10_000 else 1_000,
             "dom.timeout.background_throttling_max_budget" to if (optimizing(d)) 20 else 50,
             "browser.sessionhistory.max_entries" to if (optimizing(d)) 25 else 50,
-            "image.mem.decode_bytes_at_a_time" to if (d.gameMode || d.superGameMode) 262_144 else 65_536,
+            "image.mem.decode_bytes_at_a_time" to if (d.gameMode || d.superGameMode) 524_288 else 65_536,
             "browser.cache.disk.max_entry_size" to 51_200,
             "network.buffer.cache.size" to 262_144,
             "network.buffer.cache.count" to 128,
@@ -259,7 +273,9 @@ class EngineManager @Inject constructor(
             "dom.ipc.processCount.webIsolated" to if (optimizing(d)) 2 else 4,
             "layout.frame_rate" to 0,
             "webgl.max-contexts-per-principal" to 32,
-            "javascript.options.mem.gc_incremental_slice_ms" to if (d.gameMode || d.superGameMode) 4 else 10
+            "javascript.options.mem.nursery.max_kb" to if (d.gameMode || d.superGameMode) 65_536 else 16_384,
+            "javascript.options.mem.gc_incremental_slice_ms" to if (d.gameMode || d.superGameMode) 3 else 10,
+            "javascript.options.mem.gc_high_frequency_time_limit_ms" to 400
         )
     }
 
@@ -315,7 +331,7 @@ class EngineManager @Inject constructor(
             "dom.vibrator.enabled" to d.vibrationApi,
             "dom.battery.enabled" to d.featureBatteryApi,
             "dom.netinfo.enabled" to d.featureNetworkInfo,
-            "dom.webgpu.enabled" to d.featureWebGpu,
+            "dom.webgpu.enabled" to (d.featureWebGpu || d.hybridWebGpuBoost || d.gameMode),
             "media.webspeech.recognition.enable" to d.featureSpeechRecognition,
             "media.webspeech.recognition.force_enable" to d.featureSpeechRecognition,
             "webgl.enable-draft-extensions" to d.featureWebGlDraft,
@@ -562,6 +578,10 @@ class EngineManager @Inject constructor(
             "gfx.downloadable_fonts.enabled" to true,
             "gfx.font_rendering.opentype_svg.enabled" to true,
             "gfx.canvas.accelerated" to true,
+            "gfx.canvas.accelerated.cache-items" to 4096,
+            "gfx.canvas.accelerated.cache-size" to 512,
+            "image.mem.shared" to true,
+            "javascript.options.mem.gc_ParallelMarkingEnabled" to true,
             "dom.gamepad.enabled" to true
         )
     }

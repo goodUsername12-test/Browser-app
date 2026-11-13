@@ -90,10 +90,14 @@ class BrowserTab(
     private val _isHybridBlink = MutableStateFlow(false)
     val isHybridBlink: StateFlow<Boolean> = _isHybridBlink.asStateFlow()
     @Volatile var manualHybridOverride: Boolean? = null
+    @Volatile var hibernateGeckoWhenHybrid: Boolean = true
+    @Volatile var fastAssetBypassEnabled: Boolean = true
 
     @Volatile var hybridController: HybridBlinkController? = null
     @Volatile var hybridBlockChecker: ((String, String?) -> Boolean)? = null
     @Volatile var hybridBootstrapProvider: ((String) -> String)? = null
+    @Volatile var hybridCustomUserAgent: (() -> String?)? = null
+    @Volatile var hybridExtraHeadersProvider: ((String) -> Map<String, String>)? = null
     @Volatile var hybridArchiveScriptProvider: ((String, String) -> String)? = null
     @Volatile var hybridArchiveMessageHandler: ((String) -> Unit)? = null
 

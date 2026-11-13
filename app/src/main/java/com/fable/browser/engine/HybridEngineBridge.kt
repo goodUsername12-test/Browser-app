@@ -317,8 +317,24 @@ object HybridEngineBridge {
                 } catch (_) {}
             }
 
-            // 3. Blink 3D/2D WebGL & WebGPU High-Performance Promoter
+            // 3. Blink 3D/2D WebGL, OffscreenCanvas & WebGPU High-Performance Promoter
             if (CFG.highPerfWebGl !== false || CFG.accel3d2d !== false) try {
+                const warmGlExtensions = function(gl) {
+                    if (!gl || gl.__fableExtWarmed || typeof gl.getExtension !== "function") return;
+                    gl.__fableExtWarmed = true;
+                    const fastExts = [
+                        "OES_vertex_array_object",
+                        "ANGLE_instanced_arrays",
+                        "OES_texture_float_linear",
+                        "OES_texture_half_float_linear",
+                        "EXT_color_buffer_float",
+                        "WEBGL_compressed_texture_astc",
+                        "WEBGL_compressed_texture_etc"
+                    ];
+                    for (let i = 0; i < fastExts.length; i++) {
+                        try { gl.getExtension(fastExts[i]); } catch (_) {}
+                    }
+                };
                 const origGetContext = HTMLCanvasElement.prototype.getContext;
                 HTMLCanvasElement.prototype.getContext = function(type, attrs) {
                     if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
@@ -326,7 +342,19 @@ object HybridEngineBridge {
                             powerPreference: "high-performance",
                             desynchronized: !!CFG.isGame && (CFG.accel3d2d !== false)
                         }, attrs || {});
-                        return origGetContext.call(this, type, nextAttrs);
+                        const ctx = origGetContext.call(this, type, nextAttrs);
+                        if (ctx && CFG.isGame) warmGlExtensions(ctx);
+                        if (this && !this.__fableCtxLostHooked && typeof this.addEventListener === "function") {
+                            this.__fableCtxLostHooked = true;
+                            this.addEventListener("webglcontextlost", function() {
+                                try {
+                                    if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                        window.FableHybridBridge.onHeavyBurst();
+                                    }
+                                } catch (_) {}
+                            }, { passive: true });
+                        }
+                        return ctx;
                     }
                     if (type === "2d" && CFG.isGame && CFG.accel3d2d !== false) {
                         const next2d = Object.assign({ desynchronized: true }, attrs || {});
@@ -334,6 +362,21 @@ object HybridEngineBridge {
                     }
                     return origGetContext.call(this, type, attrs);
                 };
+                if (typeof window.OffscreenCanvas === "function" && OffscreenCanvas.prototype && OffscreenCanvas.prototype.getContext) {
+                    const origOffGetContext = OffscreenCanvas.prototype.getContext;
+                    OffscreenCanvas.prototype.getContext = function(type, attrs) {
+                        if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
+                            const nextAttrs = Object.assign({
+                                powerPreference: "high-performance",
+                                desynchronized: !!CFG.isGame && (CFG.accel3d2d !== false)
+                            }, attrs || {});
+                            const ctx = origOffGetContext.call(this, type, nextAttrs);
+                            if (ctx && CFG.isGame) warmGlExtensions(ctx);
+                            return ctx;
+                        }
+                        return origOffGetContext.call(this, type, attrs);
+                    };
+                }
             } catch (_) {}
             if (CFG.webGpuBoost !== false && navigator.gpu && typeof navigator.gpu.requestAdapter === "function") try {
                 const origReqAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
@@ -612,12 +655,102 @@ object HybridEngineBridge {
                                     return origUseProg.call(this, prog);
                                 };
                             }
+                            const origDeleteProg = Proto.deleteProgram;
+                            if (typeof origDeleteProg === "function") {
+                                Proto.deleteProgram = function(prog) {
+                                    if (this.__fableLastProg === prog) this.__fableLastProg = null;
+                                    return origDeleteProg.call(this, prog);
+                                };
+                            }
+                            const origActiveTex = Proto.activeTexture;
+                            if (typeof origActiveTex === "function") {
+                                Proto.activeTexture = function(unit) {
+                                    if (this.__fableActiveUnit === unit) return;
+                                    this.__fableActiveUnit = unit;
+                                    return origActiveTex.call(this, unit);
+                                };
+                            }
+                            const origBindTex = Proto.bindTexture;
+                            if (typeof origBindTex === "function") {
+                                Proto.bindTexture = function(target, tex) {
+                                    const u = this.__fableActiveUnit || 0x84C0;
+                                    const map = this.__fableTexMap || (this.__fableTexMap = new Map());
+                                    const key = (u << 16) ^ target;
+                                    if (tex !== null && map.get(key) === tex) return;
+                                    map.set(key, tex);
+                                    return origBindTex.call(this, target, tex);
+                                };
+                            }
+                            const origDeleteTex = Proto.deleteTexture;
+                            if (typeof origDeleteTex === "function") {
+                                Proto.deleteTexture = function(tex) {
+                                    if (this.__fableTexMap) this.__fableTexMap.clear();
+                                    return origDeleteTex.call(this, tex);
+                                };
+                            }
                             const origDepthFunc = Proto.depthFunc;
                             if (typeof origDepthFunc === "function") {
                                 Proto.depthFunc = function(fn) {
                                     if (this.__fableLastDepthFn === fn) return;
                                     this.__fableLastDepthFn = fn;
                                     return origDepthFunc.call(this, fn);
+                                };
+                            }
+                            const origDepthMask = Proto.depthMask;
+                            if (typeof origDepthMask === "function") {
+                                Proto.depthMask = function(flag) {
+                                    const b = !!flag;
+                                    if (this.__fableLastDepthMask === b) return;
+                                    this.__fableLastDepthMask = b;
+                                    return origDepthMask.call(this, flag);
+                                };
+                            }
+                            const origCullFace = Proto.cullFace;
+                            if (typeof origCullFace === "function") {
+                                Proto.cullFace = function(mode) {
+                                    if (this.__fableLastCull === mode) return;
+                                    this.__fableLastCull = mode;
+                                    return origCullFace.call(this, mode);
+                                };
+                            }
+                            const origFrontFace = Proto.frontFace;
+                            if (typeof origFrontFace === "function") {
+                                Proto.frontFace = function(mode) {
+                                    if (this.__fableLastFront === mode) return;
+                                    this.__fableLastFront = mode;
+                                    return origFrontFace.call(this, mode);
+                                };
+                            }
+                            const origBlendFunc = Proto.blendFunc;
+                            if (typeof origBlendFunc === "function") {
+                                Proto.blendFunc = function(s, d) {
+                                    const k = (s << 16) ^ d;
+                                    if (this.__fableLastBlend === k) return;
+                                    this.__fableLastBlend = k;
+                                    return origBlendFunc.call(this, s, d);
+                                };
+                            }
+                            const origBlendFuncSep = Proto.blendFuncSeparate;
+                            if (typeof origBlendFuncSep === "function") {
+                                Proto.blendFuncSeparate = function(sr, dr, sa, da) {
+                                    this.__fableLastBlend = null;
+                                    return origBlendFuncSep.call(this, sr, dr, sa, da);
+                                };
+                            }
+                            const origEnable = Proto.enable;
+                            const origDisable = Proto.disable;
+                            if (typeof origEnable === "function" && typeof origDisable === "function") {
+                                Proto.enable = function(cap) {
+                                    const caps = this.__fableCapMap || (this.__fableCapMap = new Map());
+                                    if (caps.get(cap) === true) return;
+                                    caps.set(cap, true);
+                                    return origEnable.call(this, cap);
+                                };
+                                Proto.disable = function(cap) {
+                                    const caps = this.__fableCapMap || (this.__fableCapMap = new Map());
+                                    if (caps.get(cap) === false) return;
+                                    caps.set(cap, false);
+                                    return origDisable.call(this, cap);
                                 };
                             }
                             const origViewport = Proto.viewport;
@@ -629,10 +762,25 @@ object HybridEngineBridge {
                                     return origViewport.call(this, x, y, w, h);
                                 };
                             }
+                            const origScissor = Proto.scissor;
+                            if (typeof origScissor === "function") {
+                                Proto.scissor = function(x, y, w, h) {
+                                    const k = x + "," + y + "," + w + "," + h;
+                                    if (this.__fableLastScissor === k) return;
+                                    this.__fableLastScissor = k;
+                                    return origScissor.call(this, x, y, w, h);
+                                };
+                            }
                             Proto.__fableStateCached = true;
                         };
                         if (window.WebGLRenderingContext) patchGlStateCache(WebGLRenderingContext.prototype);
                         if (window.WebGL2RenderingContext) patchGlStateCache(WebGL2RenderingContext.prototype);
+                    }
+                    // Mobile 3D PointerLock Compatibility Shim (prevents NotSupportedError in 3D games)
+                    if (Element.prototype && typeof Element.prototype.requestPointerLock !== "function") {
+                        Element.prototype.requestPointerLock = function() {
+                            return Promise.resolve();
+                        };
                     }
                     if (window.HTMLImageElement && HTMLImageElement.prototype) {
                         const origSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");

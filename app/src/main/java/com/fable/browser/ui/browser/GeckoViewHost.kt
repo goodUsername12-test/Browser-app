@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fable.browser.engine.BrowserTab
+import com.fable.browser.engine.FableUnifiedEngine
 import com.fable.browser.engine.FindMatch
 import com.fable.browser.engine.HybridBlinkController
 import com.fable.browser.engine.NativeFastEngine
@@ -116,6 +117,11 @@ private class FableHybridJsBridge(
     @JavascriptInterface
     fun onHeavyBurst() {
         NativeFastEngine.notifyHeavyLoadBurst()
+    }
+
+    @JavascriptInterface
+    fun onFrameDeltaNs(deltaNs: Long): Int {
+        return FableUnifiedEngine.recordFrameDeltaNs(deltaNs)
     }
 
     @JavascriptInterface
@@ -242,7 +248,14 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
         }
 
         val mutableCtx = MutableContextWrapper(context)
-        val wv = WebView(mutableCtx).apply {
+        val wv = object : WebView(mutableCtx) {
+            override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+                super.onScrollChanged(l, t, oldl, oldt)
+                if (t != oldt) {
+                    tab.hybridScrollHandler?.invoke(t)
+                }
+            }
+        }.apply {
             setBackgroundColor(Color.BLACK)
             setLayerType(View.LAYER_TYPE_NONE, null)
             isFocusable = true
@@ -284,6 +297,21 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
                 val cur = if (numberOfMatches > 0) activeMatchOrdinal + 1 else 0
                 tab.updateFindMatch(FindMatch(cur, numberOfMatches))
+            }
+            setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+                if (!url.isNullOrBlank()) {
+                    tab.hybridDownloadHandler?.invoke(url, contentDisposition, mimeType)
+                }
+            }
+            setOnLongClickListener { v ->
+                val hit = (v as? WebView)?.hitTestResult
+                val target = FableUnifiedEngine.extractContextMenuTarget(tab, hit)
+                if (target != null) {
+                    tab.hybridContextMenuHandler?.invoke(target)
+                    true
+                } else {
+                    false
+                }
             }
             webViewClient = object : WebViewClient() {
                 @Volatile private var cachedDocHost: String? = null
@@ -419,9 +447,11 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 }
             }
         }
-        val rawDefaultUa = runCatching { wv.settings.userAgentString }.getOrDefault("")
-            .replace("; wv)", ")")
-            .replace("Version/4.0 ", "")
+        val rawDefaultUa = FableUnifiedEngine.defaultBlinkUserAgent.ifBlank {
+            runCatching { wv.settings.userAgentString }.getOrDefault("")
+                .replace("; wv)", ")")
+                .replace("Version/4.0 ", "")
+        }
         val initialPrivacyUa = tab.hybridCustomUserAgent?.invoke()?.takeIf { it.isNotBlank() } ?: rawDefaultUa
         if (initialPrivacyUa.isNotBlank()) {
             runCatching { wv.settings.userAgentString = initialPrivacyUa }

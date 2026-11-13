@@ -55,6 +55,7 @@ class EngineManager @Inject constructor(
 
     fun warmUp() {
         if (!warmedUp.compareAndSet(false, true)) return
+        FableUnifiedEngine.prewarmAsync(context)
         mainHandler.post {
             runtime
             scope.launch {
@@ -516,6 +517,7 @@ class EngineManager @Inject constructor(
     }
 
     fun clearCookies() {
+        FableUnifiedEngine.clearBlinkData(incognitoOnly = false)
         _runtime?.storageController
             ?.clearData(org.mozilla.geckoview.StorageController.ClearFlags.COOKIES)
     }

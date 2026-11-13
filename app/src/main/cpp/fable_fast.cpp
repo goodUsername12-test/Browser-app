@@ -14,6 +14,9 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <unistd.h>
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
 
 namespace {
 
@@ -131,7 +134,7 @@ constexpr std::array<std::string_view, 8> BLOCKED_PATH_TOKENS = {
     "/pixel/"
 };
 
-constexpr std::array<std::string_view, 12> FAST_SAFE_CDNS = {
+constexpr std::array<std::string_view, 16> FAST_SAFE_CDNS = {
     "fonts.gstatic.com",
     "fonts.googleapis.com",
     "cdn.jsdelivr.net",
@@ -143,10 +146,14 @@ constexpr std::array<std::string_view, 12> FAST_SAFE_CDNS = {
     "threejs.org",
     "playcanvas.com",
     "poki-gdn.com",
-    "crazygames.com"
+    "crazygames.com",
+    "bloxd.io",
+    "staging.bloxd.io",
+    "krunker.io",
+    "1v1.lol"
 };
 
-constexpr std::array<std::string_view, 22> FAST_GAME_EXTENSIONS = {
+constexpr std::array<std::string_view, 24> FAST_GAME_EXTENSIONS = {
     ".wasm",
     ".wat",
     ".unityweb",
@@ -168,7 +175,9 @@ constexpr std::array<std::string_view, 22> FAST_GAME_EXTENSIONS = {
     ".avif",
     ".ogg",
     ".mp3",
-    ".wgsl"
+    ".wgsl",
+    ".vert",
+    ".frag"
 };
 
 std::string_view extract_host(std::string_view url) noexcept {
@@ -195,7 +204,7 @@ std::string_view extract_path_no_query(std::string_view url) noexcept {
 }
 
 bool is_same_or_subdomain(std::string_view host, std::string_view domain) noexcept {
-    if (host.size() < domain.size()) return false;
+    if (host.empty() || domain.empty() || host.size() < domain.size()) return false;
     if (!ends_with_ci(host, domain)) return false;
     if (host.size() == domain.size()) return true;
     return host[host.size() - domain.size() - 1] == '.';
@@ -208,7 +217,7 @@ bool is_fast_same_origin_or_game_asset(std::string_view url, std::string_view pa
     }
     const std::string_view host = extract_host(url);
     if (host.empty()) return true;
-    if (!page_host.empty() && is_same_or_subdomain(host, page_host)) {
+    if (!page_host.empty() && (is_same_or_subdomain(host, page_host) || is_same_or_subdomain(page_host, host))) {
         const std::string_view path = extract_path_no_query(url);
         for (const auto& token : BLOCKED_PATH_TOKENS) {
             if (contains_ci(path, token)) return false;
@@ -235,6 +244,8 @@ bool is_fast_same_origin_or_game_asset(std::string_view url, std::string_view pa
 struct PointerState {
     float x = -10000.0f;
     float y = -10000.0f;
+    float vx = 0.0f;
+    float vy = 0.0f;
     std::int64_t ts = 0;
 };
 
@@ -245,6 +256,8 @@ std::atomic<bool> g_screen_recording{false};
 std::atomic<std::uint32_t> g_big_core_mask{0};
 std::atomic<std::uint32_t> g_little_core_mask{0};
 std::atomic<std::uint32_t> g_all_core_mask{0};
+std::atomic<std::int64_t> g_last_burst_ns{0};
+std::atomic<std::int64_t> g_ema_frame_ns{8333333};
 
 void detect_cpu_topology() noexcept {
     if (g_all_core_mask.load(std::memory_order_relaxed) != 0) return;
@@ -272,7 +285,7 @@ void detect_cpu_topology() noexcept {
 
     std::uint32_t big_mask = 0;
     if (highest_freq > 0) {
-        const long threshold = (highest_freq * 90) / 100;
+        const long threshold = (highest_freq * 85) / 100;
         for (int i = 0; i < num_cpus; ++i) {
             if (max_freqs[static_cast<std::size_t>(i)] >= threshold) {
                 big_mask |= (1u << i);
@@ -326,7 +339,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         "WRRender"
     };
 
-    constexpr std::array<std::string_view, 9> COMPOSITOR_GPU_PREFIXES = {
+    constexpr std::array<std::string_view, 10> COMPOSITOR_GPU_PREFIXES = {
         "CrGpuMain",
         "Chrome_InProcGp",
         "VizCompositor",
@@ -335,7 +348,8 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         "Renderer",
         "WRSceneBuilder",
         "Swappy",
-        "Chrome_ChildIO"
+        "Chrome_ChildIO",
+        "GpuMemory"
     };
 
     constexpr std::array<std::string_view, 7> RECORDER_MEDIA_PREFIXES = {
@@ -348,7 +362,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         "AudioTrack"
     };
 
-    constexpr std::array<std::string_view, 11> WORKER_BOOST_PREFIXES = {
+    constexpr std::array<std::string_view, 12> WORKER_BOOST_PREFIXES = {
         "ThreadPoolFore",
         "DedicatedWorker",
         "DOM Worker",
@@ -358,6 +372,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         "Wasm",
         "Liftoff",
         "TurboFan",
+        "Maglev",
         "IonCompile",
         "JS Helper"
     };
@@ -402,7 +417,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         bool matched_main = false;
         for (const auto& prefix : BIG_CORE_MAIN_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -19);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -20);
                 pin_tid_to_mask(static_cast<pid_t>(tid), big_mask);
                 matched_main = true;
                 break;
@@ -413,7 +428,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         bool matched_compositor = false;
         for (const auto& prefix : COMPOSITOR_GPU_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -19 : -18);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -20 : -19);
                 pin_tid_to_mask(static_cast<pid_t>(tid), rec ? (all_mask & ~rec_core_mask) : all_mask);
                 matched_compositor = true;
                 break;
@@ -435,7 +450,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         bool matched_worker = false;
         for (const auto& prefix : WORKER_BOOST_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -15 : -10);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -16 : -10);
                 pin_tid_to_mask(static_cast<pid_t>(tid), heavy_burst ? burst_worker_mask : little_mask);
                 matched_worker = true;
                 break;
@@ -445,7 +460,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
 
         for (const auto& prefix : BACKGROUND_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? 10 : 8);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? 12 : 8);
                 pin_tid_to_mask(static_cast<pid_t>(tid), little_mask);
                 break;
             }
@@ -461,8 +476,13 @@ bool filter_camera_move(int pointer_id, float x, float y, std::int64_t event_tim
     const float dy = std::fabs(y - st.y);
     const std::int64_t dt = event_time_ms - st.ts;
 
-    if (dt >= 0 && dt < 24 && dx < 0.03f && dy < 0.03f) {
+    if (dt >= 0 && dt < 24 && dx < 0.028f && dy < 0.028f) {
         return false;
+    }
+    if (dt > 0 && dt < 100) {
+        const float inv_dt = 1.0f / static_cast<float>(dt);
+        st.vx = 0.65f * st.vx + 0.35f * ((x - st.x) * inv_dt);
+        st.vy = 0.65f * st.vy + 0.35f * ((y - st.y) * inv_dt);
     }
     st.x = x;
     st.y = y;
@@ -489,15 +509,46 @@ bool notify_heavy_load_burst() noexcept {
     detect_cpu_topology();
     const pid_t self_tid = gettid();
     prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
-    setpriority(PRIO_PROCESS, static_cast<id_t>(self_tid), -19);
+    setpriority(PRIO_PROCESS, static_cast<id_t>(self_tid), -20);
     pin_tid_to_mask(self_tid, g_all_core_mask.load(std::memory_order_relaxed));
     boost_critical_engine_threads(true, true);
     return true;
 }
 
+std::uint64_t compute_fnv1a_64(const unsigned char* data, std::size_t len) noexcept {
+    std::uint64_t h = 0xcbf29ce484222325ULL ^ (static_cast<std::uint64_t>(len) * 0x9e3779b97f4a7c15ULL);
+    std::size_t i = 0;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    for (; i + 16 <= len; i += 16) {
+        uint8x16_t v = vld1q_u8(data + i);
+        uint64x2_t pairs = vreinterpretq_u64_u8(v);
+        h ^= vgetq_lane_u64(pairs, 0);
+        h *= 0x100000001b3ULL;
+        h ^= vgetq_lane_u64(pairs, 1);
+        h *= 0x100000001b3ULL;
+    }
+#endif
+    for (; i < len; ++i) {
+        h = (h ^ static_cast<std::uint64_t>(data[i])) * 0x100000001b3ULL;
+    }
+    h ^= (h >> 29u);
+    h *= 0xff51afd7ed558ccdULL;
+    return h ^ (h >> 32u);
 }
 
+} // namespace
+
 extern "C" {
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativePrewarm(
+    JNIEnv*,
+    jclass
+) {
+    detect_cpu_topology();
+    prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
+    return JNI_TRUE;
+}
 
 JNIEXPORT jbyteArray JNICALL
 Java_com_fable_browser_engine_NativeFastEngine_nativeDecodeBase64(
@@ -558,6 +609,23 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeCrc32(
 }
 
 JNIEXPORT jlong JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeHash64(
+    JNIEnv* env,
+    jclass,
+    jbyteArray j_bytes
+) {
+    if (j_bytes == nullptr) return 0;
+    const jsize len = env->GetArrayLength(j_bytes);
+    if (len <= 0) return 0;
+    jbyte* buf = env->GetByteArrayElements(j_bytes, nullptr);
+    if (buf == nullptr) return 0;
+    const auto* u = reinterpret_cast<const unsigned char*>(buf);
+    const std::uint64_t h = compute_fnv1a_64(u, static_cast<std::size_t>(len));
+    env->ReleaseByteArrayElements(j_bytes, buf, JNI_ABORT);
+    return static_cast<jlong>(h);
+}
+
+JNIEXPORT jlong JNICALL
 Java_com_fable_browser_engine_NativeFastEngine_nativeFastHash64(
     JNIEnv* env,
     jclass,
@@ -567,14 +635,35 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeFastHash64(
     const char* src = env->GetStringUTFChars(j_str, nullptr);
     if (src == nullptr) return 0;
     const std::size_t len = static_cast<std::size_t>(env->GetStringUTFLength(j_str));
-
-    std::uint64_t hash = 14695981039346656037ULL;
-    for (std::size_t i = 0; i < len; ++i) {
-        hash ^= static_cast<unsigned char>(src[i]);
-        hash *= 1099511628211ULL;
-    }
+    const std::uint64_t h = compute_fnv1a_64(reinterpret_cast<const unsigned char*>(src), len);
     env->ReleaseStringUTFChars(j_str, src);
-    return static_cast<jlong>(hash);
+    return static_cast<jlong>(h);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeMatchDomain(
+    JNIEnv* env,
+    jclass,
+    jstring j_host,
+    jstring j_domain
+) {
+    if (j_host == nullptr || j_domain == nullptr) return JNI_FALSE;
+    const char* host_src = env->GetStringUTFChars(j_host, nullptr);
+    if (host_src == nullptr) return JNI_FALSE;
+    const char* dom_src = env->GetStringUTFChars(j_domain, nullptr);
+    if (dom_src == nullptr) {
+        env->ReleaseStringUTFChars(j_host, host_src);
+        return JNI_FALSE;
+    }
+    const std::size_t host_len = static_cast<std::size_t>(env->GetStringUTFLength(j_host));
+    const std::size_t dom_len = static_cast<std::size_t>(env->GetStringUTFLength(j_domain));
+    const bool matched = is_same_or_subdomain(
+        std::string_view(host_src, host_len),
+        std::string_view(dom_src, dom_len)
+    );
+    env->ReleaseStringUTFChars(j_domain, dom_src);
+    env->ReleaseStringUTFChars(j_host, host_src);
+    return matched ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -617,6 +706,30 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeNotifyHeavyLoadBurst(
     return notify_heavy_load_burst() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jint JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeRecordFrameDeltaNs(
+    JNIEnv*,
+    jclass,
+    jlong j_delta_ns,
+    jlong j_now_ns
+) {
+    if (j_delta_ns <= 0 || j_delta_ns > 500000000LL) return 120;
+    const std::int64_t prev_ema = g_ema_frame_ns.load(std::memory_order_relaxed);
+    const std::int64_t next_ema = (prev_ema * 7 + j_delta_ns) / 8;
+    g_ema_frame_ns.store(next_ema, std::memory_order_relaxed);
+
+    if (j_delta_ns > 14500000LL && g_game_boost_enabled.load(std::memory_order_relaxed)) {
+        const std::int64_t last_b = g_last_burst_ns.load(std::memory_order_relaxed);
+        if (j_now_ns - last_b > 350000000LL) {
+            g_last_burst_ns.store(j_now_ns, std::memory_order_relaxed);
+            boost_critical_engine_threads(true, true);
+        }
+    }
+    const std::int64_t safe_ema = next_ema > 1000000LL ? next_ema : 8333333LL;
+    const int est_fps = static_cast<int>(1000000000LL / safe_ema);
+    return est_fps > 120 ? 120 : (est_fps < 1 ? 1 : est_fps);
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_fable_browser_engine_NativeFastEngine_nativeSetScreenRecording(
     JNIEnv*,
@@ -640,6 +753,8 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeResetTouchPointer(
     const std::size_t slot = static_cast<std::size_t>(j_pointer_id & 0x0F);
     g_pointers[slot].x = -10000.0f;
     g_pointers[slot].y = -10000.0f;
+    g_pointers[slot].vx = 0.0f;
+    g_pointers[slot].vy = 0.0f;
     g_pointers[slot].ts = 0;
 }
 

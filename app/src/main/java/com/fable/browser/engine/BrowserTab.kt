@@ -105,6 +105,9 @@ class BrowserTab(
     @Volatile var hybridExtraHeadersProvider: ((String) -> Map<String, String>)? = null
     @Volatile var hybridArchiveScriptProvider: ((String, String) -> String)? = null
     @Volatile var hybridArchiveMessageHandler: ((String) -> Unit)? = null
+    @Volatile var hybridDownloadHandler: ((String, String?, String?) -> Unit)? = null
+    @Volatile var hybridScrollHandler: ((Int) -> Unit)? = null
+    @Volatile var hybridContextMenuHandler: ((ContextMenuTarget) -> Unit)? = null
 
     private val httpExceptions = mutableSetOf<String>()
 

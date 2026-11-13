@@ -37,7 +37,8 @@ class TabManager @Inject constructor(
     private val historyRepository: com.fable.browser.data.repo.HistoryRepository,
     private val promptBridge: PromptBridge,
     private val settingsStore: SettingsStore,
-    private val passwordManager: PasswordManager
+    private val passwordManager: PasswordManager,
+    private val downloader: Downloader
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -309,6 +310,7 @@ class TabManager @Inject constructor(
 
     fun onAppBackgrounded(temporary: Boolean = false) {
         appVisible = false
+        FableUnifiedEngine.flushBlinkCookies()
         persist()
         idleSweepJob?.cancel()
         activeTab?.session?.takeIf { it.isOpen }?.setActive(false)
@@ -468,6 +470,20 @@ class TabManager @Inject constructor(
         }
         tab.hybridArchiveMessageHandler = { rawJson ->
             proxyConfig.onHybridArchiveMessage(rawJson)
+        }
+        tab.hybridDownloadHandler = { url, contentDisposition, mimeType ->
+            if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
+                val suggested = FableUnifiedEngine.guessDownloadFileName(url, contentDisposition, mimeType)
+                downloader.enqueueUrl(url, suggested, tab.isIncognito)
+            }
+        }
+        tab.hybridScrollHandler = { scrollY ->
+            if (tab.id == _activeTabId.value) {
+                callbacks.onScroll(tab, scrollY)
+            }
+        }
+        tab.hybridContextMenuHandler = { target ->
+            callbacks.onContextMenu(target)
         }
     }
 

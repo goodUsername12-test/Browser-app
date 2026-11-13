@@ -14,6 +14,11 @@ import com.fable.browser.data.model.SitePermission
 import com.fable.browser.data.model.ThemeMode
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.data.prefs.SettingsStore
+import com.fable.browser.engine.RecAudioSource
+import com.fable.browser.engine.RecBitrate
+import com.fable.browser.engine.RecFrameRate
+import com.fable.browser.engine.RecOrientation
+import com.fable.browser.engine.RecResolution
 import com.fable.browser.data.repo.FaviconStore
 import com.fable.browser.data.repo.HistoryRepository
 import com.fable.browser.data.repo.SitePermissionRepository
@@ -352,6 +357,15 @@ class SettingsViewModel @Inject constructor(
     fun setHybridTeleportStabilizer(v: Boolean) = edit { store.setHybridTeleportStabilizer(v) }
     fun setHybridHibernateGecko(v: Boolean) = edit { store.setHybridHibernateGecko(v) }
     fun setHybridCustomDomains(v: String) = edit { store.setHybridCustomDomains(v) }
+    fun setRecResolution(v: RecResolution) = edit { store.setRecResolution(v) }
+    fun setRecBitrate(v: RecBitrate) = edit { store.setRecBitrate(v) }
+    fun setRecOrientation(v: RecOrientation) = edit { store.setRecOrientation(v) }
+    fun setRecAudioSource(v: RecAudioSource) = edit { store.setRecAudioSource(v) }
+    fun setRecFrameRate(v: RecFrameRate) = edit { store.setRecFrameRate(v) }
+    fun setRecStopOnScreenLock(v: Boolean) = edit { store.setRecStopOnScreenLock(v) }
+    fun setRecShowTouches(v: Boolean) = edit { store.setRecShowTouches(v) }
+    fun setRecShowButtonPresses(v: Boolean) = edit { store.setRecShowButtonPresses(v) }
+    fun setRecZeroLagBlinkMode(v: Boolean) = edit { store.setRecZeroLagBlinkMode(v) }
     fun resetHybridSiteOverrides(context: android.content.Context) {
         runCatching {
             context.getSharedPreferences("fable_hybrid_tab_state", android.content.Context.MODE_PRIVATE)

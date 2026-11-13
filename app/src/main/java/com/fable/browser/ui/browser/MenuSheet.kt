@@ -28,7 +28,10 @@ import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.FiberManualRecord
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -75,7 +78,10 @@ fun MenuSheet(
     onSavePageCode: () -> Unit = {},
     onSaveMemorySnapshot: () -> Unit = {},
     onToggleHybridBlink: () -> Unit = {},
-    onOpenBlinkGaming: () -> Unit = {}
+    onOpenBlinkGaming: () -> Unit = {},
+    isScreenRecording: Boolean = false,
+    onToggleScreenRecording: () -> Unit = {},
+    onOpenRecorderSettings: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -103,6 +109,11 @@ fun MenuSheet(
                 checked = hybridBlinkMode,
                 onCheckedChange = { onToggleHybridBlink() }
             )
+            MenuItem(
+                icon = if (isScreenRecording) Icons.Outlined.Stop else Icons.Outlined.FiberManualRecord,
+                label = if (isScreenRecording) "Остановить запись · Stop Recording" else "Начать запись · Start Screen Recording"
+            ) { onToggleScreenRecording(); onDismiss() }
+            MenuItem(Icons.Outlined.Videocam, "Настройки записи · Recorder Settings") { onOpenRecorderSettings(); onDismiss() }
             MenuItem(Icons.Outlined.Speed, "Open in Blink Gaming Mode") { onOpenBlinkGaming(); onDismiss() }
             ListDivider()
             MenuItem(Icons.Outlined.Search, "Find in page") { onFind(); onDismiss() }

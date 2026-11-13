@@ -25,9 +25,12 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import android.content.ClipData
+import android.content.ClipboardManager
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.engine.HybridEngineBridge
 import com.fable.browser.engine.NativeFastEngine
+import com.fable.browser.util.HighRefreshRateEnforcer
 
 class BlinkGamingActivity : ComponentActivity() {
     private var webView: WebView? = null
@@ -117,6 +120,25 @@ class BlinkGamingActivity : ComponentActivity() {
                     }
 
                     @JavascriptInterface
+                    fun getClipboardText(): String {
+                        return runCatching {
+                            val cm = applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            val clip = cm?.primaryClip
+                            if (clip != null && clip.itemCount > 0) {
+                                clip.getItemAt(0)?.coerceToText(applicationContext)?.toString().orEmpty()
+                            } else ""
+                        }.getOrDefault("")
+                    }
+
+                    @JavascriptInterface
+                    fun setClipboardText(text: String) {
+                        runCatching {
+                            val cm = applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            cm?.setPrimaryClip(ClipData.newPlainText("Fable", text))
+                        }
+                    }
+
+                    @JavascriptInterface
                     fun logDiagnostic(msg: String) {
                         Log.i("FableShield", "[blink-game] $msg")
                     }
@@ -161,7 +183,9 @@ class BlinkGamingActivity : ComponentActivity() {
             }
         }
         webView = view
+        root.addView(HighRefreshRateEnforcer.createFrameRateVoterSurfaceView(this), FrameLayout.LayoutParams(1, 1))
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
+        HighRefreshRateEnforcer.applyToViewTree(root)
         setContentView(root)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -182,19 +206,7 @@ class BlinkGamingActivity : ComponentActivity() {
     }
 
     private fun applyRefreshRate() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
-        val display = display ?: return
-        val current = display.mode
-        val mode = display.supportedModes
-            .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
-            .maxByOrNull { it.refreshRate }
-        if (mode != null) {
-            window.attributes = window.attributes.apply {
-                preferredDisplayModeId = mode.modeId
-                preferredRefreshRate = mode.refreshRate
-                preferMinimalPostProcessing = true
-            }
-        }
+        HighRefreshRateEnforcer.applyToWindow(this, true)
     }
 
     private fun hideSystemUi() {

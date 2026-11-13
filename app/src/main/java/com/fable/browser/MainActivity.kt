@@ -21,7 +21,10 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import android.view.KeyEvent
+import com.fable.browser.engine.ScreenRecorderManager
 import com.fable.browser.util.FreezeWatchdog
+import com.fable.browser.util.HighRefreshRateEnforcer
 import com.fable.browser.data.prefs.SettingsStore
 import com.fable.browser.engine.CacheCleaner
 import com.fable.browser.engine.TabManager
@@ -49,6 +52,8 @@ class MainActivity : FragmentActivity() {
     @Inject lateinit var cacheCleaner: CacheCleaner
 
     private var displayListener: DisplayManager.DisplayListener? = null
+    @Volatile private var currentHighRefresh: Boolean = true
+    @Volatile private var currentShowButtonPresses: Boolean = false
 
     private fun checkScreenRecordingState() {
         runCatching {
@@ -137,39 +142,43 @@ class MainActivity : FragmentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 settingsStore.settings
-                    .map { it.highRefreshRate }
+                    .map { it.highRefreshRate to it.recShowButtonPresses }
                     .distinctUntilChanged()
-                    .collect { high -> runCatching { applyRefreshRate(high) } }
+                    .collect { (high, showButtons) ->
+                        currentHighRefresh = high
+                        currentShowButtonPresses = showButtons
+                        runCatching { applyRefreshRate(high) }
+                    }
             }
         }
     }
 
     private fun applyRefreshRate(high: Boolean) {
-        @Suppress("DEPRECATION")
-        val display = (
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) this.display else windowManager.defaultDisplay
-            ) ?: return
-        val current = display.mode
-        val modeId = if (high) {
-            display.supportedModes
-                .filter {
-                    it.physicalWidth == current.physicalWidth &&
-                        it.physicalHeight == current.physicalHeight
-                }
-                .maxByOrNull { it.refreshRate }
-                ?.modeId ?: 0
-        } else {
-            0
+        HighRefreshRateEnforcer.applyToWindow(this, high)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            HighRefreshRateEnforcer.applyToWindow(this, currentHighRefresh)
         }
-        val maxRate = if (high) {
-            display.supportedModes.maxOfOrNull { it.refreshRate } ?: 0f
-        } else 0f
-        val attrs = window.attributes
-        if (attrs.preferredDisplayModeId != modeId || attrs.preferredRefreshRate != maxRate) {
-            attrs.preferredDisplayModeId = modeId
-            attrs.preferredRefreshRate = maxRate
-            window.attributes = attrs
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && currentShowButtonPresses && ScreenRecorderManager.isRecording.value) {
+            val label = when (event.keyCode) {
+                KeyEvent.KEYCODE_BACK -> "Back"
+                KeyEvent.KEYCODE_VOLUME_UP -> "Volume +"
+                KeyEvent.KEYCODE_VOLUME_DOWN -> "Volume -"
+                KeyEvent.KEYCODE_VOLUME_MUTE -> "Mute"
+                KeyEvent.KEYCODE_MENU -> "Menu"
+                else -> null
+            }
+            if (label != null) {
+                ScreenRecorderManager.onButtonPress(label, true)
+            }
         }
+        return super.dispatchKeyEvent(event)
     }
 
     private fun applyFullScreen(fullScreen: Boolean) {
@@ -306,6 +315,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        HighRefreshRateEnforcer.applyToWindow(this, currentHighRefresh)
         Choreographer.getInstance().postFrameCallback {
             window.decorView.post {
                 if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) tabManager.onAppResumed()

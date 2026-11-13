@@ -1,11 +1,16 @@
 package com.fable.browser.ui.browser
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.MutableContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.util.Log
 import android.view.MotionEvent
+import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -31,6 +36,9 @@ import com.fable.browser.engine.BrowserTab
 import com.fable.browser.engine.FindMatch
 import com.fable.browser.engine.HybridBlinkController
 import com.fable.browser.engine.NativeFastEngine
+import com.fable.browser.engine.ScreenRecorderManager
+import com.fable.browser.engine.TouchIndicatorPoint
+import com.fable.browser.util.HighRefreshRateEnforcer
 import com.fable.browser.util.UrlUtils
 import kotlinx.coroutines.delay
 import org.mozilla.geckoview.GeckoView
@@ -96,7 +104,10 @@ class GeckoCaptureHandle {
     }
 }
 
-private class FableHybridJsBridge(private val tab: BrowserTab) {
+private class FableHybridJsBridge(
+    private val appContext: Context,
+    private val tab: BrowserTab
+) {
     @JavascriptInterface
     fun postArchiveMessage(json: String) {
         tab.hybridArchiveMessageHandler?.invoke(json)
@@ -108,12 +119,34 @@ private class FableHybridJsBridge(private val tab: BrowserTab) {
     }
 
     @JavascriptInterface
+    fun getClipboardText(): String {
+        return runCatching {
+            val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            val clip = cm?.primaryClip
+            if (clip != null && clip.itemCount > 0) {
+                clip.getItemAt(0)?.coerceToText(appContext)?.toString().orEmpty()
+            } else {
+                ""
+            }
+        }.getOrDefault("")
+    }
+
+    @JavascriptInterface
+    fun setClipboardText(text: String) {
+        runCatching {
+            val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            cm?.setPrimaryClip(ClipData.newPlainText("Fable", text))
+        }
+    }
+
+    @JavascriptInterface
     fun logDiagnostic(msg: String) {
         Log.i("FableShield", "[hybrid] $msg")
     }
 }
 
-private class CombinedEngineContainer(context: android.content.Context) : FrameLayout(context) {
+private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
+    val frameVoter: SurfaceView = HighRefreshRateEnforcer.createFrameRateVoterSurfaceView(context)
     val geckoView: GeckoView = GeckoView(context).apply {
         setAutofillEnabled(false)
         importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -127,18 +160,35 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
     var customFullScreenView: View? = null
     var customViewCallback: WebChromeClient.CustomViewCallback? = null
     var boundTab: BrowserTab? = null
-    var lastBlinkUrl: String = ""
+    @Volatile var showRecorderTouches: Boolean = false
 
     init {
         setWillNotDraw(true)
         isMotionEventSplittingEnabled = true
         isSoundEffectsEnabled = false
         isHapticFeedbackEnabled = false
+        addView(frameVoter, LayoutParams(1, 1))
         addView(geckoView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        HighRefreshRateEnforcer.applyToViewTree(this)
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
         if (ev != null) {
+            if (showRecorderTouches && ScreenRecorderManager.isRecording.value) {
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        ScreenRecorderManager.onTouchEvent(emptyList(), true)
+                    }
+                    else -> {
+                        val pts = ArrayList<TouchIndicatorPoint>(ev.pointerCount)
+                        for (i in 0 until ev.pointerCount) {
+                            if (ev.actionMasked == MotionEvent.ACTION_POINTER_UP && i == ev.actionIndex) continue
+                            pts.add(TouchIndicatorPoint(ev.getPointerId(i), ev.getX(i), ev.getY(i)))
+                        }
+                        ScreenRecorderManager.onTouchEvent(pts, true)
+                    }
+                }
+            }
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                     val idx = ev.actionIndex
@@ -171,20 +221,37 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
 
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     fun ensureBlinkView(tab: BrowserTab): WebView {
-        val existing = blinkView
-        if (existing != null && boundTab === tab) return existing
-        destroyBlinkView()
+        val currentAttached = blinkView
+        if (currentAttached != null && boundTab === tab && currentAttached.parent === this) {
+            HighRefreshRateEnforcer.applyToViewTree(currentAttached)
+            return currentAttached
+        }
+        if (currentAttached != null && currentAttached.parent === this) {
+            removeView(currentAttached)
+        }
         boundTab = tab
-        val wv = WebView(context).apply {
+
+        val retained = tab.retainedBlinkView
+        if (retained != null) {
+            (retained.context as? MutableContextWrapper)?.baseContext = context
+            (retained.parent as? ViewGroup)?.removeView(retained)
+            blinkView = retained
+            addView(retained, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            HighRefreshRateEnforcer.applyToViewTree(retained)
+            return retained
+        }
+
+        val mutableCtx = MutableContextWrapper(context)
+        val wv = WebView(mutableCtx).apply {
             setBackgroundColor(Color.BLACK)
             setLayerType(View.LAYER_TYPE_NONE, null)
             isFocusable = true
             isFocusableInTouchMode = true
             isSoundEffectsEnabled = false
             isHapticFeedbackEnabled = false
-            isLongClickable = false
+            isLongClickable = true
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                isContextClickable = false
+                isContextClickable = true
             }
             overScrollMode = View.OVER_SCROLL_NEVER
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -213,7 +280,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
             }
-            addJavascriptInterface(FableHybridJsBridge(tab), "FableHybridBridge")
+            addJavascriptInterface(FableHybridJsBridge(context.applicationContext, tab), "FableHybridBridge")
             setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
                 val cur = if (numberOfMatches > 0) activeMatchOrdinal + 1 else 0
                 tab.updateFindMatch(FindMatch(cur, numberOfMatches))
@@ -228,6 +295,10 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     if (request.isForMainFrame) return null
                     val reqUrl = request.url?.toString() ?: return null
                     val docHost = cachedDocHost
+                        ?: UrlUtils.host(tab.url.value)
+                        ?: UrlUtils.host(tab.lastLoadedBlinkUrl.orEmpty())
+                    val reqHost = UrlUtils.host(reqUrl)
+                    if (docHost != null && reqHost != null && UrlUtils.isSameSite(reqHost, docHost)) return null
                     if (tab.fastAssetBypassEnabled && NativeFastEngine.isFastAsset(reqUrl, docHost)) return null
                     val blocked = tab.hybridBlockChecker?.invoke(reqUrl, docHost) == true
                     if (blocked) {
@@ -258,6 +329,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                         (cleaned.startsWith("http://") || cleaned.startsWith("https://"))
                     if (cleaned != target || (isMainGet && needDntHeader)) {
                         view.post {
+                            tab.lastLoadedBlinkUrl = cleaned
                             if (extraHeaders.isNotEmpty()) view.loadUrl(cleaned, extraHeaders) else view.loadUrl(cleaned)
                         }
                         return true
@@ -268,13 +340,14 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     if (!url.isNullOrBlank()) {
-                        lastBlinkUrl = url
+                        tab.lastLoadedBlinkUrl = url
                         cachedDocHost = UrlUtils.host(url)
                         tab.updateUrl(url)
                         tab.updateSecure(!UrlUtils.isInsecure(url))
                         tab.resetBlocked()
                     }
                     NativeFastEngine.setGameBoost(true)
+                    HighRefreshRateEnforcer.applyToViewTree(view)
                     tab.updateLoading(true)
                     tab.updateCanGoBack(view.canGoBack())
                     tab.updateCanGoForward(view.canGoForward())
@@ -284,10 +357,21 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     }
                 }
 
+                override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                    super.doUpdateVisitedHistory(view, url, isReload)
+                    if (!url.isNullOrBlank()) {
+                        tab.lastLoadedBlinkUrl = url
+                        cachedDocHost = UrlUtils.host(url)
+                        tab.updateUrl(url)
+                        tab.updateCanGoBack(view.canGoBack())
+                        tab.updateCanGoForward(view.canGoForward())
+                    }
+                }
+
                 override fun onPageFinished(view: WebView, url: String?) {
                     super.onPageFinished(view, url)
                     if (!url.isNullOrBlank()) {
-                        lastBlinkUrl = url
+                        tab.lastLoadedBlinkUrl = url
                         cachedDocHost = UrlUtils.host(url)
                         tab.updateUrl(url)
                         tab.updateSecure(!UrlUtils.isInsecure(url))
@@ -297,6 +381,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                     tab.updateCanGoBack(view.canGoBack())
                     tab.updateCanGoForward(view.canGoForward())
                     NativeFastEngine.setGameBoost(true)
+                    HighRefreshRateEnforcer.applyToViewTree(view)
                     val boot = tab.hybridBootstrapProvider?.invoke(url.orEmpty()).orEmpty()
                     if (boot.isNotEmpty()) {
                         runCatching { view.evaluateJavascript(boot, null) }
@@ -350,7 +435,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                             runCatching { wv.settings.userAgentString = ua }
                         }
                     }
-                    lastBlinkUrl = url
+                    tab.lastLoadedBlinkUrl = url
                     val headers = tab.hybridExtraHeadersProvider?.invoke(url).orEmpty()
                     if (headers.isNotEmpty()) wv.loadUrl(url, headers) else wv.loadUrl(url)
                 }
@@ -358,7 +443,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
 
             override fun reload() {
                 wv.post {
-                    val cur = wv.url ?: lastBlinkUrl
+                    val cur = wv.url ?: tab.lastLoadedBlinkUrl
                     val headers = tab.hybridExtraHeadersProvider?.invoke(cur).orEmpty()
                     if (cur.isNotBlank() && headers.isNotEmpty()) wv.loadUrl(cur, headers) else wv.reload()
                 }
@@ -428,29 +513,22 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
                 }
             }
         }
+        tab.retainedBlinkView = wv
         tab.hybridController = controller
         blinkView = wv
         addView(wv, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        HighRefreshRateEnforcer.applyToViewTree(wv)
         return wv
     }
 
-    fun destroyBlinkView() {
+    fun detachBlinkView() {
         customFullScreenView?.let { removeView(it) }
         customFullScreenView = null
         customViewCallback = null
-        boundTab?.let { t ->
-            t.hybridController = null
-        }
         boundTab = null
-        lastBlinkUrl = ""
         blinkView?.let { wv ->
-            removeView(wv)
-            runCatching {
-                wv.stopLoading()
-                if (wv.tag == "incognito") wv.clearCache(true)
-                wv.webChromeClient = null
-                wv.webViewClient = WebViewClient()
-                wv.destroy()
+            if (wv.parent === this) {
+                removeView(wv)
             }
         }
         blinkView = null
@@ -461,6 +539,7 @@ private class CombinedEngineContainer(context: android.content.Context) : FrameL
 fun GeckoViewHost(
     tab: BrowserTab,
     captureHandle: GeckoCaptureHandle,
+    showRecorderTouches: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val session by tab.sessionFlow.collectAsStateWithLifecycle()
@@ -482,12 +561,16 @@ fun GeckoViewHost(
         factory = { ctx ->
             CombinedEngineContainer(ctx).also { container ->
                 captureHandle.view = container.geckoView
+                ScreenRecorderManager.attachActiveGameView(container)
             }
         },
         update = { container ->
+            container.showRecorderTouches = showRecorderTouches
+            ScreenRecorderManager.attachActiveGameView(container)
             val gv = container.geckoView
             captureHandle.view = gv
             captureHandle.hybridActive = hybridBlink
+            HighRefreshRateEnforcer.applyToViewTree(container)
             val target = session
             if (hybridBlink) {
                 NativeFastEngine.setGameBoost(true)
@@ -508,8 +591,9 @@ fun GeckoViewHost(
                 wv.visibility = View.VISIBLE
                 captureHandle.blinkView = wv
                 if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://") || currentUrl.startsWith("file://")) {
-                    if (container.lastBlinkUrl != currentUrl && wv.url != currentUrl) {
-                        container.lastBlinkUrl = currentUrl
+                    val currentWvUrl = wv.url
+                    if (tab.lastLoadedBlinkUrl == null && currentWvUrl.isNullOrBlank()) {
+                        tab.lastLoadedBlinkUrl = currentUrl
                         val headers = tab.hybridExtraHeadersProvider?.invoke(currentUrl).orEmpty()
                         if (headers.isNotEmpty()) wv.loadUrl(currentUrl, headers) else wv.loadUrl(currentUrl)
                     }
@@ -517,8 +601,9 @@ fun GeckoViewHost(
             } else {
                 captureHandle.blinkView = null
                 if (container.blinkView != null) {
-                    container.destroyBlinkView()
+                    container.detachBlinkView()
                 }
+                tab.destroyRetainedBlinkView()
                 if (attachTick >= 0 && gv.session !== target && target.isOpen) {
                     if (gv.session != null) gv.releaseSession()
                     gv.setSession(target)
@@ -533,7 +618,7 @@ fun GeckoViewHost(
             if (captureHandle.view === container.geckoView) captureHandle.view = null
             captureHandle.blinkView = null
             captureHandle.hybridActive = false
-            container.destroyBlinkView()
+            container.detachBlinkView()
             if (container.geckoView.session != null) container.geckoView.releaseSession()
         }
     )

@@ -12,6 +12,7 @@ import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -35,6 +36,7 @@ import com.fable.browser.ui.components.SwitchRow
 @Composable
 fun HybridBetaSettingsScreen(
     onBack: () -> Unit,
+    onOpenRecorder: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val s by viewModel.settings.collectAsStateWithLifecycle()
@@ -75,6 +77,12 @@ fun HybridBetaSettingsScreen(
             subtitle = "Remembers which sites/tabs you toggled into or out of Combined Blink + Gecko mode even after updating or restarting the app",
             checked = s.hybridPersistTabMode,
             onCheckedChange = viewModel::setHybridPersistTabMode
+        )
+        SettingRow(
+            title = "Запись экрана · Zero-Lag Screen Recorder",
+            subtitle = "${s.recResolution.label} · ${s.recBitrate.label} · ${s.recFrameRate.label} · ${s.recAudioSource.label}",
+            icon = Icons.Outlined.Videocam,
+            onClick = onOpenRecorder
         )
         SettingRow(
             title = "Reset saved per-site Beta overrides",

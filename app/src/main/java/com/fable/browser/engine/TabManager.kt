@@ -481,6 +481,9 @@ class TabManager @Inject constructor(
 
     fun setHybridBlinkMode(tab: BrowserTab, enabled: Boolean) {
         wireHybridCallbacks(tab)
+        if (enabled && tab.retainedBlinkView == null) {
+            tab.lastLoadedBlinkUrl = null
+        }
         tab.updateHybridBlink(enabled)
         if (enabled) {
             onGameModeStarted()
@@ -494,6 +497,7 @@ class TabManager @Inject constructor(
                 }
             }
         } else {
+            tab.destroyRetainedBlinkView()
             val currentUrl = tab.url.value
             if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://")) {
                 ensureLive(tab)
@@ -726,6 +730,7 @@ class TabManager @Inject constructor(
             tab.updateHybridBlink(false)
         }
         if (tab.isHybridBlink.value) {
+            tab.lastLoadedBlinkUrl = null
             tab.updateUrl(url)
             if (tab.session.isOpen && settings.hybridHibernateGecko) {
                 runCatching {
@@ -926,7 +931,10 @@ class TabManager @Inject constructor(
     fun evictBackgroundTabs() {
         val activeId = _activeTabId.value
         _tabs.value
-            .filter { it.id != activeId && !it.isPinned.value && !it.isMediaPlaying }
+            .filter {
+                it.id != activeId && !it.isPinned.value && !it.isMediaPlaying &&
+                    !(it.isHybridBlink.value && it.retainedBlinkView != null)
+            }
             .forEach { unload(it) }
     }
 
@@ -970,7 +978,10 @@ class TabManager @Inject constructor(
         if (keep < 0) return
         val activeId = _activeTabId.value
         _tabs.value
-            .filter { it.id != activeId && !it.isEvicted && !it.isPinned.value && !it.isMediaPlaying }
+            .filter {
+                it.id != activeId && !it.isEvicted && !it.isPinned.value && !it.isMediaPlaying &&
+                    !(it.isHybridBlink.value && it.retainedBlinkView != null)
+            }
             .sortedByDescending { it.lastAccessed }
             .drop(keep)
             .forEach { unload(it) }

@@ -313,8 +313,9 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
     const std::uint32_t raw_little_mask = g_little_core_mask.load(std::memory_order_relaxed);
     const std::uint32_t all_mask = g_all_core_mask.load(std::memory_order_relaxed);
     const bool rec = g_screen_recording.load(std::memory_order_relaxed);
-    const std::uint32_t little_mask = (rec && (raw_little_mask & ~1u) != 0) ? (raw_little_mask & ~1u) : raw_little_mask;
-    const std::uint32_t burst_worker_mask = (rec && (all_mask & ~1u) != 0) ? (all_mask & ~1u) : all_mask;
+    const std::uint32_t rec_core_mask = (raw_little_mask & 3u) != 0 ? (raw_little_mask & 3u) : raw_little_mask;
+    const std::uint32_t little_mask = (rec && (raw_little_mask & ~3u) != 0) ? (raw_little_mask & ~3u) : raw_little_mask;
+    const std::uint32_t burst_worker_mask = (rec && (all_mask & ~3u) != 0) ? (all_mask & ~3u) : all_mask;
 
     DIR* dir = opendir("/proc/self/task");
     if (!dir) return;
@@ -337,9 +338,12 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         "Chrome_ChildIO"
     };
 
-    constexpr std::array<std::string_view, 4> AUDIO_REALTIME_PREFIXES = {
+    constexpr std::array<std::string_view, 7> RECORDER_MEDIA_PREFIXES = {
+        "FableRec",
+        "MediaCodec",
+        "CodecLooper",
+        "AudioRecord",
         "AudioOutputDev",
-        "SoundPool",
         "AAudio",
         "AudioTrack"
     };
@@ -398,7 +402,7 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         bool matched_main = false;
         for (const auto& prefix : BIG_CORE_MAIN_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -19 : -18);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -19);
                 pin_tid_to_mask(static_cast<pid_t>(tid), big_mask);
                 matched_main = true;
                 break;
@@ -409,24 +413,24 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         bool matched_compositor = false;
         for (const auto& prefix : COMPOSITOR_GPU_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -18 : -17);
-                pin_tid_to_mask(static_cast<pid_t>(tid), all_mask);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -19 : -18);
+                pin_tid_to_mask(static_cast<pid_t>(tid), rec ? (all_mask & ~rec_core_mask) : all_mask);
                 matched_compositor = true;
                 break;
             }
         }
         if (matched_compositor) continue;
 
-        bool matched_audio = false;
-        for (const auto& prefix : AUDIO_REALTIME_PREFIXES) {
+        bool matched_rec = false;
+        for (const auto& prefix : RECORDER_MEDIA_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -16);
-                pin_tid_to_mask(static_cast<pid_t>(tid), little_mask);
-                matched_audio = true;
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -14);
+                pin_tid_to_mask(static_cast<pid_t>(tid), rec_core_mask);
+                matched_rec = true;
                 break;
             }
         }
-        if (matched_audio) continue;
+        if (matched_rec) continue;
 
         bool matched_worker = false;
         for (const auto& prefix : WORKER_BOOST_PREFIXES) {
@@ -457,7 +461,7 @@ bool filter_camera_move(int pointer_id, float x, float y, std::int64_t event_tim
     const float dy = std::fabs(y - st.y);
     const std::int64_t dt = event_time_ms - st.ts;
 
-    if (dt >= 0 && dt < 32 && dx < 0.04f && dy < 0.04f) {
+    if (dt >= 0 && dt < 24 && dx < 0.03f && dy < 0.03f) {
         return false;
     }
     st.x = x;
@@ -475,7 +479,7 @@ bool apply_thread_boost(bool enabled) noexcept {
     } else {
         prctl(PR_SET_TIMERSLACK, 50000UL, 0UL, 0UL, 0UL);
     }
-    setpriority(PRIO_PROCESS, static_cast<id_t>(self_tid), enabled ? -18 : 0);
+    setpriority(PRIO_PROCESS, static_cast<id_t>(self_tid), enabled ? -19 : 0);
     pin_tid_to_mask(self_tid, g_all_core_mask.load(std::memory_order_relaxed));
     boost_critical_engine_threads(enabled, false);
     return true;
@@ -550,67 +554,59 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeCrc32(
         crc = CRC32_TABLE[(crc ^ u[i]) & 0xFFu] ^ (crc >> 8u);
     }
     env->ReleaseByteArrayElements(j_bytes, buf, JNI_ABORT);
-    return static_cast<jlong>((~crc) & 0xFFFFFFFFu);
+    return static_cast<jlong>(crc ^ 0xFFFFFFFFu);
 }
 
 JNIEXPORT jlong JNICALL
-Java_com_fable_browser_engine_NativeFastEngine_nativeHash64(
+Java_com_fable_browser_engine_NativeFastEngine_nativeFastHash64(
     JNIEnv* env,
     jclass,
-    jbyteArray j_bytes
+    jstring j_str
 ) {
-    if (j_bytes == nullptr) return 0;
-    const jsize len = env->GetArrayLength(j_bytes);
-    if (len <= 0) return 0;
-    jbyte* buf = env->GetByteArrayElements(j_bytes, nullptr);
-    if (buf == nullptr) return 0;
+    if (j_str == nullptr) return 0;
+    const char* src = env->GetStringUTFChars(j_str, nullptr);
+    if (src == nullptr) return 0;
+    const std::size_t len = static_cast<std::size_t>(env->GetStringUTFLength(j_str));
 
-    std::uint64_t h = 0xCBF29CE484222325ULL ^ (static_cast<std::uint64_t>(len) * 0x9E3779B97F4A7C15ULL);
-    const auto* u = reinterpret_cast<const unsigned char*>(buf);
-    for (jsize i = 0; i < len; ++i) {
-        h ^= static_cast<std::uint64_t>(u[i]);
-        h *= 0x100000001B3ULL;
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (std::size_t i = 0; i < len; ++i) {
+        hash ^= static_cast<unsigned char>(src[i]);
+        hash *= 1099511628211ULL;
     }
-    env->ReleaseByteArrayElements(j_bytes, buf, JNI_ABORT);
-    h ^= (h >> 29u);
-    h *= 0xFF51AFD7ED558CCDULL;
-    h ^= (h >> 32u);
-    return static_cast<jlong>(h);
+    env->ReleaseStringUTFChars(j_str, src);
+    return static_cast<jlong>(hash);
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_fable_browser_engine_NativeFastEngine_nativeMatchDomain(
+Java_com_fable_browser_engine_NativeFastEngine_nativeIsBlockedDomain(
     JNIEnv* env,
     jclass,
-    jstring j_host,
-    jstring j_domain
+    jstring j_host
 ) {
-    if (j_host == nullptr || j_domain == nullptr) return JNI_FALSE;
-    const char* raw_host = env->GetStringUTFChars(j_host, nullptr);
-    if (raw_host == nullptr) return JNI_FALSE;
-    const char* raw_dom = env->GetStringUTFChars(j_domain, nullptr);
-    if (raw_dom == nullptr) {
-        env->ReleaseStringUTFChars(j_host, raw_host);
-        return JNI_FALSE;
+    if (j_host == nullptr) return JNI_FALSE;
+    const char* src = env->GetStringUTFChars(j_host, nullptr);
+    if (src == nullptr) return JNI_FALSE;
+    const std::size_t len = static_cast<std::size_t>(env->GetStringUTFLength(j_host));
+    std::string_view host(src, len);
+
+    bool blocked = false;
+    for (const auto& domain : BLOCKED_DOMAINS) {
+        if (is_same_or_subdomain(host, domain)) {
+            blocked = true;
+            break;
+        }
     }
-    const std::size_t host_len = static_cast<std::size_t>(env->GetStringUTFLength(j_host));
-    const std::size_t dom_len = static_cast<std::size_t>(env->GetStringUTFLength(j_domain));
-    const bool matched = is_same_or_subdomain(
-        std::string_view(raw_host, host_len),
-        std::string_view(raw_dom, dom_len)
-    );
-    env->ReleaseStringUTFChars(j_domain, raw_dom);
-    env->ReleaseStringUTFChars(j_host, raw_host);
-    return matched ? JNI_TRUE : JNI_FALSE;
+    env->ReleaseStringUTFChars(j_host, src);
+    return blocked ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_fable_browser_engine_NativeFastEngine_nativeSetGameBoost(
     JNIEnv*,
     jclass,
-    jboolean enable
+    jboolean j_enabled
 ) {
-    return apply_thread_boost(enable == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+    return apply_thread_boost(j_enabled == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -625,9 +621,9 @@ JNIEXPORT jboolean JNICALL
 Java_com_fable_browser_engine_NativeFastEngine_nativeSetScreenRecording(
     JNIEnv*,
     jclass,
-    jboolean recording
+    jboolean j_recording
 ) {
-    const bool rec = (recording == JNI_TRUE);
+    const bool rec = (j_recording == JNI_TRUE);
     g_screen_recording.store(rec, std::memory_order_relaxed);
     if (g_game_boost_enabled.load(std::memory_order_relaxed)) {
         boost_critical_engine_threads(true, false);
@@ -639,9 +635,9 @@ JNIEXPORT void JNICALL
 Java_com_fable_browser_engine_NativeFastEngine_nativeResetTouchPointer(
     JNIEnv*,
     jclass,
-    jint pointer_id
+    jint j_pointer_id
 ) {
-    const std::size_t slot = static_cast<std::size_t>(pointer_id & 0x0F);
+    const std::size_t slot = static_cast<std::size_t>(j_pointer_id & 0x0F);
     g_pointers[slot].x = -10000.0f;
     g_pointers[slot].y = -10000.0f;
     g_pointers[slot].ts = 0;
@@ -651,17 +647,18 @@ JNIEXPORT jboolean JNICALL
 Java_com_fable_browser_engine_NativeFastEngine_nativeFilterCameraMove(
     JNIEnv*,
     jclass,
-    jint pointer_id,
-    jfloat x,
-    jfloat y,
-    jlong time_ms
+    jint j_pointer_id,
+    jfloat j_x,
+    jfloat j_y,
+    jlong j_event_time_ms
 ) {
-    return filter_camera_move(
-        static_cast<int>(pointer_id),
-        static_cast<float>(x),
-        static_cast<float>(y),
-        static_cast<std::int64_t>(time_ms)
-    ) ? JNI_TRUE : JNI_FALSE;
+    const bool keep = filter_camera_move(
+        static_cast<int>(j_pointer_id),
+        static_cast<float>(j_x),
+        static_cast<float>(j_y),
+        static_cast<std::int64_t>(j_event_time_ms)
+    );
+    return keep ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -669,23 +666,31 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeIsFastAsset(
     JNIEnv* env,
     jclass,
     jstring j_url,
-    jstring j_doc_host
+    jstring j_page_host
 ) {
     if (j_url == nullptr) return JNI_TRUE;
-    const char* raw_url = env->GetStringUTFChars(j_url, nullptr);
-    if (raw_url == nullptr) return JNI_FALSE;
+    const char* url_chars = env->GetStringUTFChars(j_url, nullptr);
+    if (url_chars == nullptr) return JNI_FALSE;
     const std::size_t url_len = static_cast<std::size_t>(env->GetStringUTFLength(j_url));
 
-    const char* raw_host = (j_doc_host != nullptr) ? env->GetStringUTFChars(j_doc_host, nullptr) : nullptr;
-    const std::size_t host_len = (raw_host != nullptr) ? static_cast<std::size_t>(env->GetStringUTFLength(j_doc_host)) : 0;
+    const char* host_chars = nullptr;
+    std::size_t host_len = 0;
+    if (j_page_host != nullptr) {
+        host_chars = env->GetStringUTFChars(j_page_host, nullptr);
+        if (host_chars != nullptr) {
+            host_len = static_cast<std::size_t>(env->GetStringUTFLength(j_page_host));
+        }
+    }
 
     const bool fast = is_fast_same_origin_or_game_asset(
-        std::string_view(raw_url, url_len),
-        raw_host != nullptr ? std::string_view(raw_host, host_len) : std::string_view{}
+        std::string_view(url_chars, url_len),
+        host_chars != nullptr ? std::string_view(host_chars, host_len) : std::string_view{}
     );
 
-    if (raw_host != nullptr) env->ReleaseStringUTFChars(j_doc_host, raw_host);
-    env->ReleaseStringUTFChars(j_url, raw_url);
+    if (host_chars != nullptr) {
+        env->ReleaseStringUTFChars(j_page_host, host_chars);
+    }
+    env->ReleaseStringUTFChars(j_url, url_chars);
     return fast ? JNI_TRUE : JNI_FALSE;
 }
 

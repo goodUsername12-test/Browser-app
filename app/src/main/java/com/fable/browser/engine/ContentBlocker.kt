@@ -315,12 +315,10 @@ class ContentBlocker @Inject constructor(@ApplicationContext private val context
 
         fun shouldBlock(f: FilterSet, url: String, documentHost: String? = null): Boolean {
             val host = UrlUtils.host(url) ?: return false
+            if (UrlUtils.isSameSite(host, documentHost)) return false
             if (matchesDomain(host, f.exceptionDomains)) return false
             if (f.exceptionSubstrings.any { url.contains(it) }) return false
-            if (matchesDomain(host, f.blockedDomains)) {
-                if (UrlUtils.isSameSite(host, documentHost)) return false
-                return true
-            }
+            if (matchesDomain(host, f.blockedDomains)) return true
             return f.blockedSubstrings.any { url.contains(it) }
         }
 

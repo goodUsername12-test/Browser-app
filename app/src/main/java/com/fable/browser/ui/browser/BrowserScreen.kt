@@ -41,7 +41,22 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Color
+import androidx.core.content.ContextCompat
 import com.fable.browser.engine.BrowserTab
+import com.fable.browser.engine.RecAudioSource
+import com.fable.browser.engine.ScreenRecorderManager
 import com.fable.browser.util.UrlUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,7 +67,8 @@ fun BrowserScreen(
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenDownloads: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenRecorderSettings: () -> Unit = {}
 ) {
     val tabs by viewModel.tabs.collectAsStateWithLifecycle()
     val activeTabId by viewModel.activeTabId.collectAsStateWithLifecycle()
@@ -75,6 +91,52 @@ fun BrowserScreen(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    val isScreenRecording by ScreenRecorderManager.isRecording.collectAsStateWithLifecycle()
+    val recElapsedSec by ScreenRecorderManager.elapsedSeconds.collectAsStateWithLifecycle()
+    val lastButtonPress by ScreenRecorderManager.lastButtonPress.collectAsStateWithLifecycle()
+
+    val projectionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        ScreenRecorderManager.startWithProjectionResult(
+            context = context,
+            resultCode = res.resultCode,
+            data = res.data,
+            config = settings.toRecorderConfig()
+        ) { msg -> viewModel.toast(msg) }
+    }
+
+    val micPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        val cfg = settings.toRecorderConfig()
+        if (cfg.zeroLagBlinkMode && cfg.audioSource != RecAudioSource.SYSTEM && cfg.audioSource != RecAudioSource.SYSTEM_AND_MIC) {
+            ScreenRecorderManager.startDirectWindowRecording(context, cfg) { msg -> viewModel.toast(msg) }
+        } else {
+            val intent = ScreenRecorderManager.createCaptureIntent(context)
+            if (intent != null) projectionLauncher.launch(intent)
+            else ScreenRecorderManager.startDirectWindowRecording(context, cfg) { msg -> viewModel.toast(msg) }
+        }
+    }
+
+    val toggleScreenRecording = {
+        if (isScreenRecording) {
+            ScreenRecorderManager.stopRecording { msg -> viewModel.toast(msg) }
+        } else {
+            val cfg = settings.toRecorderConfig()
+            val needMic = cfg.audioSource == RecAudioSource.MIC || cfg.audioSource == RecAudioSource.SYSTEM_AND_MIC
+            val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            if (needMic && !hasMic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            } else if (cfg.zeroLagBlinkMode && cfg.audioSource != RecAudioSource.SYSTEM && cfg.audioSource != RecAudioSource.SYSTEM_AND_MIC) {
+                ScreenRecorderManager.startDirectWindowRecording(context, cfg) { msg -> viewModel.toast(msg) }
+            } else {
+                val intent = ScreenRecorderManager.createCaptureIntent(context)
+                if (intent != null) projectionLauncher.launch(intent)
+                else ScreenRecorderManager.startDirectWindowRecording(context, cfg) { msg -> viewModel.toast(msg) }
+            }
+        }
+    }
 
     val url = tab?.url?.collectAsStateWithLifecycle()?.value ?: "about:blank"
     val title = tab?.title?.collectAsStateWithLifecycle()?.value ?: ""
@@ -254,6 +316,7 @@ fun BrowserScreen(
                     GeckoViewHost(
                         tab = tab,
                         captureHandle = captureHandle,
+                        showRecorderTouches = settings.recShowTouches,
                         modifier = Modifier.fillMaxSize()
                     )
                     if (url == "about:blank" && !incognito && !loading && !fullScreen && interstitial == null) {
@@ -316,6 +379,49 @@ fun BrowserScreen(
             )
         }
 
+        if (isScreenRecording) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0xCCDC2626),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = if (toolbarAtTop && showToolbar) 68.dp else 8.dp, end = 12.dp)
+                    .clickable { ScreenRecorderManager.stopRecording { msg -> viewModel.toast(msg) } }
+            ) {
+                val mm = recElapsedSec / 60
+                val ss = recElapsedSec % 60
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "● REC %02d:%02d".format(mm, ss),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        }
+
+        if (isScreenRecording && settings.recShowButtonPresses && !lastButtonPress.isNullOrBlank()) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xBB1E293B),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 84.dp)
+            ) {
+                Text(
+                    text = lastButtonPress.orEmpty(),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                )
+            }
+        }
+
         com.fable.browser.ui.components.UndoCloseBar(
             closed = recentlyClosed,
             onUndo = { viewModel.undoClose() },
@@ -362,7 +468,10 @@ fun BrowserScreen(
                 if (url.startsWith("https://") || url.startsWith("http://")) {
                     com.fable.browser.BlinkGamingActivity.start(context, url)
                 }
-            }
+            },
+            isScreenRecording = isScreenRecording,
+            onToggleScreenRecording = toggleScreenRecording,
+            onOpenRecorderSettings = onOpenRecorderSettings
         )
     }
 

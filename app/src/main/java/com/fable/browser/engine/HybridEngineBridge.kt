@@ -21,7 +21,8 @@ interface HybridBlinkController {
 
 object HybridEngineBridge {
     private val GAME_HOSTS = setOf(
-        "bloxd.io", "staging.bloxd.io", "poki.com", "crazygames.com",
+        "bloxd.io", "staging.bloxd.io", "testufo.com", "ufo.test",
+        "vsynctester.com", "displayhz.com", "poki.com", "crazygames.com",
         "krunker.io", "shellshock.io", "1v1.lol", "ev.io", "voxiom.io",
         "venge.io", "kirka.io", "kour.io", "miniblox.io", "vectaria.io",
         "deadshot.io", "babylonjs.com", "playcanvas.com",
@@ -460,6 +461,98 @@ object HybridEngineBridge {
                 }
             } catch (_) {}
 
+            // 3c. Native Clipboard Bridge & Dynamic Webpack Chunk Auto-Retry (all Hybrid pages + staging.bloxd.io)
+            try {
+                const readNativeClip = function() {
+                    try {
+                        if (window.FableHybridBridge && typeof window.FableHybridBridge.getClipboardText === "function") {
+                            return String(window.FableHybridBridge.getClipboardText() || "");
+                        }
+                    } catch (_) {}
+                    return "";
+                };
+                const writeNativeClip = function(txt) {
+                    try {
+                        if (window.FableHybridBridge && typeof window.FableHybridBridge.setClipboardText === "function") {
+                            window.FableHybridBridge.setClipboardText(String(txt || ""));
+                            return true;
+                        }
+                    } catch (_) {}
+                    return false;
+                };
+                const clipShim = {
+                    readText: function() { return Promise.resolve(readNativeClip()); },
+                    writeText: function(t) { writeNativeClip(t); return Promise.resolve(); }
+                };
+                if (!navigator.clipboard) {
+                    Object.defineProperty(Navigator.prototype, "clipboard", {
+                        configurable: true,
+                        get: function() { return clipShim; }
+                    });
+                } else {
+                    const clipObj = navigator.clipboard;
+                    const origRead = typeof clipObj.readText === "function" ? clipObj.readText.bind(clipObj) : null;
+                    const origWrite = typeof clipObj.writeText === "function" ? clipObj.writeText.bind(clipObj) : null;
+                    try {
+                        Object.defineProperty(clipObj, "readText", {
+                            configurable: true,
+                            value: function() {
+                                const nativeTxt = readNativeClip();
+                                if (nativeTxt.length > 0) return Promise.resolve(nativeTxt);
+                                if (origRead) return origRead().catch(function() { return readNativeClip(); });
+                                return Promise.resolve(nativeTxt);
+                            }
+                        });
+                        Object.defineProperty(clipObj, "writeText", {
+                            configurable: true,
+                            value: function(t) {
+                                writeNativeClip(t);
+                                if (origWrite) return origWrite(t).catch(function() {});
+                                return Promise.resolve();
+                            }
+                        });
+                    } catch (_) {}
+                }
+                if (navigator.permissions && typeof navigator.permissions.query === "function") {
+                    const origQuery = navigator.permissions.query.bind(navigator.permissions);
+                    navigator.permissions.query = function(desc) {
+                        if (desc && (desc.name === "clipboard-read" || desc.name === "clipboard-write")) {
+                            return Promise.resolve({ state: "granted", onchange: null });
+                        }
+                        return origQuery(desc);
+                    };
+                }
+            } catch (_) {}
+
+            try {
+                const retriedChunks = new Set();
+                window.addEventListener("error", function(ev) {
+                    const t = ev && ev.target;
+                    if (t && t.tagName === "SCRIPT" && t.src && /\.js(\?|$)/i.test(t.src) && !retriedChunks.has(t.src)) {
+                        retriedChunks.add(t.src);
+                        const origOnErr = t.onerror;
+                        const origOnLoad = t.onload;
+                        t.onerror = null;
+                        ev.stopImmediatePropagation();
+                        ev.preventDefault();
+                        const retryScript = document.createElement("script");
+                        retryScript.src = t.src + (t.src.indexOf("?") === -1 ? "?" : "&") + "_fable_retry=" + Date.now();
+                        retryScript.async = true;
+                        if (t.crossOrigin) retryScript.crossOrigin = t.crossOrigin;
+                        retryScript.onload = origOnLoad;
+                        retryScript.onerror = origOnErr;
+                        (document.head || document.documentElement).appendChild(retryScript);
+                    }
+                }, true);
+                window.addEventListener("unhandledrejection", function(ev) {
+                    const r = ev && ev.reason;
+                    const msg = r ? String(r.message || r.name || r) : "";
+                    if (msg.indexOf("NotAllowedError") !== -1 || msg.indexOf("Clipboard") !== -1) {
+                        ev.preventDefault();
+                    }
+                });
+            } catch (_) {}
+
             // 4. Blink Multi-Touch Joystick + Camera Isolation, Anti-Shutter & Lag-Spike Eliminator for Bloxd / 3D Games
             if (CFG.isGame) {
                 try {
@@ -470,22 +563,15 @@ object HybridEngineBridge {
                             configurable: true
                         });
                     }
-                    if (CFG.suppressPostTimer !== false) {
-                        const origSetTimeout = window.setTimeout;
-                        window.setTimeout = function(fn, delay, arg1, arg2) {
-                            if (arguments.length === 4 && delay === 0 && arg2 === true && arg1 && typeof arg1.lpF === "function" && typeof arg1.fY === "function") {
-                                return 0;
-                            }
-                            return origSetTimeout.apply(this, arguments);
-                        };
-                    }
+
+                    // 4c. 120 FPS Frame Pacing & Heavy Burst Promoter (never suppress post-render FPS timer!)
                     if (CFG.teleportStabilizer !== false && window.requestAnimationFrame) {
                         let lastFrameTs = 0;
                         let lastBurstTs = 0;
                         const origRaf = window.requestAnimationFrame;
                         window.requestAnimationFrame = function(cb) {
                             return origRaf.call(window, function(ts) {
-                                if (lastFrameTs > 0 && (ts - lastFrameTs) > 28 && (ts - lastBurstTs) > 400) {
+                                if (lastFrameTs > 0 && (ts - lastFrameTs) > 20 && (ts - lastBurstTs) > 350) {
                                     lastBurstTs = ts;
                                     try {
                                         if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
@@ -572,6 +658,10 @@ object HybridEngineBridge {
                     let cachedRect = null;
                     let cachedRectTime = 0;
 
+                    const isEditableNode = function(el) {
+                        if (!el || typeof el.closest !== "function") return false;
+                        return !!el.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+                    };
                     const isUiNode = function(el) {
                         if (!el || typeof el.closest !== "function") return false;
                         return !!el.closest(
@@ -690,12 +780,15 @@ object HybridEngineBridge {
                         });
                     }
                     window.addEventListener("resize", function() { cachedRect = null; cachedCw = 0; cachedCh = 0; }, { passive: true });
-                    // Zero-delay rapid clicking (20+ CPS): prevent browser double-tap zoom or contextmenu stalls on game canvases
+                    // Zero-delay rapid clicking (20+ CPS): prevent browser double-tap zoom or contextmenu stalls on game canvases,
+                    // while ALWAYS preserving native long-press Paste / Select All on <input>, <textarea>, and [contenteditable]!
                     window.addEventListener("dblclick", function(ev) {
+                        if (isEditableNode(ev.target)) return;
                         if (isCameraLookNode(ev.target) || isUiNode(ev.target)) ev.preventDefault();
                     }, { capture: true, passive: false });
                     window.addEventListener("contextmenu", function(ev) {
-                        if (isCameraLookNode(ev.target) || isUiNode(ev.target)) ev.preventDefault();
+                        if (isEditableNode(ev.target)) return;
+                        if (isCameraLookNode(ev.target)) ev.preventDefault();
                     }, { capture: true, passive: false });
 
                     window.addEventListener("touchstart", function(ev) {
@@ -725,7 +818,7 @@ object HybridEngineBridge {
                             const t = ct[i];
                             if (!t || isUiTouch(t)) continue;
                             const prev = lastCamPos.get(t.identifier);
-                            if (!prev || Math.abs(t.clientX - prev.x) >= 0.04 || Math.abs(t.clientY - prev.y) >= 0.04) {
+                            if (!prev || Math.abs(t.clientX - prev.x) >= 0.03 || Math.abs(t.clientY - prev.y) >= 0.03) {
                                 lastCamPos.set(t.identifier, { x: t.clientX, y: t.clientY });
                                 camMoved = true;
                             }
@@ -766,7 +859,7 @@ object HybridEngineBridge {
                     if (!head || document.getElementById("__fable_hybrid_fast_fonts")) return;
                     const style = document.createElement("style");
                     style.id = "__fable_hybrid_fast_fonts";
-                    style.textContent = "*, *::before, *::after { -webkit-tap-highlight-color: transparent !important; } canvas, #noa-container, .WholeAppWrapper { touch-action: none !important; -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; }";
+                    style.textContent = "*, *::before, *::after { -webkit-tap-highlight-color: transparent !important; } canvas, #noa-container { touch-action: none !important; -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; } input, textarea, [contenteditable], [contenteditable='true'] { -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important; touch-action: auto !important; }";
                     head.appendChild(style);
                     ["https://fonts.googleapis.com", "https://fonts.gstatic.com"].forEach(function(href) {
                         const link = document.createElement("link");

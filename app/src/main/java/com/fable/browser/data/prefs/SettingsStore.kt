@@ -19,6 +19,12 @@ import com.fable.browser.data.model.SuperDeviceRange
 import com.fable.browser.data.model.SuperProxyType
 import com.fable.browser.data.model.TabUnloadMode
 import com.fable.browser.data.model.ThemeMode
+import com.fable.browser.engine.RecAudioSource
+import com.fable.browser.engine.RecBitrate
+import com.fable.browser.engine.RecFrameRate
+import com.fable.browser.engine.RecOrientation
+import com.fable.browser.engine.RecResolution
+import com.fable.browser.engine.RecorderConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -161,7 +167,7 @@ data class Settings(
     val hybridCameraAntiShutter: Boolean = true,
     val hybridZeroDelayClicks: Boolean = true,
     val hybridCanvasRectCacheMs: Int = 250,
-    val hybridSuppressPostRenderTimer: Boolean = true,
+    val hybridSuppressPostRenderTimer: Boolean = false,
     val hybridFastFontSwap: Boolean = true,
     val hybridCppFastAssetBypass: Boolean = true,
     val hybridGeckoAdBlock: Boolean = true,
@@ -171,8 +177,28 @@ data class Settings(
     val hybrid3d2dAccel: Boolean = true,
     val hybridTeleportStabilizer: Boolean = true,
     val hybridHibernateGecko: Boolean = true,
-    val hybridCustomDomains: String = "bloxd.io, staging.bloxd.io, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io"
+    val hybridCustomDomains: String = "bloxd.io, staging.bloxd.io, testufo.com, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io",
+    val recResolution: RecResolution = RecResolution.RES_1640_720,
+    val recBitrate: RecBitrate = RecBitrate.MBPS_50,
+    val recOrientation: RecOrientation = RecOrientation.LANDSCAPE,
+    val recAudioSource: RecAudioSource = RecAudioSource.SYSTEM,
+    val recFrameRate: RecFrameRate = RecFrameRate.FPS_60,
+    val recStopOnScreenLock: Boolean = true,
+    val recShowTouches: Boolean = false,
+    val recShowButtonPresses: Boolean = false,
+    val recZeroLagBlinkMode: Boolean = true
 ) {
+    fun toRecorderConfig(): RecorderConfig = RecorderConfig(
+        resolution = recResolution,
+        bitrate = recBitrate,
+        orientation = recOrientation,
+        audioSource = recAudioSource,
+        frameRate = recFrameRate,
+        stopOnScreenLock = recStopOnScreenLock,
+        showTouches = recShowTouches,
+        showButtonPresses = recShowButtonPresses,
+        zeroLagBlinkMode = recZeroLagBlinkMode
+    )
     val performanceProfile: PerformanceProfile
         get() = when {
             normalTabShield && strictTrackingProtection && adBlockEnabled -> PerformanceProfile.MAX_PRIVACY
@@ -327,6 +353,15 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val HYBRID_TELEPORT_STABILIZER = booleanPreferencesKey("hybrid_teleport_stabilizer")
         val HYBRID_HIBERNATE_GECKO = booleanPreferencesKey("hybrid_hibernate_gecko")
         val HYBRID_CUSTOM_DOMAINS = stringPreferencesKey("hybrid_custom_domains")
+        val REC_RESOLUTION = stringPreferencesKey("rec_resolution")
+        val REC_BITRATE = stringPreferencesKey("rec_bitrate")
+        val REC_ORIENTATION = stringPreferencesKey("rec_orientation")
+        val REC_AUDIO_SOURCE = stringPreferencesKey("rec_audio_source")
+        val REC_FRAME_RATE = stringPreferencesKey("rec_frame_rate")
+        val REC_STOP_LOCK = booleanPreferencesKey("rec_stop_on_lock")
+        val REC_SHOW_TOUCHES = booleanPreferencesKey("rec_show_touches")
+        val REC_SHOW_BUTTONS = booleanPreferencesKey("rec_show_buttons")
+        val REC_ZERO_LAG_BLINK = booleanPreferencesKey("rec_zero_lag_blink")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -462,7 +497,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             hybridCameraAntiShutter = p[Keys.HYBRID_CAMERA_ANTI_SHUTTER] ?: true,
             hybridZeroDelayClicks = p[Keys.HYBRID_ZERO_DELAY_CLICKS] ?: true,
             hybridCanvasRectCacheMs = (p[Keys.HYBRID_CANVAS_RECT_CACHE_MS] ?: 250).coerceIn(0, 1000),
-            hybridSuppressPostRenderTimer = p[Keys.HYBRID_SUPPRESS_POST_TIMER] ?: true,
+            hybridSuppressPostRenderTimer = p[Keys.HYBRID_SUPPRESS_POST_TIMER] ?: false,
             hybridFastFontSwap = p[Keys.HYBRID_FAST_FONT_SWAP] ?: true,
             hybridCppFastAssetBypass = p[Keys.HYBRID_CPP_FAST_ASSET] ?: true,
             hybridGeckoAdBlock = p[Keys.HYBRID_GECKO_AD_BLOCK] ?: true,
@@ -472,7 +507,16 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             hybrid3d2dAccel = p[Keys.HYBRID_3D_2D_ACCEL] ?: true,
             hybridTeleportStabilizer = p[Keys.HYBRID_TELEPORT_STABILIZER] ?: true,
             hybridHibernateGecko = p[Keys.HYBRID_HIBERNATE_GECKO] ?: true,
-            hybridCustomDomains = p[Keys.HYBRID_CUSTOM_DOMAINS] ?: "bloxd.io, staging.bloxd.io, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io"
+            hybridCustomDomains = p[Keys.HYBRID_CUSTOM_DOMAINS] ?: "bloxd.io, staging.bloxd.io, testufo.com, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io",
+            recResolution = enum(p[Keys.REC_RESOLUTION], RecResolution.RES_1640_720),
+            recBitrate = enum(p[Keys.REC_BITRATE], RecBitrate.MBPS_50),
+            recOrientation = enum(p[Keys.REC_ORIENTATION], RecOrientation.LANDSCAPE),
+            recAudioSource = enum(p[Keys.REC_AUDIO_SOURCE], RecAudioSource.SYSTEM),
+            recFrameRate = enum(p[Keys.REC_FRAME_RATE], RecFrameRate.FPS_60),
+            recStopOnScreenLock = p[Keys.REC_STOP_LOCK] ?: true,
+            recShowTouches = p[Keys.REC_SHOW_TOUCHES] ?: false,
+            recShowButtonPresses = p[Keys.REC_SHOW_BUTTONS] ?: false,
+            recZeroLagBlinkMode = p[Keys.REC_ZERO_LAG_BLINK] ?: true
         )
     }.distinctUntilChanged()
 
@@ -681,6 +725,15 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setHybridTeleportStabilizer(v: Boolean) = set(Keys.HYBRID_TELEPORT_STABILIZER, v)
     suspend fun setHybridHibernateGecko(v: Boolean) = set(Keys.HYBRID_HIBERNATE_GECKO, v)
     suspend fun setHybridCustomDomains(v: String) = set(Keys.HYBRID_CUSTOM_DOMAINS, v)
+    suspend fun setRecResolution(v: RecResolution) = set(Keys.REC_RESOLUTION, v.name)
+    suspend fun setRecBitrate(v: RecBitrate) = set(Keys.REC_BITRATE, v.name)
+    suspend fun setRecOrientation(v: RecOrientation) = set(Keys.REC_ORIENTATION, v.name)
+    suspend fun setRecAudioSource(v: RecAudioSource) = set(Keys.REC_AUDIO_SOURCE, v.name)
+    suspend fun setRecFrameRate(v: RecFrameRate) = set(Keys.REC_FRAME_RATE, v.name)
+    suspend fun setRecStopOnScreenLock(v: Boolean) = set(Keys.REC_STOP_LOCK, v)
+    suspend fun setRecShowTouches(v: Boolean) = set(Keys.REC_SHOW_TOUCHES, v)
+    suspend fun setRecShowButtonPresses(v: Boolean) = set(Keys.REC_SHOW_BUTTONS, v)
+    suspend fun setRecZeroLagBlinkMode(v: Boolean) = set(Keys.REC_ZERO_LAG_BLINK, v)
 
     suspend fun copyIncognitoFromNormal(s: Settings) {
         context.dataStore.edit {

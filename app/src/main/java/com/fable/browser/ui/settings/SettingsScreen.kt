@@ -18,6 +18,7 @@ import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -118,9 +119,16 @@ fun SettingsScreen(
         ListDivider()
         SettingRow(
             title = "Beta: Gecko + Blink Engine",
-            subtitle = if (settings.hybridGeckoBlinkBeta) "Active · Edit all 17 combined engine, CPU, WebGL, camera & click settings" else "Off · Tap to configure combined engine settings",
+            subtitle = if (settings.hybridGeckoBlinkBeta) "Active (120Hz) · Edit all combined engine, CPU, WebGL, camera & click settings" else "Off · Tap to configure combined engine settings",
             icon = Icons.Outlined.Speed,
             onClick = { onNavigate(Routes.SETTINGS_HYBRID_BETA) }
+        )
+        ListDivider()
+        SettingRow(
+            title = "Запись экрана · Screen Recorder",
+            subtitle = "${settings.recResolution.label}  ·  ${settings.recBitrate.label}  ·  ${settings.recFrameRate.label}  ·  ${settings.recAudioSource.label}",
+            icon = Icons.Outlined.Videocam,
+            onClick = { onNavigate(Routes.SETTINGS_RECORDER) }
         )
         ListDivider()
         SettingRow(

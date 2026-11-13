@@ -1,6 +1,9 @@
 package com.fable.browser.engine
 
 import android.graphics.Bitmap
+import android.view.ViewGroup
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -93,6 +96,8 @@ class BrowserTab(
     @Volatile var hibernateGeckoWhenHybrid: Boolean = true
     @Volatile var fastAssetBypassEnabled: Boolean = true
 
+    @Volatile var retainedBlinkView: WebView? = null
+    @Volatile var lastLoadedBlinkUrl: String = ""
     @Volatile var hybridController: HybridBlinkController? = null
     @Volatile var hybridBlockChecker: ((String, String?) -> Boolean)? = null
     @Volatile var hybridBootstrapProvider: ((String) -> String)? = null
@@ -142,12 +147,30 @@ class BrowserTab(
         if (old !== newSession) runCatching { if (old.isOpen) old.close() }
     }
 
+    fun destroyRetainedBlinkView() {
+        hybridController = null
+        lastLoadedBlinkUrl = ""
+        val wv = retainedBlinkView ?: return
+        retainedBlinkView = null
+        wv.post {
+            runCatching {
+                (wv.parent as? ViewGroup)?.removeView(wv)
+                wv.stopLoading()
+                if (wv.tag == "incognito") wv.clearCache(true)
+                wv.webChromeClient = null
+                wv.webViewClient = WebViewClient()
+                wv.destroy()
+            }
+        }
+    }
+
     internal fun markUnloaded() {
         evictedUrl = _url.value
         isEvicted = true
         isMediaPlaying = false
         updateLoading(false)
         updateFindMatch(null)
+        destroyRetainedBlinkView()
     }
 
     fun close() {
@@ -155,7 +178,7 @@ class BrowserTab(
         updateFindMatch(null)
         httpExceptions.clear()
         savedState = null
-        hybridController = null
+        destroyRetainedBlinkView()
         runCatching { session.close() }
     }
 }

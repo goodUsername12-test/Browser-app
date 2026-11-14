@@ -186,10 +186,76 @@ abstract class FetchFilterListsTask : DefaultTask() {
     }
 }
 
+abstract class BuildRustCoreTask : DefaultTask() {
+    @get:InputDirectory
+    abstract val rustProjectDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun buildRust() {
+        val outRoot = outputDir.get().asFile.apply { mkdirs() }
+        try {
+            val sdk = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT") ?: return
+            val ndkDir = File(sdk, "ndk").listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name } ?: return
+            val llvmBin = File(ndkDir, "toolchains/llvm/prebuilt/linux-x86_64/bin")
+            val aarchLinker = File(llvmBin, "aarch64-linux-android26-clang")
+            val x86Linker = File(llvmBin, "x86_64-linux-android26-clang")
+            if (!aarchLinker.canExecute() || !x86Linker.canExecute()) return
+
+            val home = System.getProperty("user.home").orEmpty()
+            val cargoBin = File(home, ".cargo/bin")
+            val rustupExe = if (File(cargoBin, "rustup").canExecute()) File(cargoBin, "rustup").absolutePath else "rustup"
+            val cargoExe = if (File(cargoBin, "cargo").canExecute()) File(cargoBin, "cargo").absolutePath else "cargo"
+
+            val targetAdd = ProcessBuilder(rustupExe, "target", "add", "aarch64-linux-android", "x86_64-linux-android")
+                .redirectErrorStream(true).start()
+            targetAdd.inputStream.bufferedReader().readText()
+            if (targetAdd.waitFor() != 0) return
+
+            val manifest = File(rustProjectDir.get().asFile, "Cargo.toml").absolutePath
+            val targets = listOf(
+                "aarch64-linux-android" to "arm64-v8a",
+                "x86_64-linux-android" to "x86_64"
+            )
+            for ((rustTarget, abi) in targets) {
+                val pb = ProcessBuilder(
+                    cargoExe, "build", "--manifest-path", manifest, "--release", "--target", rustTarget
+                ).redirectErrorStream(true)
+                val env = pb.environment()
+                env["CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"] = aarchLinker.absolutePath
+                env["CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER"] = x86Linker.absolutePath
+                env["RUSTFLAGS"] = "-C link-arg=-Wl,-z,max-page-size=16384"
+                val proc = pb.start()
+                val logOut = proc.inputStream.bufferedReader().readText()
+                if (proc.waitFor() == 0) {
+                    val soFile = File(rustProjectDir.get().asFile, "target/$rustTarget/release/libfable_rust.so")
+                    if (soFile.isFile) {
+                        val dest = File(File(outRoot, abi).apply { mkdirs() }, "libfable_rust.so")
+                        soFile.copyTo(dest, overwrite = true)
+                        logger.lifecycle("Built Rust core $abi/libfable_rust.so (${dest.length() / 1024} KB)")
+                    }
+                } else {
+                    logger.warn("Cargo build for $rustTarget failed: $logOut")
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn("Rust native core build skipped: ${e.message}")
+        }
+    }
+}
+
 androidComponents {
     onVariants { variant ->
-        val fetch = tasks.register<FetchFilterListsTask>("fetch${variant.name.replaceFirstChar { it.uppercase() }}FilterLists")
+        val capName = variant.name.replaceFirstChar { it.uppercase() }
+        val fetch = tasks.register<FetchFilterListsTask>("fetch${capName}FilterLists")
         variant.sources.assets?.addGeneratedSourceDirectory(fetch, FetchFilterListsTask::outputDir)
+
+        val rustTask = tasks.register<BuildRustCoreTask>("build${capName}RustCore") {
+            rustProjectDir.set(rootProject.layout.projectDirectory.dir("rust/fable_rust_core"))
+        }
+        variant.sources.jniLibs?.addGeneratedSourceDirectory(rustTask, BuildRustCoreTask::outputDir)
     }
 }
 

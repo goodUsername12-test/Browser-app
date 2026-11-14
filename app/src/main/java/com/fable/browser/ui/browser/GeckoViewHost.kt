@@ -278,8 +278,9 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             val pct = tab.currentTextZoomPercent.coerceIn(50, 200)
             retained.post {
                 runCatching {
+                    val zVal = if (pct == 100) "" else "${pct / 100.0}"
                     retained.evaluateJavascript(
-                        "if(window.__fableSetPageZoom){window.__fableSetPageZoom($pct);}else if(document.documentElement){document.documentElement.style.zoom=${if (pct == 100) """" else ""${pct / 100.0}""};}",
+                        "if(window.__fableSetPageZoom){window.__fableSetPageZoom($pct);}else if(document.documentElement){document.documentElement.style.zoom='$zVal';}",
                         null
                     )
                 }
@@ -474,8 +475,9 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     val zPct = tab.currentTextZoomPercent.coerceIn(50, 200)
                     if (zPct != 100) {
                         runCatching {
+                            val zVal = "${zPct / 100.0}"
                             view.evaluateJavascript(
-                                "if(window.__fableSetPageZoom){window.__fableSetPageZoom($zPct);}else if(document.documentElement){document.documentElement.style.zoom="${zPct / 100.0}";}",
+                                "if(window.__fableSetPageZoom){window.__fableSetPageZoom($zPct);}else if(document.documentElement){document.documentElement.style.zoom='$zVal';}",
                                 null
                             )
                         }

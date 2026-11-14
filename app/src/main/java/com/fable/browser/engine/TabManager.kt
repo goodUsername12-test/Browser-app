@@ -469,8 +469,8 @@ class TabManager @Inject constructor(
                 if (sendGpc) put("Sec-GPC", "1")
                 if (desktop) {
                     put("Sec-CH-UA-Mobile", "?0")
-                    put("Sec-CH-UA-Platform", ""Windows"")
-                    put("Sec-CH-UA", ""Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"")
+                    put("Sec-CH-UA-Platform", "\"Windows\"")
+                    put("Sec-CH-UA", "\"Chromium\";v=\"134\", \"Not:A-Brand\";v=\"24\", \"Google Chrome\";v=\"134\"")
                 }
                 if (shield) {
                     val lang = if (tab.isSuper) {

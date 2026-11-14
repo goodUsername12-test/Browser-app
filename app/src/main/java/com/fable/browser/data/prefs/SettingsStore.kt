@@ -188,13 +188,13 @@ data class Settings(
     val recShowButtonPresses: Boolean = false,
     val recZeroLagBlinkMode: Boolean = true,
     val batterySaverMaster: Boolean = false,
-    val batteryAutoLowPct: Int = 20,
+    val batteryAutoLowPct: Int = 0,
     val batteryThermalGuard: Boolean = true,
     val batteryAdaptiveRefresh: Boolean = true,
     val batteryGameMaxFps: Int = 120,
     val batteryGameRenderScale: Int = 100,
     val batteryEcoCpu: Boolean = false,
-    val batteryIdleGameFps: Int = 30,
+    val batteryIdleGameFps: Int = 0,
     val batteryIdleTimeoutSec: Int = 8,
     val batteryFreezeBgTabs: Boolean = true,
     val batteryReduceMotion: Boolean = false,
@@ -375,13 +375,13 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val REC_SHOW_BUTTONS = booleanPreferencesKey("rec_show_buttons")
         val REC_ZERO_LAG_BLINK = booleanPreferencesKey("rec_zero_lag_blink")
         val BAT_SAVER_MASTER = booleanPreferencesKey("bat_saver_master")
-        val BAT_AUTO_LOW_PCT = intPreferencesKey("bat_auto_low_pct")
+        val BAT_AUTO_LOW_PCT = intPreferencesKey("bat_auto_low_pct_v2")
         val BAT_THERMAL_GUARD = booleanPreferencesKey("bat_thermal_guard")
         val BAT_ADAPTIVE_REFRESH = booleanPreferencesKey("bat_adaptive_refresh")
         val BAT_GAME_MAX_FPS = intPreferencesKey("bat_game_max_fps")
         val BAT_GAME_RENDER_SCALE = intPreferencesKey("bat_game_render_scale")
         val BAT_ECO_CPU = booleanPreferencesKey("bat_eco_cpu")
-        val BAT_IDLE_GAME_FPS = intPreferencesKey("bat_idle_game_fps")
+        val BAT_IDLE_GAME_FPS = intPreferencesKey("bat_idle_game_fps_v2")
         val BAT_IDLE_TIMEOUT_SEC = intPreferencesKey("bat_idle_timeout_sec")
         val BAT_FREEZE_BG_TABS = booleanPreferencesKey("bat_freeze_bg_tabs")
         val BAT_REDUCE_MOTION = booleanPreferencesKey("bat_reduce_motion")
@@ -542,13 +542,13 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             recShowButtonPresses = p[Keys.REC_SHOW_BUTTONS] ?: false,
             recZeroLagBlinkMode = p[Keys.REC_ZERO_LAG_BLINK] ?: true,
             batterySaverMaster = p[Keys.BAT_SAVER_MASTER] ?: false,
-            batteryAutoLowPct = (p[Keys.BAT_AUTO_LOW_PCT] ?: 20).coerceIn(0, 80),
+            batteryAutoLowPct = (p[Keys.BAT_AUTO_LOW_PCT] ?: 0).coerceIn(0, 80),
             batteryThermalGuard = p[Keys.BAT_THERMAL_GUARD] ?: true,
             batteryAdaptiveRefresh = p[Keys.BAT_ADAPTIVE_REFRESH] ?: true,
             batteryGameMaxFps = (p[Keys.BAT_GAME_MAX_FPS] ?: 120).coerceIn(15, 120),
             batteryGameRenderScale = (p[Keys.BAT_GAME_RENDER_SCALE] ?: 100).coerceIn(50, 100),
             batteryEcoCpu = p[Keys.BAT_ECO_CPU] ?: false,
-            batteryIdleGameFps = (p[Keys.BAT_IDLE_GAME_FPS] ?: 30).coerceIn(0, 60),
+            batteryIdleGameFps = (p[Keys.BAT_IDLE_GAME_FPS] ?: 0).coerceIn(0, 60),
             batteryIdleTimeoutSec = (p[Keys.BAT_IDLE_TIMEOUT_SEC] ?: 8).coerceIn(3, 60),
             batteryFreezeBgTabs = p[Keys.BAT_FREEZE_BG_TABS] ?: true,
             batteryReduceMotion = p[Keys.BAT_REDUCE_MOTION] ?: false,
@@ -798,12 +798,13 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun applyMaxCompetitivePreset() {
         context.dataStore.edit {
             it[Keys.BAT_SAVER_MASTER] = false
+            it[Keys.BAT_AUTO_LOW_PCT] = 0
             it[Keys.BAT_THERMAL_GUARD] = true
             it[Keys.BAT_ADAPTIVE_REFRESH] = true
             it[Keys.BAT_GAME_MAX_FPS] = 120
             it[Keys.BAT_GAME_RENDER_SCALE] = 100
             it[Keys.BAT_ECO_CPU] = false
-            it[Keys.BAT_IDLE_GAME_FPS] = 30
+            it[Keys.BAT_IDLE_GAME_FPS] = 0
             it[Keys.BAT_IDLE_TIMEOUT_SEC] = 10
             it[Keys.BAT_OLED_DIM_PCT] = 0
         }

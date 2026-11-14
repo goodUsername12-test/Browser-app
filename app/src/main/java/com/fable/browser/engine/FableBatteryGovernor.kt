@@ -1,10 +1,13 @@
 package com.fable.browser.engine
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.PowerManager
 import android.os.SystemClock
 import com.fable.browser.data.prefs.Settings
@@ -33,29 +36,57 @@ data class BatteryThermalSnapshot(
 object FableBatteryGovernor {
     private val initialized = AtomicBoolean(false)
     private val lastInputUptimeMs = AtomicLong(SystemClock.uptimeMillis())
-    private var appContext: Context? = null
+    private var bgHandler: Handler? = null
 
     private val _snapshot = MutableStateFlow(BatteryThermalSnapshot())
     val snapshot: StateFlow<BatteryThermalSnapshot> = _snapshot.asStateFlow()
 
     fun init(context: Context) {
-        val ctx = context.applicationContext
-        appContext = ctx
         if (!initialized.compareAndSet(false, true)) return
-        refreshBatteryState(ctx)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val ctx = context.applicationContext
+        val thread = HandlerThread("FableBatteryWatch", android.os.Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
+        val handler = Handler(thread.looper)
+        bgHandler = handler
+
+        handler.post {
             runCatching {
-                val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return@runCatching
-                val cur = pm.currentThermalStatus
-                _snapshot.value = _snapshot.value.copy(
-                    thermalStatus = cur,
-                    rustCoreActive = RustFastCore.isRustAvailable
-                )
-                pm.addThermalStatusListener { status ->
+                val receiver = object : BroadcastReceiver() {
+                    override fun onReceive(c: Context?, intent: Intent?) {
+                        if (intent == null) return
+                        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+                        val pct = if (level >= 0 && scale > 0) ((level * 100) / scale).coerceIn(1, 100) else 100
+                        val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                            status == BatteryManager.BATTERY_STATUS_FULL
+                        val cur = _snapshot.value
+                        if (cur.batteryPercent != pct || cur.isCharging != charging) {
+                            _snapshot.value = cur.copy(
+                                batteryPercent = pct,
+                                isCharging = charging,
+                                rustCoreActive = RustFastCore.isRustAvailable
+                            )
+                        }
+                    }
+                }
+                val sticky = ctx.registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED), null, handler)
+                if (sticky != null) {
+                    receiver.onReceive(ctx, sticky)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                runCatching {
+                    val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return@runCatching
                     _snapshot.value = _snapshot.value.copy(
-                        thermalStatus = status,
+                        thermalStatus = pm.currentThermalStatus,
                         rustCoreActive = RustFastCore.isRustAvailable
                     )
+                    pm.addThermalStatusListener({ cmd -> handler.post(cmd) }) { status ->
+                        _snapshot.value = _snapshot.value.copy(
+                            thermalStatus = status,
+                            rustCoreActive = RustFastCore.isRustAvailable
+                        )
+                    }
                 }
             }
         }
@@ -69,31 +100,11 @@ object FableBatteryGovernor {
         return (SystemClock.uptimeMillis() - lastInputUptimeMs.get()).coerceAtLeast(0L)
     }
 
-    fun refreshBatteryState(context: Context? = appContext) {
-        val ctx = context ?: return
-        runCatching {
-            val sticky = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            val level = sticky?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-            val scale = sticky?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
-            val pct = if (level >= 0 && scale > 0) ((level * 100) / scale).coerceIn(1, 100) else 100
-            val status = sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-            val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                status == BatteryManager.BATTERY_STATUS_FULL
-            val sysSaver = (ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isPowerSaveMode == true
-            val cur = _snapshot.value
-            val effectivePct = if (sysSaver && pct > 20) 15 else pct
-            if (cur.batteryPercent != effectivePct || cur.isCharging != charging) {
-                _snapshot.value = cur.copy(
-                    batteryPercent = effectivePct,
-                    isCharging = charging,
-                    rustCoreActive = RustFastCore.isRustAvailable
-                )
-            }
-        }
+    fun refreshBatteryState(@Suppress("UNUSED_PARAMETER") context: Context? = null) {
+        // State is updated asynchronously via background BroadcastReceiver — zero main-thread IPC.
     }
 
     fun evaluatePlan(settings: Settings, isPureGame: Boolean): PowerPlan {
-        refreshBatteryState()
         val snap = _snapshot.value
         return RustFastCore.computePowerPlan(
             settings = settings,

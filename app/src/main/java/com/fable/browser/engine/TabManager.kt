@@ -82,6 +82,9 @@ class TabManager @Inject constructor(
     private val hybridTabPrefs by lazy {
         appContext.getSharedPreferences("fable_hybrid_tab_state", android.content.Context.MODE_PRIVATE)
     }
+    private val gameAccountVaultPrefs by lazy {
+        appContext.getSharedPreferences("fable_game_account_vault", android.content.Context.MODE_PRIVATE)
+    }
 
     private fun saveTabHybridState(url: String, manualOverride: Boolean?) {
         if (!settings.hybridPersistTabMode) return
@@ -121,7 +124,19 @@ class TabManager @Inject constructor(
                     updated.idleTabMinutes != settings.idleTabMinutes
                 val keepChanged = updated.keepIncognitoTabs != settings.keepIncognitoTabs || updated.keepSuperTabs != settings.keepSuperTabs
                 val jsChanged = updated.incognitoJavascript != settings.incognitoJavascript
+                val zoomChanged = updated.textZoomPercent != settings.textZoomPercent
+                val ecoChanged = updated.batterySaverMaster != settings.batterySaverMaster ||
+                    updated.batteryEcoCpu != settings.batteryEcoCpu
                 settings = updated
+                if (zoomChanged || ecoChanged) {
+                    _tabs.value.forEach { t ->
+                        t.currentTextZoomPercent = updated.textZoomPercent
+                        t.ecoBoostDisabled = updated.batterySaverMaster || updated.batteryEcoCpu
+                        if (zoomChanged) {
+                            t.hybridController?.setTextZoom(updated.textZoomPercent)
+                        }
+                    }
+                }
                 if (jsChanged) applyJavascriptToTabs(updated)
                 if (wipeChanged) restartAutoWipeTimer()
                 if (budgetChanged) {
@@ -425,6 +440,8 @@ class TabManager @Inject constructor(
     private fun wireHybridCallbacks(tab: BrowserTab) {
         tab.hibernateGeckoWhenHybrid = settings.hybridHibernateGecko
         tab.fastAssetBypassEnabled = settings.hybridCppFastAssetBypass
+        tab.currentTextZoomPercent = settings.textZoomPercent
+        tab.ecoBoostDisabled = settings.batterySaverMaster || settings.batteryEcoCpu
         tab.hybridBlockChecker = { reqUrl, docHost ->
             val s = settings
             val adBlock = s.hybridGeckoAdBlock && (if (tab.isIncognito) s.incognitoAdBlock else s.adBlockEnabled)
@@ -446,9 +463,15 @@ class TabManager @Inject constructor(
             val sendDnt = if (tab.isIncognito) s.incognitoSendDnt else s.sendGpc
             val sendGpc = if (tab.isIncognito) s.incognitoGpc else s.sendGpc
             val shield = tab.isSuper || (tab.isIncognito && s.incognitoFingerprintProtection) || s.normalTabShield
+            val desktop = tab.isDesktopMode.value
             buildMap {
                 if (sendDnt) put("DNT", "1")
                 if (sendGpc) put("Sec-GPC", "1")
+                if (desktop) {
+                    put("Sec-CH-UA-Mobile", "?0")
+                    put("Sec-CH-UA-Platform", ""Windows"")
+                    put("Sec-CH-UA", ""Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"")
+                }
                 if (shield) {
                     val lang = if (tab.isSuper) {
                         superIncognito.current(s).acceptLanguage().ifBlank { "en-US,en;q=0.9" }
@@ -467,7 +490,8 @@ class TabManager @Inject constructor(
                 isIncognito = tab.isIncognito,
                 isSuper = tab.isSuper,
                 superIdentity = id,
-                pageUrl = pageUrl.ifBlank { tab.url.value }
+                pageUrl = pageUrl.ifBlank { tab.url.value },
+                isDesktopMode = tab.isDesktopMode.value
             )
         }
         tab.hybridArchiveScriptProvider = { reqId, mode ->
@@ -500,6 +524,22 @@ class TabManager @Inject constructor(
         }
         tab.hybridExternalUrlHandler = { externalUrl ->
             activityBridge.openExternal(externalUrl)
+        }
+        tab.hybridStorageVaultRead = { originHost ->
+            if (tab.isIncognito || tab.isSuper || originHost.isBlank()) {
+                ""
+            } else {
+                val canonical = UrlUtils.registrableDomain(originHost) ?: originHost.lowercase().removePrefix("www.")
+                val key = if (originHost.startsWith("staging.", ignoreCase = true)) "staging.$canonical" else canonical
+                gameAccountVaultPrefs.getString("ls_$key", "").orEmpty()
+            }
+        }
+        tab.hybridStorageVaultWrite = { originHost, jsonPayload ->
+            if (!tab.isIncognito && !tab.isSuper && originHost.isNotBlank() && jsonPayload.length in 3..524288) {
+                val canonical = UrlUtils.registrableDomain(originHost) ?: originHost.lowercase().removePrefix("www.")
+                val key = if (originHost.startsWith("staging.", ignoreCase = true)) "staging.$canonical" else canonical
+                gameAccountVaultPrefs.edit().putString("ls_$key", jsonPayload).apply()
+            }
         }
     }
 

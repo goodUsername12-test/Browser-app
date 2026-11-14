@@ -127,6 +127,18 @@ private class FableHybridJsBridge(
     }
 
     @JavascriptInterface
+    fun readAccountVault(host: String?): String {
+        if (tab.isIncognito || host.isNullOrBlank()) return ""
+        return runCatching { tab.hybridStorageVaultRead?.invoke(host).orEmpty() }.getOrDefault("")
+    }
+
+    @JavascriptInterface
+    fun writeAccountVault(host: String?, jsonStr: String?) {
+        if (tab.isIncognito || host.isNullOrBlank() || jsonStr.isNullOrBlank()) return
+        runCatching { tab.hybridStorageVaultWrite?.invoke(host, jsonStr) }
+    }
+
+    @JavascriptInterface
     fun getClipboardText(): String {
         return runCatching {
             val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -167,7 +179,24 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
     var blinkView: WebView? = null
     var customFullScreenView: View? = null
     var customViewCallback: WebChromeClient.CustomViewCallback? = null
+    var authPopupOverlay: View? = null
+    var authPopupWebView: WebView? = null
     var boundTab: BrowserTab? = null
+
+    private fun closeAuthPopup() {
+        authPopupOverlay?.let { removeView(it) }
+        authPopupOverlay = null
+        authPopupWebView?.let { pwv ->
+            runCatching {
+                pwv.stopLoading()
+                pwv.webChromeClient = null
+                pwv.webViewClient = WebViewClient()
+                pwv.destroy()
+            }
+        }
+        authPopupWebView = null
+        FableUnifiedEngine.flushBlinkCookies()
+    }
     @Volatile var showRecorderTouches: Boolean = false
 
     init {
@@ -246,6 +275,15 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             blinkView = retained
             addView(retained, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             HighRefreshRateEnforcer.applyToViewTree(retained)
+            val pct = tab.currentTextZoomPercent.coerceIn(50, 200)
+            retained.post {
+                runCatching {
+                    retained.evaluateJavascript(
+                        "if(window.__fableSetPageZoom){window.__fableSetPageZoom($pct);}else if(document.documentElement){document.documentElement.style.zoom=${if (pct == 100) """" else ""${pct / 100.0}""};}",
+                        null
+                    )
+                }
+            }
             return retained
         }
 
@@ -278,22 +316,25 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             settings.allowContentAccess = false
             settings.loadsImagesAutomatically = true
             settings.blockNetworkImage = false
-            settings.setSupportZoom(false)
-            settings.builtInZoomControls = false
+            settings.setSupportZoom(true)
+            settings.builtInZoomControls = true
             settings.displayZoomControls = false
+            settings.textZoom = 100
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
                 runCatching { settings.offscreenPreRaster = true }
             }
             settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            settings.javaScriptCanOpenWindowsAutomatically = false
+            settings.loadWithOverviewMode = tab.isDesktopMode.value
+            settings.javaScriptCanOpenWindowsAutomatically = !tab.isIncognito
+            settings.setSupportMultipleWindows(!tab.isIncognito)
             settings.cacheMode = if (tab.isIncognito) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 runCatching { setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false) }
             }
             runCatching {
-                CookieManager.getInstance().setAcceptCookie(true)
-                CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+                val cm = CookieManager.getInstance()
+                cm.setAcceptCookie(true)
+                cm.setAcceptThirdPartyCookies(this, !tab.isIncognito)
             }
             addJavascriptInterface(FableHybridJsBridge(context.applicationContext, tab), "FableHybridBridge")
             setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
@@ -329,6 +370,19 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                         ?: UrlUtils.host(tab.lastLoadedBlinkUrl)
                     val reqHost = UrlUtils.host(reqUrl)
                     if (docHost != null && reqHost != null && UrlUtils.isSameSite(reqHost, docHost)) return null
+                    if (reqHost != null && (
+                        reqHost.endsWith("googleapis.com") ||
+                        reqHost.endsWith("accounts.google.com") ||
+                        reqHost.endsWith("apis.google.com") ||
+                        reqHost.endsWith("firebaseapp.com") ||
+                        reqHost.endsWith("gstatic.com") ||
+                        reqHost.endsWith("challenges.cloudflare.com") ||
+                        reqHost.endsWith("discord.com") ||
+                        reqHost.endsWith("auth0.com") ||
+                        reqHost.endsWith("microsoftonline.com") ||
+                        reqHost.endsWith("live.com") ||
+                        reqHost.endsWith("apple.com")
+                    )) return null
                     if (tab.fastAssetBypassEnabled && NativeFastEngine.isFastAsset(reqUrl, docHost)) return null
                     val blocked = tab.hybridBlockChecker?.invoke(reqUrl, docHost) == true
                     if (blocked) {
@@ -354,18 +408,16 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                         tab.hybridExternalUrlHandler?.invoke(target)
                         return true
                     }
-                    val cleaned = UrlUtils.stripTrackingParams(target)
-                    val extraHeaders = tab.hybridExtraHeadersProvider?.invoke(cleaned).orEmpty()
-                    val needDntHeader = extraHeaders["DNT"] == "1" && request.requestHeaders["DNT"] != "1"
-                    val isMainGet = request.isForMainFrame &&
-                        request.method.equals("GET", ignoreCase = true) &&
-                        (cleaned.startsWith("http://") || cleaned.startsWith("https://"))
-                    if (cleaned != target || (isMainGet && needDntHeader)) {
-                        view.post {
-                            tab.lastLoadedBlinkUrl = cleaned
-                            if (extraHeaders.isNotEmpty()) view.loadUrl(cleaned, extraHeaders) else view.loadUrl(cleaned)
+                    if (!request.isRedirect) {
+                        val cleaned = UrlUtils.stripTrackingParams(target)
+                        if (cleaned != target && request.isForMainFrame && request.method.equals("GET", ignoreCase = true)) {
+                            val extraHeaders = tab.hybridExtraHeadersProvider?.invoke(cleaned).orEmpty()
+                            view.post {
+                                tab.lastLoadedBlinkUrl = cleaned
+                                if (extraHeaders.isNotEmpty()) view.loadUrl(cleaned, extraHeaders) else view.loadUrl(cleaned)
+                            }
+                            return true
                         }
-                        return true
                     }
                     return false
                 }
@@ -419,6 +471,16 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     if (boot.isNotEmpty()) {
                         runCatching { view.evaluateJavascript(boot, null) }
                     }
+                    val zPct = tab.currentTextZoomPercent.coerceIn(50, 200)
+                    if (zPct != 100) {
+                        runCatching {
+                            view.evaluateJavascript(
+                                "if(window.__fableSetPageZoom){window.__fableSetPageZoom($zPct);}else if(document.documentElement){document.documentElement.style.zoom="${zPct / 100.0}";}",
+                                null
+                            )
+                        }
+                    }
+                    FableUnifiedEngine.flushBlinkCookies()
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -433,6 +495,94 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
 
                 override fun onPermissionRequest(request: PermissionRequest?) {
                     request?.deny()
+                }
+
+                @SuppressLint("SetJavaScriptEnabled")
+                override fun onCreateWindow(
+                    view: WebView?,
+                    isDialog: Boolean,
+                    isUserGesture: Boolean,
+                    resultMsg: android.os.Message?
+                ): Boolean {
+                    if (!isUserGesture || resultMsg == null || tab.isIncognito) return false
+                    val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                    closeAuthPopup()
+                    val wrapper = android.widget.LinearLayout(context).apply {
+                        orientation = android.widget.LinearLayout.VERTICAL
+                        setBackgroundColor(Color.parseColor("#111827"))
+                        isClickable = true
+                        isFocusable = true
+                    }
+                    val topBar = android.widget.LinearLayout(context).apply {
+                        orientation = android.widget.LinearLayout.HORIZONTAL
+                        setBackgroundColor(Color.parseColor("#1F2937"))
+                        val pad = (10 * resources.displayMetrics.density).toInt()
+                        setPadding(pad, pad, pad, pad)
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                    }
+                    val titleTv = android.widget.TextView(context).apply {
+                        text = "Sign in"
+                        setTextColor(Color.WHITE)
+                        textSize = 14f
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        layoutParams = android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    val closeBtn = android.widget.TextView(context).apply {
+                        text = "✕ Close"
+                        setTextColor(Color.parseColor("#93C5FD"))
+                        textSize = 14f
+                        val hPad = (12 * resources.displayMetrics.density).toInt()
+                        setPadding(hPad, 0, hPad, 0)
+                        setOnClickListener { closeAuthPopup() }
+                    }
+                    topBar.addView(titleTv)
+                    topBar.addView(closeBtn)
+
+                    val popupWv = WebView(MutableContextWrapper(context)).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.databaseEnabled = true
+                        settings.javaScriptCanOpenWindowsAutomatically = true
+                        settings.setSupportMultipleWindows(true)
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = true
+                        val cleanUa = FableUnifiedEngine.defaultBlinkUserAgent.ifBlank {
+                            settings.userAgentString.replace("; wv)", ")").replace("Version/4.0 ", "")
+                        }
+                        if (cleanUa.isNotBlank()) settings.userAgentString = cleanUa
+                        runCatching {
+                            CookieManager.getInstance().setAcceptCookie(true)
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        }
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageStarted(v: WebView?, u: String?, fav: Bitmap?) {
+                                super.onPageStarted(v, u, fav)
+                                if (!u.isNullOrBlank()) titleTv.text = UrlUtils.host(u) ?: u
+                            }
+                            override fun onPageFinished(v: WebView?, u: String?) {
+                                super.onPageFinished(v, u)
+                                FableUnifiedEngine.flushBlinkCookies()
+                            }
+                        }
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onCloseWindow(window: WebView?) {
+                                closeAuthPopup()
+                            }
+                        }
+                    }
+                    wrapper.addView(topBar, android.widget.LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                    wrapper.addView(popupWv, android.widget.LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+                    authPopupWebView = popupWv
+                    authPopupOverlay = wrapper
+                    addView(wrapper, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                    transport.webView = popupWv
+                    resultMsg.sendToTarget()
+                    return true
+                }
+
+                override fun onCloseWindow(window: WebView?) {
+                    closeAuthPopup()
                 }
 
                 override fun onShowFileChooser(
@@ -479,19 +629,35 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 .replace("; wv)", ")")
                 .replace("Version/4.0 ", "")
         }
-        val initialPrivacyUa = tab.hybridCustomUserAgent?.invoke()?.takeIf { it.isNotBlank() } ?: rawDefaultUa
-        if (initialPrivacyUa.isNotBlank()) {
-            runCatching { wv.settings.userAgentString = initialPrivacyUa }
+        val desktopBlinkUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+        val applyDesktopState: (Boolean) -> Unit = { desk ->
+            val targetUa = if (desk) {
+                desktopBlinkUa
+            } else {
+                tab.hybridCustomUserAgent?.invoke()?.takeIf { it.isNotBlank() } ?: rawDefaultUa
+            }
+            if (targetUa.isNotBlank()) {
+                runCatching { wv.settings.userAgentString = targetUa }
+            }
+            wv.settings.useWideViewPort = true
+            wv.settings.loadWithOverviewMode = desk
+            wv.setInitialScale(0)
         }
+        val applyZoomState: (Int) -> Unit = { rawPct ->
+            val pct = rawPct.coerceIn(50, 200)
+            wv.settings.textZoom = 100
+            val zoomJs = if (pct == 100) {
+                "if(window.__fableSetPageZoom){window.__fableSetPageZoom(100);}else if(document.documentElement){document.documentElement.style.zoom='';}"
+            } else {
+                "if(window.__fableSetPageZoom){window.__fableSetPageZoom($pct);}else if(document.documentElement){document.documentElement.style.zoom='${pct / 100.0}';}"
+            }
+            runCatching { wv.evaluateJavascript(zoomJs, null) }
+        }
+        applyDesktopState(tab.isDesktopMode.value)
         val controller = object : HybridBlinkController {
             override fun loadUrl(url: String) {
                 wv.post {
-                    if (!tab.isDesktopMode.value) {
-                        val ua = tab.hybridCustomUserAgent?.invoke()?.takeIf { it.isNotBlank() } ?: rawDefaultUa
-                        if (ua.isNotBlank() && wv.settings.userAgentString != ua) {
-                            runCatching { wv.settings.userAgentString = ua }
-                        }
-                    }
+                    applyDesktopState(tab.isDesktopMode.value)
                     tab.lastLoadedBlinkUrl = url
                     val headers = tab.hybridExtraHeadersProvider?.invoke(url).orEmpty()
                     if (headers.isNotEmpty()) wv.loadUrl(url, headers) else wv.loadUrl(url)
@@ -520,19 +686,22 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
 
             override fun setDesktopMode(desktop: Boolean) {
                 wv.post {
-                    wv.settings.userAgentString = if (desktop) {
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+                    applyDesktopState(desktop)
+                    val cur = (wv.url ?: tab.lastLoadedBlinkUrl).ifBlank { tab.url.value }
+                    val headers = tab.hybridExtraHeadersProvider?.invoke(cur).orEmpty()
+                    if (cur.startsWith("http://") || cur.startsWith("https://")) {
+                        tab.lastLoadedBlinkUrl = cur
+                        if (headers.isNotEmpty()) wv.loadUrl(cur, headers) else wv.loadUrl(cur)
                     } else {
-                        tab.hybridCustomUserAgent?.invoke()?.takeIf { it.isNotBlank() } ?: rawDefaultUa
+                        wv.reload()
                     }
-                    wv.settings.useWideViewPort = true
-                    wv.settings.loadWithOverviewMode = desktop
-                    wv.reload()
                 }
             }
 
             override fun setTextZoom(percent: Int) {
-                wv.post { wv.settings.textZoom = percent.coerceIn(50, 200) }
+                val clamped = percent.coerceIn(50, 200)
+                tab.currentTextZoomPercent = clamped
+                wv.post { applyZoomState(clamped) }
             }
 
             override fun findInPage(query: String, forward: Boolean) {
@@ -579,6 +748,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
     }
 
     fun detachBlinkView() {
+        closeAuthPopup()
         customFullScreenView?.let { removeView(it) }
         customFullScreenView = null
         customViewCallback = null
@@ -629,10 +799,10 @@ fun GeckoViewHost(
             captureHandle.hybridActive = hybridBlink
             HighRefreshRateEnforcer.applyToViewTree(container)
             val target = session
-            val isPureGame = hybridBlink && HybridEngineBridge.isPure3dGameUrl(currentUrl)
-            FableUnifiedEngine.setFrameMonitorActive(isPureGame)
+            val boostOn = hybridBlink && !tab.ecoBoostDisabled && !HybridEngineBridge.isBenchmarkUrl(currentUrl)
+            FableUnifiedEngine.setFrameMonitorActive(boostOn)
             if (hybridBlink) {
-                NativeFastEngine.setGameBoost(isPureGame)
+                NativeFastEngine.setGameBoost(boostOn)
                 if (tab.hibernateGeckoWhenHybrid) {
                     if (gv.session != null) {
                         runCatching { gv.releaseSession() }

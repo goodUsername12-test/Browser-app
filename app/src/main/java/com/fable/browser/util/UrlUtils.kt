@@ -122,8 +122,31 @@ object UrlUtils {
     fun isWebScheme(url: String): Boolean =
         scheme(url) in setOf("http", "https", "about", "data", "file", "blob", "resource")
 
+    private val TWO_PART_TLDS = setOf(
+        "co.uk", "org.uk", "ac.uk", "com.au", "net.au", "org.au",
+        "co.jp", "ne.jp", "or.jp", "com.br", "com.mx", "co.kr", "co.in", "com.sg"
+    )
+
+    fun registrableDomain(rawHost: String?): String? {
+        val h = rawHost?.trim()?.lowercase()?.removePrefix("www.")?.takeIf { it.isNotBlank() } ?: return null
+        val parts = h.split('.')
+        if (parts.size <= 2) return h
+        val lastTwo = "${parts[parts.size - 2]}.${parts[parts.size - 1]}"
+        return if (lastTwo in TWO_PART_TLDS && parts.size >= 3) {
+            "${parts[parts.size - 3]}.$lastTwo"
+        } else {
+            lastTwo
+        }
+    }
+
     fun isSameSite(candidateHost: String?, baseHost: String?): Boolean {
         if (candidateHost == null || baseHost == null) return false
-        return candidateHost == baseHost || candidateHost.endsWith(".$baseHost")
+        if (candidateHost.equals(baseHost, ignoreCase = true) ||
+            candidateHost.endsWith(".$baseHost", ignoreCase = true) ||
+            baseHost.endsWith(".$candidateHost", ignoreCase = true)
+        ) return true
+        val regA = registrableDomain(candidateHost) ?: return false
+        val regB = registrableDomain(baseHost) ?: return false
+        return regA == regB
     }
 }

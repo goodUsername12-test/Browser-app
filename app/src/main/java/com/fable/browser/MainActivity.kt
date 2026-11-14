@@ -141,19 +141,31 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    private data class RefreshConfig(
+        val highRefresh: Boolean,
+        val saverMaster: Boolean,
+        val gameMaxFps: Int,
+        val showButtons: Boolean
+    )
+
     private fun observeRefreshRate() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 settingsStore.settings
-                    .collect { s ->
-                        currentHighRefresh = s.highRefreshRate && !s.batterySaverMaster
-                        currentShowButtonPresses = s.recShowButtonPresses
-                        val isGame = tabManager.activeTab?.let {
-                            com.fable.browser.engine.HybridEngineBridge.isPure3dGameUrl(it.url.value, s.hybridCustomDomains)
-                        } ?: false
-                        val plan = FableBatteryGovernor.evaluatePlan(s, isGame)
+                    .map { RefreshConfig(it.highRefreshRate, it.batterySaverMaster, it.batteryGameMaxFps, it.recShowButtonPresses) }
+                    .distinctUntilChanged()
+                    .collect { cfg ->
+                        currentHighRefresh = cfg.highRefresh && !cfg.saverMaster
+                        currentShowButtonPresses = cfg.showButtons
                         runCatching {
-                            HighRefreshRateEnforcer.applyCustomRateToWindow(this@MainActivity, plan.targetDisplayHz.toFloat())
+                            if (!cfg.highRefresh) {
+                                applyRefreshRate(false)
+                            } else if (!cfg.saverMaster && cfg.gameMaxFps >= 115) {
+                                applyRefreshRate(true)
+                            } else {
+                                val targetHz = if (cfg.saverMaster && cfg.gameMaxFps >= 120) 90f else cfg.gameMaxFps.toFloat()
+                                HighRefreshRateEnforcer.applyCustomRateToWindow(this@MainActivity, targetHz)
+                            }
                         }
                     }
             }

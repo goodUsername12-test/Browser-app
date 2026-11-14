@@ -95,6 +95,8 @@ class BrowserTab(
     @Volatile var manualHybridOverride: Boolean? = null
     @Volatile var hibernateGeckoWhenHybrid: Boolean = true
     @Volatile var fastAssetBypassEnabled: Boolean = true
+    @Volatile var currentTextZoomPercent: Int = 100
+    @Volatile var ecoBoostDisabled: Boolean = false
 
     @Volatile var retainedBlinkView: WebView? = null
     @Volatile var lastLoadedBlinkUrl: String = ""
@@ -110,6 +112,8 @@ class BrowserTab(
     @Volatile var hybridContextMenuHandler: ((ContextMenuTarget) -> Unit)? = null
     @Volatile var hybridFileChooserHandler: ((Array<String>, Boolean, (List<android.net.Uri>) -> Unit) -> Unit)? = null
     @Volatile var hybridExternalUrlHandler: ((String) -> Boolean)? = null
+    @Volatile var hybridStorageVaultRead: ((String) -> String)? = null
+    @Volatile var hybridStorageVaultWrite: ((String, String) -> Unit)? = null
 
     private val httpExceptions = mutableSetOf<String>()
 

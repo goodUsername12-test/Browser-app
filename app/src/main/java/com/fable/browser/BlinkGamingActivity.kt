@@ -114,7 +114,7 @@ class BlinkGamingActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 runCatching { setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false) }
             }
-            runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(this, false) }
+            runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(this, true) }
             addJavascriptInterface(
                 object {
                     @JavascriptInterface

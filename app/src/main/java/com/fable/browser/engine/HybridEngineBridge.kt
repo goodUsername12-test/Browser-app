@@ -47,9 +47,13 @@ object HybridEngineBridge {
         return false
     }
 
+    fun isBenchmarkUrl(url: String): Boolean {
+        val host = UrlUtils.host(url)?.removePrefix("www.") ?: return false
+        return BENCHMARK_HOSTS.any { host == it || host.endsWith(".$it") }
+    }
+
     fun isHeavy3dGameUrl(url: String, customDomains: String = ""): Boolean {
-        val host = UrlUtils.host(url)?.removePrefix("www.")
-        if (host != null && BENCHMARK_HOSTS.any { host == it || host.endsWith(".$it") }) return true
+        if (isBenchmarkUrl(url)) return true
         return isPure3dGameUrl(url, customDomains)
     }
 
@@ -58,7 +62,8 @@ object HybridEngineBridge {
         isIncognito: Boolean,
         isSuper: Boolean,
         superIdentity: SuperIdentity?,
-        pageUrl: String
+        pageUrl: String,
+        isDesktopMode: Boolean = false
     ): String {
         val isPureGame = isPure3dGameUrl(pageUrl, settings.hybridCustomDomains)
         val isGameOrBench = isHeavy3dGameUrl(pageUrl, settings.hybridCustomDomains)
@@ -83,6 +88,8 @@ object HybridEngineBridge {
             put("idleGameFps", settings.batteryIdleGameFps)
             put("idleTimeoutMs", settings.batteryIdleTimeoutSec.coerceIn(3, 60) * 1000)
             put("reduceMotion", settings.batteryReduceMotion && !isPureGame)
+            put("desktopMode", isDesktopMode)
+            put("pageZoomPct", settings.textZoomPercent.coerceIn(50, 200))
             put("isIncognito", isIncognito)
             put("isSuper", isSuper)
             put("applyIdentity", applyIdentity)
@@ -100,11 +107,159 @@ object HybridEngineBridge {
             }
         }
 
+        val zoomInit = settings.textZoomPercent.coerceIn(50, 200)
         return """
         (function() {
-            if (window.__fableHybridBootstrapped) return;
+            if (window.__fableHybridBootstrapped) {
+                try {
+                    if (window.__fableSetPageZoom) window.__fableSetPageZoom($zoomInit);
+                    if (window.__fableEnforceDesktopViewport && $isDesktopMode) window.__fableEnforceDesktopViewport();
+                } catch (_) {}
+                return;
+            }
             window.__fableHybridBootstrapped = true;
             const CFG = ${cfg.toString()};
+
+            // 0a. Persistent Game Account Storage Vault (prevents Bloxd / 3D games from ever resetting to a new account!)
+            if (CFG.isGame && !CFG.isIncognito && !CFG.isSuper) try {
+                const vHost = (location.hostname || "").toLowerCase();
+                if (vHost && window.FableHybridBridge && typeof window.FableHybridBridge.readAccountVault === "function") {
+                    const rawVault = window.FableHybridBridge.readAccountVault(vHost);
+                    if (rawVault && rawVault.length > 2) {
+                        const savedMap = JSON.parse(rawVault);
+                        const keys = Object.keys(savedMap);
+                        for (let i = 0; i < keys.length; i++) {
+                            const k = keys[i];
+                            if (localStorage.getItem(k) === null && typeof savedMap[k] === "string") {
+                                localStorage.setItem(k, savedMap[k]);
+                            }
+                        }
+                    }
+                    let syncTimer = 0;
+                    const flushVaultNow = function() {
+                        syncTimer = 0;
+                        try {
+                            const len = localStorage.length;
+                            if (len <= 0) return;
+                            const dump = {};
+                            let count = 0;
+                            for (let i = 0; i < len && count < 120; i++) {
+                                const k = localStorage.key(i);
+                                if (!k || k.indexOf("__fable_") === 0) continue;
+                                const v = localStorage.getItem(k);
+                                if (typeof v === "string" && v.length <= 16384) {
+                                    dump[k] = v;
+                                    count++;
+                                }
+                            }
+                            if (count > 0) {
+                                window.FableHybridBridge.writeAccountVault(vHost, JSON.stringify(dump));
+                            }
+                        } catch (_) {}
+                    };
+                    const scheduleVaultSync = function() {
+                        if (syncTimer) return;
+                        syncTimer = window.setTimeout(flushVaultNow, 800);
+                    };
+                    const origSetItem = Storage.prototype.setItem;
+                    Storage.prototype.setItem = function(k, v) {
+                        const r = origSetItem.apply(this, arguments);
+                        if (this === window.localStorage) scheduleVaultSync();
+                        return r;
+                    };
+                    window.addEventListener("pagehide", flushVaultNow, { passive: true });
+                    document.addEventListener("visibilitychange", function() {
+                        if (document.visibilityState === "hidden") flushVaultNow();
+                    }, { passive: true });
+                    window.addEventListener("load", scheduleVaultSync, { once: true, passive: true });
+                }
+            } catch (_) {}
+
+            // 0. Full-Page Zoom & PC Desktop Mode Engine (works on all Hybrid pages)
+            try {
+                let currentZoomPct = CFG.pageZoomPct || 100;
+                const applyZoomDom = function(pct) {
+                    currentZoomPct = pct || 100;
+                    const root = document.documentElement;
+                    if (!root) return;
+                    if (currentZoomPct === 100) {
+                        if (root.style.zoom) root.style.zoom = "";
+                    } else {
+                        root.style.zoom = String(currentZoomPct / 100);
+                    }
+                };
+                window.__fableSetPageZoom = applyZoomDom;
+                if (currentZoomPct !== 100) {
+                    applyZoomDom(currentZoomPct);
+                    document.addEventListener("DOMContentLoaded", function() { applyZoomDom(currentZoomPct); }, { once: true });
+                }
+
+                if (CFG.desktopMode) {
+                    try {
+                        const deskBrands = [
+                            { brand: "Chromium", version: "134" },
+                            { brand: "Not:A-Brand", version: "24" },
+                            { brand: "Google Chrome", version: "134" }
+                        ];
+                        const deskUaData = {
+                            brands: deskBrands,
+                            mobile: false,
+                            platform: "Windows",
+                            getHighEntropyValues: function() {
+                                return Promise.resolve({
+                                    architecture: "x86",
+                                    bitness: "64",
+                                    brands: deskBrands,
+                                    fullVersionList: deskBrands,
+                                    mobile: false,
+                                    model: "",
+                                    platform: "Windows",
+                                    platformVersion: "15.0.0",
+                                    uaFullVersion: "134.0.0.0"
+                                });
+                            },
+                            toJSON: function() { return { brands: deskBrands, mobile: false, platform: "Windows" }; }
+                        };
+                        Object.defineProperty(Navigator.prototype, "userAgentData", { get: function() { return deskUaData; }, configurable: true });
+                        Object.defineProperty(Navigator.prototype, "platform", { get: function() { return "Win32"; }, configurable: true });
+                        Object.defineProperty(Screen.prototype, "width", { get: function() { return 1920; }, configurable: true });
+                        Object.defineProperty(Screen.prototype, "height", { get: function() { return 1080; }, configurable: true });
+                        Object.defineProperty(Screen.prototype, "availWidth", { get: function() { return 1920; }, configurable: true });
+                        Object.defineProperty(Screen.prototype, "availHeight", { get: function() { return 1040; }, configurable: true });
+                    } catch (_) {}
+
+                    const DESK_VP = "width=1280, initial-scale=0.1, minimum-scale=0.1, maximum-scale=5.0, user-scalable=yes";
+                    const enforceDesktopVp = function() {
+                        const head = document.head || document.documentElement;
+                        if (!head) return;
+                        const metas = document.querySelectorAll('meta[name="viewport"], meta[name="VIEWPORT"]');
+                        if (metas.length === 0) {
+                            const m = document.createElement("meta");
+                            m.name = "viewport";
+                            m.content = DESK_VP;
+                            head.appendChild(m);
+                        } else {
+                            for (let i = 0; i < metas.length; i++) {
+                                if (metas[i].content !== DESK_VP) metas[i].content = DESK_VP;
+                            }
+                        }
+                    };
+                    window.__fableEnforceDesktopViewport = enforceDesktopVp;
+                    enforceDesktopVp();
+                    document.addEventListener("DOMContentLoaded", enforceDesktopVp, { once: true });
+                    window.addEventListener("load", enforceDesktopVp, { once: true });
+                    if (typeof MutationObserver === "function") {
+                        const vpObs = new MutationObserver(function() { enforceDesktopVp(); });
+                        const startVpObs = function() {
+                            const h = document.head || document.documentElement;
+                            if (h) vpObs.observe(h, { childList: true, subtree: true, attributes: true, attributeFilter: ["content"] });
+                        };
+                        startVpObs();
+                        document.addEventListener("DOMContentLoaded", startVpObs, { once: true });
+                        setTimeout(function() { try { vpObs.disconnect(); } catch (_) {} }, 12000);
+                    }
+                }
+            } catch (_) {}
             window.__fableHybridEngine = {
                 active: true,
                 beta: true,
@@ -690,10 +845,9 @@ object HybridEngineBridge {
                     if (powerState.scalePct < 100) applyDprScale(powerState.scalePct);
                     let lastUserInputTs = performance.now();
                     const markInput = function() { lastUserInputTs = performance.now(); };
-                    window.addEventListener("pointerdown", markInput, { capture: true, passive: true });
-                    window.addEventListener("pointermove", markInput, { capture: true, passive: true });
-                    window.addEventListener("touchstart", markInput, { capture: true, passive: true });
-                    window.addEventListener("keydown", markInput, { capture: true, passive: true });
+                    ["touchstart", "touchmove", "touchend", "pointerdown", "pointermove", "pointerup", "mousedown", "mousemove", "keydown", "wheel"].forEach(function(evName) {
+                        window.addEventListener(evName, markInput, { capture: true, passive: true });
+                    });
                     window.__fableSetPowerPlan = function(maxFps, idleFps, idleTimeoutMs, scalePct) {
                         powerState.maxFps = maxFps || 120;
                         powerState.idleFps = idleFps || 0;
@@ -701,40 +855,41 @@ object HybridEngineBridge {
                         applyDprScale(scalePct || 100);
                     };
 
-                    // 4c. Adaptive Battery FPS Cap, Instant Touch-Wake AFK Drop & Burst Promoter
+                    // 4c. Zero-Lag VSync-Locked 120 FPS Fast Path + Optional VSync-Aligned Eco Frame Skipper (zero setTimeout jitter!)
                     if (window.requestAnimationFrame) {
                         let lastFrameTs = 0;
                         let lastBurstTs = 0;
                         const origRaf = window.requestAnimationFrame;
                         window.requestAnimationFrame = function(cb) {
-                            const nowCheck = performance.now();
-                            const isIdleNow = powerState.idleFps > 0 && (nowCheck - lastUserInputTs) >= powerState.idleTimeoutMs;
-                            const effCap = isIdleNow ? Math.min(powerState.maxFps, powerState.idleFps) : powerState.maxFps;
-                            if (effCap > 0 && effCap < 115) {
-                                const minInterval = 1000 / effCap;
-                                const waitMs = minInterval - (nowCheck - lastFrameTs);
-                                if (waitMs > 4) {
-                                    return window.setTimeout(function() {
-                                        origRaf.call(window, function(ts) {
-                                            lastFrameTs = ts;
-                                            return cb(ts);
-                                        });
-                                    }, Math.floor(waitMs - 2));
-                                }
+                            const idleCap = (powerState.idleFps > 0 && (performance.now() - lastUserInputTs) >= powerState.idleTimeoutMs)
+                                ? powerState.idleFps
+                                : 120;
+                            const effCap = Math.min(powerState.maxFps || 120, idleCap);
+                            if (effCap >= 115) {
+                                return origRaf.call(window, function(ts) {
+                                    if (CFG.teleportStabilizer !== false && lastFrameTs > 0 && (ts - lastFrameTs) > 20 && (ts - lastBurstTs) > 350) {
+                                        lastBurstTs = ts;
+                                        try {
+                                            if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                                window.FableHybridBridge.onHeavyBurst();
+                                            }
+                                        } catch (_) {}
+                                    }
+                                    lastFrameTs = ts;
+                                    return cb(ts);
+                                });
                             }
-                            return origRaf.call(window, function(ts) {
-                                if (!isIdleNow && powerState.maxFps >= 90 && CFG.teleportStabilizer !== false &&
-                                    lastFrameTs > 0 && (ts - lastFrameTs) > 20 && (ts - lastBurstTs) > 350) {
-                                    lastBurstTs = ts;
-                                    try {
-                                        if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
-                                            window.FableHybridBridge.onHeavyBurst();
-                                        }
-                                    } catch (_) {}
+                            const stepVSync = function(ts) {
+                                const recheckIdle = (powerState.idleFps > 0 && (ts - lastUserInputTs) >= powerState.idleTimeoutMs);
+                                const curCap = Math.min(powerState.maxFps || 120, recheckIdle ? powerState.idleFps : 120);
+                                if (curCap < 115 && lastFrameTs > 0 && (ts - lastFrameTs) < ((1000 / Math.max(15, curCap)) * 0.86)) {
+                                    origRaf.call(window, stepVSync);
+                                    return;
                                 }
                                 lastFrameTs = ts;
-                                return cb(ts);
-                            });
+                                cb(ts);
+                            };
+                            return origRaf.call(window, stepVSync);
                         };
                     }
                     if (CFG.teleportStabilizer !== false && window.Worker && Worker.prototype.postMessage) {

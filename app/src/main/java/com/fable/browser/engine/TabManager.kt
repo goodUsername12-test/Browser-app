@@ -127,7 +127,31 @@ class TabManager @Inject constructor(
                 val zoomChanged = updated.textZoomPercent != settings.textZoomPercent
                 val ecoChanged = updated.batterySaverMaster != settings.batterySaverMaster ||
                     updated.batteryEcoCpu != settings.batteryEcoCpu
+                val engineModeChanged = updated.hybridGeckoBlinkBeta != settings.hybridGeckoBlinkBeta ||
+                    updated.hybridAutoForGames != settings.hybridAutoForGames
                 settings = updated
+                if (engineModeChanged) {
+                    _tabs.value.forEach { t ->
+                        if (t.manualHybridOverride == null && !t.isEvicted) {
+                            val curUrl = t.url.value
+                            if (curUrl.isNotBlank() && curUrl != "about:blank") {
+                                val nextHybrid = shouldDefaultToHybrid(t, curUrl, updated)
+                                if (t.isHybridBlink.value != nextHybrid) {
+                                    wireHybridCallbacks(t)
+                                    t.updateHybridBlink(nextHybrid)
+                                    if (nextHybrid) {
+                                        t.lastLoadedBlinkUrl = ""
+                                        t.hybridController?.loadUrl(curUrl)
+                                    } else {
+                                        t.destroyRetainedBlinkView()
+                                        ensureLive(t)
+                                        t.session.load(GeckoSession.Loader().uri(curUrl))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if (zoomChanged || ecoChanged) {
                     _tabs.value.forEach { t ->
                         t.currentTextZoomPercent = updated.textZoomPercent
@@ -167,6 +191,18 @@ class TabManager @Inject constructor(
 
     fun incognitoTabCount(): Int = _tabs.value.count { it.isIncognito }
 
+    private fun shouldDefaultToHybrid(tab: BrowserTab, url: String, s: Settings): Boolean {
+        if (url.isBlank() || url == "about:blank") return false
+        if (tab.isSuper && s.superProxyEnabled && s.superProxyHost.isNotBlank()) return false
+        if (tab.isIncognito && s.incognitoProxyEnabled && s.incognitoProxyHost.isNotBlank()) return false
+        if (!s.hybridGeckoBlinkBeta) return false
+        return if (s.hybridAutoForGames) {
+            HybridEngineBridge.isHeavy3dGameUrl(url, s.hybridCustomDomains)
+        } else {
+            true
+        }
+    }
+
     fun restoreOrCreate() {
         scope.launch {
             val current = settingsStore.settings.first()
@@ -182,7 +218,7 @@ class TabManager @Inject constructor(
                     tab.updateUrl(entry.url)
                     val savedManual = loadTabHybridState(entry.url)
                     tab.manualHybridOverride = savedManual
-                    val wantHybrid = savedManual ?: (current.hybridGeckoBlinkBeta && (!current.hybridAutoForGames || HybridEngineBridge.isHeavy3dGameUrl(entry.url, current.hybridCustomDomains)))
+                    val wantHybrid = savedManual ?: shouldDefaultToHybrid(tab, entry.url, current)
                     tab.updateHybridBlink(wantHybrid)
                     tab.markUnloaded()
                     tab
@@ -505,11 +541,23 @@ class TabManager @Inject constructor(
         tab.hybridArchiveMessageHandler = { rawJson ->
             proxyConfig.onHybridArchiveMessage(rawJson)
         }
-        tab.hybridDownloadHandler = { url, contentDisposition, mimeType ->
-            if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
+        tab.hybridDownloadHandler = { url, contentDisposition, mimeType, userAgent ->
+            if (url.startsWith("http://", ignoreCase = true) ||
+                url.startsWith("https://", ignoreCase = true) ||
+                url.startsWith("data:", ignoreCase = true)) {
                 val suggested = FableUnifiedEngine.guessDownloadFileName(url, contentDisposition, mimeType)
-                downloader.enqueueUrl(url, suggested, tab.isIncognito)
+                downloader.enqueueUrl(
+                    url = url,
+                    suggestedName = suggested,
+                    fromIncognito = tab.isIncognito,
+                    mimeTypeHint = mimeType,
+                    userAgentHint = userAgent,
+                    preferBlinkNetwork = true
+                )
             }
+        }
+        tab.hybridFileSaveHandler = { tmpFile, fileName, mimeType ->
+            downloader.saveLocalFile(tmpFile, fileName, mimeType, tab.isIncognito)
         }
         tab.hybridScrollHandler = { scrollY ->
             if (tab.id == _activeTabId.value) {
@@ -798,19 +846,17 @@ class TabManager @Inject constructor(
         }
         wireHybridCallbacks(tab)
         val manual = tab.manualHybridOverride ?: loadTabHybridState(url)?.also { tab.manualHybridOverride = it }
-        if (manual != null) {
+        val proxyForcesGecko = (tab.isSuper && settings.superProxyEnabled && settings.superProxyHost.isNotBlank()) ||
+            (tab.isIncognito && settings.incognitoProxyEnabled && settings.incognitoProxyHost.isNotBlank())
+        if (proxyForcesGecko) {
+            if (tab.isHybridBlink.value) tab.updateHybridBlink(false)
+        } else if (manual != null) {
             tab.updateHybridBlink(manual)
-        } else if (settings.hybridGeckoBlinkBeta) {
-            val wantHybrid = if (settings.hybridAutoForGames) {
-                HybridEngineBridge.isHeavy3dGameUrl(url, settings.hybridCustomDomains)
-            } else {
-                true
-            }
+        } else {
+            val wantHybrid = shouldDefaultToHybrid(tab, url, settings)
             if (tab.isHybridBlink.value != wantHybrid) {
                 tab.updateHybridBlink(wantHybrid)
             }
-        } else if (tab.isHybridBlink.value) {
-            tab.updateHybridBlink(false)
         }
         if (tab.isHybridBlink.value) {
             tab.lastLoadedBlinkUrl = ""

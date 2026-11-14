@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fable.browser.ui.components.ListDivider
+import com.fable.browser.ui.components.RadioGroup
 import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
 import com.fable.browser.ui.components.SliderRow
@@ -111,6 +112,32 @@ fun DownloadSettingsScreen(
             steps = 14,
             suffix = " MB",
             onValueChange = viewModel::setArchiveStreamBufferMb
+        )
+        ListDivider()
+
+        SectionHeader("Multi-Part ZIP Splitting (Upload Limits)")
+        RadioGroup(
+            options = listOf(0, 45, 95),
+            selected = when {
+                s.archiveSplitPartMb in 1..60 -> 45
+                s.archiveSplitPartMb > 60 -> 95
+                else -> 0
+            },
+            label = { mb ->
+                when (mb) {
+                    45 -> "Split into <= 45 MB parts (fits 50 MB upload limits)"
+                    95 -> "Split into <= 95 MB parts (fits 100 MB upload limits)"
+                    else -> "Single complete .zip archive (default)"
+                }
+            },
+            description = { mb ->
+                when (mb) {
+                    45 -> "Automatically writes .part1ofN.zip, .part2ofN.zip with zero duplicate files + capture-manifest.json"
+                    95 -> "Splits very large game/texture captures into <= 95 MB parts"
+                    else -> "Saves all page code, IndexedDB, HAR 1.2, canvases, and 12-stream native assets in one .zip"
+                }
+            },
+            onSelect = viewModel::setArchiveSplitPartMb
         )
         ListDivider()
 

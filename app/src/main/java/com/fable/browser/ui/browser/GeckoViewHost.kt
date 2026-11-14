@@ -138,13 +138,89 @@ private class FableHybridJsBridge(
         runCatching { tab.hybridStorageVaultWrite?.invoke(host, jsonStr) }
     }
 
+    private data class StreamingJsDownload(
+        val file: java.io.File,
+        val out: java.io.BufferedOutputStream,
+        val fileName: String,
+        val mimeType: String
+    )
+    private val activeJsDownloads = java.util.concurrent.ConcurrentHashMap<String, StreamingJsDownload>()
+
+    @JavascriptInterface
+    fun beginJsDownload(dlId: String?, fileName: String?, mimeType: String?) {
+        val id = dlId?.takeIf { it.isNotBlank() } ?: return
+        val dir = java.io.File(appContext.cacheDir, "blink_dl").apply { mkdirs() }
+        val tmp = java.io.File(dir, "jsdl_${id.replace(Regex("[^A-Za-z0-9_-]"), "_")}.part")
+        val out = java.io.BufferedOutputStream(java.io.FileOutputStream(tmp), 256 * 1024)
+        val safeName = (fileName?.takeIf { it.isNotBlank() } ?: "download").replace('"', '_')
+        val safeMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+        activeJsDownloads[id] = StreamingJsDownload(tmp, out, safeName, safeMime)
+    }
+
+    @JavascriptInterface
+    fun appendJsDownloadChunk(dlId: String?, chunkB64: String?) {
+        val id = dlId ?: return
+        val state = activeJsDownloads[id] ?: return
+        val raw = chunkB64?.takeIf { it.isNotEmpty() } ?: return
+        runCatching {
+            val bytes = NativeFastEngine.decodeBase64(raw)
+            if (bytes.isNotEmpty()) {
+                synchronized(state) { state.out.write(bytes) }
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun finishJsDownload(dlId: String?) {
+        val id = dlId ?: return
+        val state = activeJsDownloads.remove(id) ?: return
+        runCatching {
+            synchronized(state) {
+                state.out.flush()
+                state.out.close()
+            }
+            val saver = tab.hybridFileSaveHandler
+            if (saver != null) {
+                saver.invoke(state.file, state.fileName, state.mimeType)
+            } else {
+                state.file.delete()
+            }
+        }.onFailure {
+            runCatching { state.out.close() }
+            state.file.delete()
+        }
+    }
+
+    @JavascriptInterface
+    fun enqueueHttpDownload(url: String?, suggestedName: String?) {
+        val u = url?.trim()?.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) } ?: return
+        val disp = suggestedName?.takeIf { it.isNotBlank() }?.let { "attachment; filename=${it.replace('"', '_')}" }
+        tab.hybridDownloadHandler?.invoke(u, disp, null, FableUnifiedEngine.defaultBlinkUserAgent)
+    }
+
+    @JavascriptInterface
+    fun onJsFullScreenChanged(active: Boolean) {
+        tab.updateFullScreen(active)
+    }
+
     @JavascriptInterface
     fun saveBlobBase64(b64: String?, fileName: String?, mimeType: String?) {
-        val cleanB64 = b64?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val cleanB64 = b64?.trim() ?: return
         val safeMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
-        val safeName = (fileName?.takeIf { it.isNotBlank() } ?: "download.txt").replace('"', '_')
+        val safeName = (fileName?.takeIf { it.isNotBlank() } ?: "download").replace('"', '_')
+        val saver = tab.hybridFileSaveHandler
+        if (saver != null) {
+            runCatching {
+                val dir = java.io.File(appContext.cacheDir, "blink_dl").apply { mkdirs() }
+                val tmp = java.io.File(dir, "blob_${System.currentTimeMillis()}_${(Math.random() * 10000).toInt()}.bin")
+                val decoded = if (cleanB64.isNotEmpty()) NativeFastEngine.decodeBase64(cleanB64) else ByteArray(0)
+                tmp.writeBytes(decoded)
+                saver.invoke(tmp, safeName, safeMime)
+            }
+            return
+        }
         val dataUrl = "data:$safeMime;base64,$cleanB64"
-        tab.hybridDownloadHandler?.invoke(dataUrl, "attachment; filename=$safeName", safeMime)
+        tab.hybridDownloadHandler?.invoke(dataUrl, "attachment; filename=$safeName", safeMime, null)
     }
 
     @JavascriptInterface
@@ -351,20 +427,20 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 val cur = if (numberOfMatches > 0) activeMatchOrdinal + 1 else 0
                 tab.updateFindMatch(FindMatch(cur, numberOfMatches))
             }
-            setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+            setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
                 if (!url.isNullOrBlank()) {
-                    if (url.startsWith("blob:", ignoreCase = true)) {
-                        val safeUrl = url.replace("'", "\'")
-                        val fName = FableUnifiedEngine.guessDownloadFileName(url, contentDisposition, mimeType).replace("'", "_")
-                        val mType = (mimeType ?: "application/octet-stream").replace("'", "")
+                    if (url.startsWith("blob:", ignoreCase = true) || url.startsWith("data:", ignoreCase = true)) {
+                        val qUrl = org.json.JSONObject.quote(url)
+                        val qName = org.json.JSONObject.quote(FableUnifiedEngine.guessDownloadFileName(url, contentDisposition, mimeType))
+                        val qMime = org.json.JSONObject.quote(mimeType ?: "application/octet-stream")
                         post {
                             evaluateJavascript(
-                                "fetch('$safeUrl').then(r=>r.blob()).then(b=>{const fr=new FileReader();fr.onloadend=()=>{const s=String(fr.result||'');const i=s.indexOf(',');if(i>=0)window.FableHybridBridge.saveBlobBase64(s.slice(i+1),'$fName','$mType');};fr.readAsDataURL(b);});",
+                                "if(window.__fableDownloadUrl){window.__fableDownloadUrl($qUrl,$qName,$qMime);}else{fetch($qUrl).then(r=>r.blob()).then(b=>{const fr=new FileReader();fr.onloadend=()=>{const s=String(fr.result||'');const i=s.indexOf(',');if(i>=0)window.FableHybridBridge.saveBlobBase64(s.slice(i+1),$qName,$qMime);};fr.readAsDataURL(b);});}",
                                 null
                             )
                         }
                     } else {
-                        tab.hybridDownloadHandler?.invoke(url, contentDisposition, mimeType)
+                        tab.hybridDownloadHandler?.invoke(url, contentDisposition, mimeType, userAgent)
                     }
                 }
             }
@@ -800,6 +876,13 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     if (customFullScreenView != null) {
                         wv.webChromeClient?.onHideCustomView()
                     }
+                    runCatching {
+                        wv.evaluateJavascript(
+                            "try{if(document.fullscreenElement&&document.exitFullscreen){document.exitFullscreen();}else if(document.webkitFullscreenElement&&document.webkitExitFullscreen){document.webkitExitFullscreen();}}catch(_){}",
+                            null
+                        )
+                    }
+                    tab.updateFullScreen(false)
                 }
             }
         }

@@ -120,6 +120,24 @@ fun BrowserScreen(
     }
 
     val toggleScreenRecording = {
+        if (fullScreen) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color(0x78111827),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 6.dp)
+                    .clickable { viewModel.exitFullScreen() }
+            ) {
+                Text(
+                    text = "✕ Exit Fullscreen",
+                    color = Color.White.copy(alpha = 0.88f),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
+        }
+
         if (isScreenRecording) {
             ScreenRecorderManager.stopRecording { msg -> if (!msg.isNullOrBlank()) viewModel.toast("Saved: $msg") }
         } else {

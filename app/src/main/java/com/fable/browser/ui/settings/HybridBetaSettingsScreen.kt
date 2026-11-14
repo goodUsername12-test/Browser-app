@@ -27,7 +27,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fable.browser.data.model.DefaultBrowserEngine
 import com.fable.browser.ui.components.ListDivider
+import com.fable.browser.ui.components.RadioGroup
 import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
 import com.fable.browser.ui.components.SliderRow
@@ -47,6 +49,16 @@ fun HybridBetaSettingsScreen(
     }
 
     SettingsPage(title = "Beta: Gecko + Blink Engine", onBack = onBack, viewModel = viewModel) {
+        SectionHeader("Default Browser Engine")
+        RadioGroup(
+            options = DefaultBrowserEngine.entries.toList(),
+            selected = s.defaultEngine,
+            label = { it.label },
+            description = { it.summary },
+            onSelect = viewModel::setDefaultEngine
+        )
+        ListDivider()
+
         SectionHeader("Master Engine Mode")
         SwitchRow(
             title = "Enable GeckoView + Blink Combined Engine (Beta)",

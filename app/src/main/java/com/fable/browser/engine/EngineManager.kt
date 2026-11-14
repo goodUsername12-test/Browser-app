@@ -240,6 +240,9 @@ class EngineManager @Inject constructor(
             "webgl.force-enabled" to true,
             "webgl.msaa-force" to false,
             "webgl.lose-context-on-memory-pressure" to false,
+            "media.hardware-video-decoding.enabled" to true,
+            "media.navigator.mediadatadecoder_vpx_enabled" to true,
+            "media.navigator.mediadatadecoder_h264_enabled" to true,
             "dom.ipc.processPriorityManager.enabled" to true
         )
     }

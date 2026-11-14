@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fable.browser.data.model.DefaultBrowserEngine
 import com.fable.browser.data.model.SearchEngine
 import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.RadioGroup
@@ -32,6 +33,16 @@ fun GeneralSettingsScreen(
     var homepage by remember(settings.homepage) { mutableStateOf(settings.homepage) }
 
     SettingsPage(title = "General", onBack = onBack, viewModel = viewModel) {
+        SectionHeader("Default browser engine")
+        RadioGroup(
+            options = DefaultBrowserEngine.entries.toList(),
+            selected = settings.defaultEngine,
+            label = { it.label },
+            description = { it.summary },
+            onSelect = viewModel::setDefaultEngine
+        )
+        ListDivider()
+
         SectionHeader("Search engine")
         RadioGroup(
             options = SearchEngine.entries.toList(),

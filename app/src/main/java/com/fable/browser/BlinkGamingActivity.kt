@@ -2,13 +2,21 @@ package com.fable.browser
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -20,25 +28,53 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import android.content.ClipData
-import android.content.ClipboardManager
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.engine.FableUnifiedEngine
 import com.fable.browser.engine.HybridEngineBridge
 import com.fable.browser.engine.NativeFastEngine
 import com.fable.browser.util.HighRefreshRateEnforcer
+import com.fable.browser.util.UrlUtils
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+import java.io.BufferedOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
 
 class BlinkGamingActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var customView: View? = null
+    private var customCallback: WebChromeClient.CustomViewCallback? = null
     private var customContainer: FrameLayout? = null
+    @Volatile private var jsFullScreenActive: Boolean = false
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    @SuppressLint("SetJavaScriptEnabled")
+    private val gameAccountVaultPrefs by lazy {
+        applicationContext.getSharedPreferences("fable_game_account_vault", Context.MODE_PRIVATE)
+    }
+
+    private data class StreamingJsDl(
+        val file: File,
+        val out: BufferedOutputStream,
+        val fileName: String,
+        val mimeType: String
+    )
+    private val activeJsDownloads = ConcurrentHashMap<String, StreamingJsDl>()
+
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -81,6 +117,7 @@ class BlinkGamingActivity : ComponentActivity() {
             setBackgroundColor(Color.BLACK)
             isMotionEventSplittingEnabled = true
         }
+
         val view = WebView(this).apply {
             setBackgroundColor(Color.BLACK)
             isSoundEffectsEnabled = false
@@ -114,12 +151,95 @@ class BlinkGamingActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 runCatching { setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false) }
             }
-            runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(this, true) }
+            runCatching {
+                val cm = CookieManager.getInstance()
+                cm.setAcceptCookie(true)
+                cm.setAcceptThirdPartyCookies(this, true)
+            }
             addJavascriptInterface(
                 object {
                     @JavascriptInterface
                     fun onHeavyBurst() {
                         NativeFastEngine.notifyHeavyLoadBurst()
+                    }
+
+                    @JavascriptInterface
+                    fun onJsFullScreenChanged(active: Boolean) {
+                        jsFullScreenActive = active
+                    }
+
+                    @JavascriptInterface
+                    fun readAccountVault(host: String?): String {
+                        val h = host?.takeIf { it.isNotBlank() } ?: return ""
+                        val canonical = UrlUtils.registrableDomain(h) ?: h.lowercase().removePrefix("www.")
+                        val key = if (h.startsWith("staging.", ignoreCase = true)) "staging.$canonical" else canonical
+                        return gameAccountVaultPrefs.getString("ls_$key", "").orEmpty()
+                    }
+
+                    @JavascriptInterface
+                    fun writeAccountVault(host: String?, jsonStr: String?) {
+                        val h = host?.takeIf { it.isNotBlank() } ?: return
+                        val p = jsonStr?.takeIf { it.length in 3..524288 } ?: return
+                        val canonical = UrlUtils.registrableDomain(h) ?: h.lowercase().removePrefix("www.")
+                        val key = if (h.startsWith("staging.", ignoreCase = true)) "staging.$canonical" else canonical
+                        gameAccountVaultPrefs.edit().putString("ls_$key", p).apply()
+                    }
+
+                    @JavascriptInterface
+                    fun beginJsDownload(dlId: String?, fileName: String?, mimeType: String?) {
+                        val id = dlId?.takeIf { it.isNotBlank() } ?: return
+                        val dir = File(cacheDir, "blink_dl").apply { mkdirs() }
+                        val tmp = File(dir, "bgdl_${id.replace(Regex("[^A-Za-z0-9_-]"), "_")}.part")
+                        val out = BufferedOutputStream(FileOutputStream(tmp), 256 * 1024)
+                        activeJsDownloads[id] = StreamingJsDl(
+                            tmp,
+                            out,
+                            (fileName?.takeIf { it.isNotBlank() } ?: "download").replace('"', '_'),
+                            mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+                        )
+                    }
+
+                    @JavascriptInterface
+                    fun appendJsDownloadChunk(dlId: String?, chunkB64: String?) {
+                        val st = activeJsDownloads[dlId ?: return] ?: return
+                        val raw = chunkB64?.takeIf { it.isNotEmpty() } ?: return
+                        runCatching {
+                            val bytes = NativeFastEngine.decodeBase64(raw)
+                            if (bytes.isNotEmpty()) synchronized(st) { st.out.write(bytes) }
+                        }
+                    }
+
+                    @JavascriptInterface
+                    fun finishJsDownload(dlId: String?) {
+                        val st = activeJsDownloads.remove(dlId ?: return) ?: return
+                        ioScope.launch {
+                            runCatching {
+                                synchronized(st) { st.out.flush(); st.out.close() }
+                                publishFileToDownloads(st.file, st.fileName, st.mimeType)
+                            }
+                            st.file.delete()
+                        }
+                    }
+
+                    @JavascriptInterface
+                    fun saveBlobBase64(b64: String?, fileName: String?, mimeType: String?) {
+                        val raw = b64?.trim() ?: return
+                        val safeName = (fileName?.takeIf { it.isNotBlank() } ?: "download").replace('"', '_')
+                        val safeMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+                        ioScope.launch {
+                            val tmp = File(cacheDir, "bgblob_${System.currentTimeMillis()}.bin")
+                            runCatching {
+                                tmp.writeBytes(if (raw.isNotEmpty()) NativeFastEngine.decodeBase64(raw) else ByteArray(0))
+                                publishFileToDownloads(tmp, safeName, safeMime)
+                            }
+                            tmp.delete()
+                        }
+                    }
+
+                    @JavascriptInterface
+                    fun enqueueHttpDownload(url: String?, suggestedName: String?) {
+                        val u = url?.trim()?.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) } ?: return
+                        downloadHttpDirect(u, suggestedName, null)
                     }
 
                     @JavascriptInterface
@@ -148,6 +268,21 @@ class BlinkGamingActivity : ComponentActivity() {
                 },
                 "FableHybridBridge"
             )
+            setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+                if (!url.isNullOrBlank()) {
+                    val fName = FableUnifiedEngine.guessDownloadFileName(url, contentDisposition, mimeType)
+                    if (url.startsWith("blob:", true) || url.startsWith("data:", true)) {
+                        val qUrl = JSONObject.quote(url)
+                        val qName = JSONObject.quote(fName)
+                        val qMime = JSONObject.quote(mimeType ?: "application/octet-stream")
+                        post {
+                            evaluateJavascript("if(window.__fableDownloadUrl)window.__fableDownloadUrl($qUrl,$qName,$qMime);", null)
+                        }
+                    } else {
+                        downloadHttpDirect(url, fName, userAgent)
+                    }
+                }
+            }
             val bootScript = HybridEngineBridge.buildCombinedBootstrapScript(
                 settings = Settings(),
                 isIncognito = false,
@@ -172,14 +307,18 @@ class BlinkGamingActivity : ComponentActivity() {
                 override fun onShowCustomView(view: View, callback: CustomViewCallback) {
                     customView?.let { customContainer?.removeView(it) }
                     customView = view
+                    customCallback = callback
                     customContainer = root
                     root.addView(view, FrameLayout.LayoutParams(-1, -1))
+                    exitPillView?.bringToFront()
                     this@BlinkGamingActivity.hideSystemUi()
                 }
 
                 override fun onHideCustomView() {
                     customView?.let { root.removeView(it) }
                     customView = null
+                    customCallback?.onCustomViewHidden()
+                    customCallback = null
                     customContainer = null
                     this@BlinkGamingActivity.hideSystemUi()
                 }
@@ -188,17 +327,25 @@ class BlinkGamingActivity : ComponentActivity() {
         webView = view
         root.addView(HighRefreshRateEnforcer.createFrameRateVoterSurfaceView(this), FrameLayout.LayoutParams(1, 1))
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
+
+        val exitPill = createExitFullScreenPill()
+        exitPillView = exitPill
+        val dp = resources.displayMetrics.density
+        val pillLp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        ).apply {
+            topMargin = (6f * dp).toInt()
+        }
+        root.addView(exitPill, pillLp)
+
         HighRefreshRateEnforcer.applyToViewTree(root)
         setContentView(root)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                val active = webView
-                when {
-                    customView != null -> webView?.webChromeClient?.onHideCustomView()
-                    active?.canGoBack() == true -> active.goBack()
-                    else -> finish()
-                }
+                exitOrCloseBlinkGaming(preferCloseMode = false)
             }
         })
 
@@ -207,6 +354,100 @@ class BlinkGamingActivity : ComponentActivity() {
             FableUnifiedEngine.preconnectOriginAsync(url)
             FableUnifiedEngine.setFrameMonitorActive(true)
             view.loadUrl(url, mapOf("DNT" to "1", "Sec-GPC" to "1"))
+        }
+    }
+
+    private var exitPillView: View? = null
+
+    private fun createExitFullScreenPill(): View {
+        val dp = resources.displayMetrics.density
+        return TextView(this).apply {
+            text = "✕ Exit Fullscreen"
+            setTextColor(0xE0FFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding((10f * dp).toInt(), (4f * dp).toInt(), (10f * dp).toInt(), (4f * dp).toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 14f * dp
+                setColor(0x78111827)
+            }
+            contentDescription = "Exit full screen"
+            setOnClickListener {
+                exitOrCloseBlinkGaming(preferCloseMode = true)
+            }
+        }
+    }
+
+    private fun exitOrCloseBlinkGaming(preferCloseMode: Boolean) {
+        val active = webView
+        if (customView != null) {
+            active?.webChromeClient?.onHideCustomView()
+            return
+        }
+        if (jsFullScreenActive && active != null) {
+            jsFullScreenActive = false
+            runCatching {
+                active.evaluateJavascript(
+                    "try{if(document.fullscreenElement&&document.exitFullscreen){document.exitFullscreen();}else if(document.webkitFullscreenElement&&document.webkitExitFullscreen){document.webkitExitFullscreen();}}catch(_){}",
+                    null
+                )
+            }
+            if (!preferCloseMode) return
+        }
+        if (!preferCloseMode && active?.canGoBack() == true) {
+            active.goBack()
+            return
+        }
+        FableUnifiedEngine.flushBlinkCookies()
+        finish()
+    }
+
+    private fun downloadHttpDirect(url: String, suggestedName: String?, uaHint: String?) {
+        ioScope.launch {
+            val tmp = File(cacheDir, "bghttp_${System.currentTimeMillis()}.part")
+            runCatching {
+                val cookie = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+                val ua = uaHint?.takeIf { it.isNotBlank() } ?: FableUnifiedEngine.defaultBlinkUserAgent
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15_000
+                    readTimeout = 45_000
+                    instanceFollowRedirects = true
+                    if (!cookie.isNullOrBlank()) setRequestProperty("Cookie", cookie)
+                    if (ua.isNotBlank()) setRequestProperty("User-Agent", ua)
+                    connect()
+                }
+                if (conn.responseCode in 200..299) {
+                    val mime = conn.contentType?.substringBefore(';')?.trim() ?: "application/octet-stream"
+                    val fName = suggestedName?.takeIf { it.isNotBlank() }
+                        ?: FableUnifiedEngine.guessDownloadFileName(url, conn.getHeaderField("Content-Disposition"), mime)
+                    conn.inputStream.use { inp ->
+                        FileOutputStream(tmp).use { out -> inp.copyTo(out, 256 * 1024) }
+                    }
+                    publishFileToDownloads(tmp, fName, mime)
+                }
+                conn.disconnect()
+            }
+            tmp.delete()
+        }
+    }
+
+    private fun publishFileToDownloads(srcFile: File, rawName: String, mimeType: String) {
+        val safeName = rawName.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifBlank { "download" }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+                put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
+            contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                srcFile.inputStream().use { inp -> inp.copyTo(out, 256 * 1024) }
+            }
+            contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            runOnUiThread {
+                Toast.makeText(this, "Saved to Downloads/$safeName", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -237,6 +478,7 @@ class BlinkGamingActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        ioScope.cancel()
         FableUnifiedEngine.setFrameMonitorActive(false)
         FableUnifiedEngine.flushBlinkCookies()
         webView?.apply {

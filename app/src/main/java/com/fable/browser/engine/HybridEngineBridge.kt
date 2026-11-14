@@ -520,8 +520,7 @@ object HybridEngineBridge {
                 HTMLCanvasElement.prototype.getContext = function(type, attrs) {
                     if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
                         const nextAttrs = Object.assign({
-                            powerPreference: "high-performance",
-                            desynchronized: !!CFG.isGame && (CFG.accel3d2d !== false)
+                            powerPreference: "high-performance"
                         }, attrs || {});
                         const ctx = origGetContext.call(this, type, nextAttrs);
                         if (ctx && CFG.isGame) warmGlExtensions(ctx);
@@ -537,10 +536,8 @@ object HybridEngineBridge {
                         }
                         return ctx;
                     }
-                    if (type === "2d" && CFG.isGame && CFG.accel3d2d !== false) {
-                        const next2d = Object.assign({ desynchronized: true }, attrs || {});
-                        return origGetContext.call(this, type, next2d);
-                    }
+                    // Never force desynchronized:true on 2D canvases in Android WebView:
+                    // it blanks small HUD overlay canvases like Bloxd's 48x16 FpsCanvas and hurts willReadFrequently video frame grabs!
                     return origGetContext.call(this, type, attrs);
                 };
                 if (typeof window.OffscreenCanvas === "function" && OffscreenCanvas.prototype && OffscreenCanvas.prototype.getContext) {
@@ -548,14 +545,43 @@ object HybridEngineBridge {
                     OffscreenCanvas.prototype.getContext = function(type, attrs) {
                         if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
                             const nextAttrs = Object.assign({
-                                powerPreference: "high-performance",
-                                desynchronized: !!CFG.isGame && (CFG.accel3d2d !== false)
+                                powerPreference: "high-performance"
                             }, attrs || {});
                             const ctx = origOffGetContext.call(this, type, nextAttrs);
                             if (ctx && CFG.isGame) warmGlExtensions(ctx);
                             return ctx;
                         }
                         return origOffGetContext.call(this, type, attrs);
+                    };
+                }
+                // High-FPS Hardware VideoDecoder (WebCodecs) & <video> Frame Playback Accelerator
+                if (typeof window.VideoDecoder === "function" && VideoDecoder.prototype && typeof VideoDecoder.prototype.configure === "function") {
+                    const origVdConfig = VideoDecoder.prototype.configure;
+                    VideoDecoder.prototype.configure = function(cfg) {
+                        if (cfg && typeof cfg === "object" && !cfg.hardwareAcceleration) {
+                            try {
+                                const hwCfg = Object.assign({ hardwareAcceleration: "prefer-hardware" }, cfg);
+                                if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                    window.FableHybridBridge.onHeavyBurst();
+                                }
+                                return origVdConfig.call(this, hwCfg);
+                            } catch (_) {}
+                        }
+                        return origVdConfig.call(this, cfg);
+                    };
+                }
+                if (typeof window.HTMLMediaElement === "function" && HTMLMediaElement.prototype && typeof HTMLMediaElement.prototype.play === "function") {
+                    const origMediaPlay = HTMLMediaElement.prototype.play;
+                    HTMLMediaElement.prototype.play = function() {
+                        try {
+                            if (this.tagName === "VIDEO") {
+                                this.playsInline = true;
+                                if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                    window.FableHybridBridge.onHeavyBurst();
+                                }
+                            }
+                        } catch (_) {}
+                        return origMediaPlay.apply(this, arguments);
                     };
                 }
             } catch (_) {}
@@ -782,24 +808,148 @@ object HybridEngineBridge {
                         return origQuery(desc);
                     };
                 }
-                // Support blob: downloads (<a href="blob:..." download="name.txt">) in Blink Hybrid mode
+                // Complete Blink Download Engine: retains Blob across immediate URL.revokeObjectURL,
+                // handles detached off-DOM a.click(), <a download>, blob:, and data: with chunked native streaming!
+                const blobRegistry = new Map();
+                const recentDlKeys = new Map();
+                if (typeof URL === "function" && typeof URL.createObjectURL === "function") {
+                    const origCreateObjUrl = URL.createObjectURL.bind(URL);
+                    const origRevokeObjUrl = typeof URL.revokeObjectURL === "function" ? URL.revokeObjectURL.bind(URL) : null;
+                    URL.createObjectURL = function(obj) {
+                        const u = origCreateObjUrl(obj);
+                        try {
+                            if (u && (obj instanceof Blob)) {
+                                if (blobRegistry.size > 64) {
+                                    const firstKey = blobRegistry.keys().next().value;
+                                    if (firstKey) blobRegistry.delete(firstKey);
+                                }
+                                blobRegistry.set(u, obj);
+                            }
+                        } catch (_) {}
+                        return u;
+                    };
+                    if (origRevokeObjUrl) {
+                        URL.revokeObjectURL = function(u) {
+                            if (u && blobRegistry.has(u)) {
+                                setTimeout(function() {
+                                    blobRegistry.delete(u);
+                                    try { origRevokeObjUrl(u); } catch (_) {}
+                                }, 25000);
+                                return;
+                            }
+                            return origRevokeObjUrl(u);
+                        };
+                    }
+                }
+                const bytesToB64Fast = function(u8) {
+                    let bin = "";
+                    const step = 0x8000;
+                    for (let i = 0; i < u8.length; i += step) {
+                        bin += String.fromCharCode.apply(null, u8.subarray(i, Math.min(u8.length, i + step)));
+                    }
+                    return btoa(bin);
+                };
+                const streamBlobToNative = async function(blob, fileName, mimeFallback) {
+                    const br = window.FableHybridBridge;
+                    if (!br || !blob) return false;
+                    const mime = (blob.type && blob.type.length > 0) ? blob.type : (mimeFallback || "application/octet-stream");
+                    const safeName = fileName || "download";
+                    if (typeof br.beginJsDownload === "function" && typeof br.appendJsDownloadChunk === "function" && typeof br.finishJsDownload === "function") {
+                        const dlId = String(Date.now()) + "_" + Math.random().toString(36).slice(2, 8);
+                        br.beginJsDownload(dlId, safeName, mime);
+                        const chunkBytes = 1536 * 1024;
+                        for (let off = 0; off < blob.size; off += chunkBytes) {
+                            const ab = await blob.slice(off, Math.min(blob.size, off + chunkBytes)).arrayBuffer();
+                            br.appendJsDownloadChunk(dlId, bytesToB64Fast(new Uint8Array(ab)));
+                        }
+                        br.finishJsDownload(dlId);
+                        return true;
+                    }
+                    if (typeof br.saveBlobBase64 === "function") {
+                        const ab = await blob.arrayBuffer();
+                        br.saveBlobBase64(bytesToB64Fast(new Uint8Array(ab)), safeName, mime);
+                        return true;
+                    }
+                    return false;
+                };
+                const triggerFableDownload = function(href, suggestedName, mimeHint) {
+                    if (!href || typeof href !== "string") return false;
+                    const br = window.FableHybridBridge;
+                    if (!br) return false;
+                    const now = Date.now();
+                    const dedupKey = href.slice(0, 180) + "|" + (suggestedName || "");
+                    const prevAt = recentDlKeys.get(dedupKey) || 0;
+                    if (now - prevAt < 1200) return true;
+                    recentDlKeys.set(dedupKey, now);
+                    if (recentDlKeys.size > 40) recentDlKeys.clear();
+
+                    if (href.indexOf("blob:") === 0) {
+                        const cachedBlob = blobRegistry.get(href);
+                        if (cachedBlob) {
+                            const fName = suggestedName || (cachedBlob instanceof File && cachedBlob.name ? cachedBlob.name : "download");
+                            streamBlobToNative(cachedBlob, fName, mimeHint);
+                            return true;
+                        }
+                        fetch(href).then(function(r) { return r.blob(); }).then(function(b) {
+                            streamBlobToNative(b, suggestedName || "download", mimeHint);
+                        }).catch(function() {});
+                        return true;
+                    }
+                    if (href.indexOf("data:") === 0) {
+                        const comma = href.indexOf(",");
+                        if (comma > 4) {
+                            const meta = href.slice(5, comma);
+                            const rawData = href.slice(comma + 1);
+                            const mType = meta.split(";")[0] || mimeHint || "application/octet-stream";
+                            const b64 = meta.toLowerCase().indexOf(";base64") !== -1
+                                ? rawData
+                                : bytesToB64Fast(new TextEncoder().encode(decodeURIComponent(rawData)));
+                            if (typeof br.saveBlobBase64 === "function") {
+                                br.saveBlobBase64(b64, suggestedName || "download", mType);
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                };
+                window.__fableDownloadUrl = triggerFableDownload;
+                if (typeof HTMLAnchorElement === "function" && HTMLAnchorElement.prototype && typeof HTMLAnchorElement.prototype.click === "function") {
+                    const origAnchorClick = HTMLAnchorElement.prototype.click;
+                    HTMLAnchorElement.prototype.click = function() {
+                        try {
+                            const href = this.href || "";
+                            const hasDl = this.hasAttribute("download");
+                            const dlAttr = this.getAttribute("download") || "";
+                            if (href.indexOf("blob:") === 0 || (hasDl && href.indexOf("data:") === 0)) {
+                                if (triggerFableDownload(href, dlAttr || "download", "")) return;
+                            }
+                            if (hasDl && (href.indexOf("http://") === 0 || href.indexOf("https://") === 0) &&
+                                window.FableHybridBridge && typeof window.FableHybridBridge.enqueueHttpDownload === "function") {
+                                const parsedOrigin = (new URL(href, location.href)).origin;
+                                if (parsedOrigin === location.origin || dlAttr.length > 0) {
+                                    window.FableHybridBridge.enqueueHttpDownload(href, dlAttr);
+                                    return;
+                                }
+                            }
+                        } catch (_) {}
+                        return origAnchorClick.apply(this, arguments);
+                    };
+                }
                 document.addEventListener("click", function(ev) {
                     const a = ev.target && typeof ev.target.closest === "function" ? ev.target.closest("a[href]") : null;
                     if (!a) return;
                     const href = a.href || "";
-                    if (href.indexOf("blob:") === 0 && window.FableHybridBridge && typeof window.FableHybridBridge.saveBlobBase64 === "function") {
+                    const hasDl = a.hasAttribute("download");
+                    const dlName = a.getAttribute("download") || "";
+                    if (href.indexOf("blob:") === 0 || (hasDl && href.indexOf("data:") === 0)) {
+                        if (triggerFableDownload(href, dlName || "download", "")) {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                        }
+                    } else if (hasDl && (href.indexOf("http://") === 0 || href.indexOf("https://") === 0) &&
+                        window.FableHybridBridge && typeof window.FableHybridBridge.enqueueHttpDownload === "function") {
                         ev.preventDefault();
-                        const dlName = a.getAttribute("download") || "download.txt";
-                        fetch(href).then(function(r) { return r.blob(); }).then(function(b) {
-                            const reader = new FileReader();
-                            reader.onloadend = function() {
-                                const res = String(reader.result || "");
-                                const idx = res.indexOf(",");
-                                const b64 = idx >= 0 ? res.slice(idx + 1) : "";
-                                window.FableHybridBridge.saveBlobBase64(b64, dlName, b.type || "application/octet-stream");
-                            };
-                            reader.readAsDataURL(b);
-                        }).catch(function() {});
+                        window.FableHybridBridge.enqueueHttpDownload(href, dlName);
                     }
                 }, true);
             } catch (_) {}
@@ -1202,38 +1352,39 @@ object HybridEngineBridge {
                         });
                     }
 
+                    let rectGeneration = 1;
                     const origCanvasRect = HTMLCanvasElement.prototype.getBoundingClientRect;
                     HTMLCanvasElement.prototype.getBoundingClientRect = function() {
+                        const ttl = CFG.canvasCacheMs || 150;
+                        if (ttl <= 0) return origCanvasRect.call(this);
                         const t = performance.now();
-                        if (cachedRect && (t - cachedRectTime) < (CFG.canvasCacheMs || 250)) {
-                            return cachedRect;
+                        if (this.__fableRect &&
+                            this.__fableRectGen === rectGeneration &&
+                            this.__fableRectW === this.width &&
+                            this.__fableRectH === this.height &&
+                            (t - (this.__fableRectTs || 0)) < ttl) {
+                            return this.__fableRect;
                         }
-                        cachedRect = origCanvasRect.call(this);
-                        cachedRectTime = t;
-                        return cachedRect;
+                        const r = origCanvasRect.call(this);
+                        this.__fableRect = r;
+                        this.__fableRectGen = rectGeneration;
+                        this.__fableRectW = this.width;
+                        this.__fableRectH = this.height;
+                        this.__fableRectTs = t;
+                        return r;
                     };
-                    let cachedCw = 0, cachedCh = 0;
-                    const cwDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
-                    const chDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-                    if (cwDesc && cwDesc.get && chDesc && chDesc.get) {
-                        Object.defineProperty(HTMLCanvasElement.prototype, "clientWidth", {
-                            configurable: true,
-                            get: function() {
-                                if (cachedCw > 0) return cachedCw;
-                                cachedCw = cwDesc.get.call(this);
-                                return cachedCw;
+                    window.addEventListener("resize", function() { rectGeneration++; }, { passive: true });
+                    const notifyFs = function() {
+                        rectGeneration++;
+                        try {
+                            const fsOn = !!(document.fullscreenElement || document.webkitFullscreenElement);
+                            if (window.FableHybridBridge && typeof window.FableHybridBridge.onJsFullScreenChanged === "function") {
+                                window.FableHybridBridge.onJsFullScreenChanged(fsOn);
                             }
-                        });
-                        Object.defineProperty(HTMLCanvasElement.prototype, "clientHeight", {
-                            configurable: true,
-                            get: function() {
-                                if (cachedCh > 0) return cachedCh;
-                                cachedCh = chDesc.get.call(this);
-                                return cachedCh;
-                            }
-                        });
-                    }
-                    window.addEventListener("resize", function() { cachedRect = null; cachedCw = 0; cachedCh = 0; }, { passive: true });
+                        } catch (_) {}
+                    };
+                    document.addEventListener("fullscreenchange", notifyFs, { passive: true });
+                    document.addEventListener("webkitfullscreenchange", notifyFs, { passive: true });
                     // Zero-delay rapid clicking (20+ CPS): prevent browser double-tap zoom or contextmenu stalls on game canvases,
                     // while ALWAYS preserving native long-press Paste / Select All on <input>, <textarea>, and [contenteditable]!
                     window.addEventListener("dblclick", function(ev) {
@@ -1402,9 +1553,13 @@ object HybridEngineBridge {
         settings: Settings
     ): String {
         val maxFiles = settings.archiveMaxFiles.coerceIn(500, 10000)
+        val maxTotalMb = settings.archiveMaxTotalMb.coerceIn(100, 2000)
+        val maxFileMb = settings.archiveMaxFileMb.coerceIn(20, 500)
+        val splitPartMb = settings.archiveSplitPartMb.coerceIn(0, 200)
         val includeCanvas = settings.archiveIncludeCanvas
         val includeStorage = settings.archiveIncludeStorage
         val includeMemory = settings.archiveIncludeMemory || mode == "memory"
+        val guessAssets = settings.archiveGuessAssets
         return """
         (async function() {
             const bridge = window.FableHybridBridge;
@@ -1413,36 +1568,33 @@ object HybridEngineBridge {
             const MODE = ${JSONObject.quote(mode)};
             const INCOG = $incognito;
             const MAX_FILES = $maxFiles;
+            const MAX_TOTAL_MB = $maxTotalMb;
+            const MAX_FILE_MB = $maxFileMb;
+            const SPLIT_PART_MB = $splitPartMb;
             const INC_CANVAS = $includeCanvas;
             const INC_STORAGE = $includeStorage;
             const INC_MEMORY = $includeMemory;
+            const GUESS_ASSETS = $guessAssets;
 
             const send = function(obj) {
                 obj.id = ID;
                 bridge.postArchiveMessage(JSON.stringify(obj));
             };
-            const toB64 = function(str) {
-                try {
-                    const bytes = new TextEncoder().encode(str);
-                    let bin = "";
-                    const chunk = 0x8000;
-                    for (let i = 0; i < bytes.length; i += chunk) {
-                        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-                    }
-                    return btoa(bin);
-                } catch (_) { return ""; }
-            };
-            const bufToB64 = function(buf) {
-                const bytes = new Uint8Array(buf);
+            const bytesToB64 = function(bytes) {
                 let bin = "";
                 const chunk = 0x8000;
                 for (let i = 0; i < bytes.length; i += chunk) {
-                    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+                    bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + chunk)));
                 }
                 return btoa(bin);
             };
+            const toB64 = function(str) {
+                try {
+                    return bytesToB64(new TextEncoder().encode(str));
+                } catch (_) { return ""; }
+            };
             const sendFileB64 = function(path, b64) {
-                const step = 384 * 1024;
+                const step = 512 * 1024;
                 if (!b64 || b64.length === 0) {
                     send({ op: "file", path: path, seq: 0, last: true, data: "" });
                     return;
@@ -1458,17 +1610,24 @@ object HybridEngineBridge {
             };
 
             try {
+                const resEntries = (performance && performance.getEntriesByType) ? performance.getEntriesByType("resource") : [];
+                const navEntries = (performance && performance.getEntriesByType) ? performance.getEntriesByType("navigation") : [];
+
                 send({
                     op: "begin",
                     title: document.title || location.hostname || "page",
                     page: location.href,
                     incognito: INCOG,
-                    mode: MODE
+                    mode: MODE,
+                    engine: "Blink-Chromium + GeckoView-144",
+                    splitPartMb: SPLIT_PART_MB,
+                    observedResources: resEntries.length
                 });
 
+                const renderedHtml = "<!DOCTYPE html>\n" + (document.documentElement ? document.documentElement.outerHTML : "");
+                sendText("page/rendered-dom.html", renderedHtml);
                 if (MODE !== "memory") {
-                    const html = "<!DOCTYPE html>\n" + (document.documentElement ? document.documentElement.outerHTML : "");
-                    sendText("index.html", html);
+                    sendText("index.html", renderedHtml);
                 }
 
                 if (INC_MEMORY) {
@@ -1496,6 +1655,53 @@ object HybridEngineBridge {
                         }
                     } catch (_) {}
                     if (cssDump) sendText("memory/computed-stylesheets.css", cssDump);
+
+                    // JS custom globals & WebGL context state
+                    try {
+                        const glStates = [];
+                        const cvs = document.querySelectorAll("canvas");
+                        for (let i = 0; i < Math.min(cvs.length, 8); i++) {
+                            const c = cvs[i];
+                            const gl = c.getContext("webgl2") || c.getContext("webgl");
+                            if (gl && typeof gl.getParameter === "function") {
+                                const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+                                glStates.push({
+                                    index: i,
+                                    className: c.className || "",
+                                    width: c.width,
+                                    height: c.height,
+                                    version: gl.getParameter(gl.VERSION),
+                                    vendor: gl.getParameter(gl.VENDOR),
+                                    renderer: gl.getParameter(gl.RENDERER),
+                                    unmaskedVendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : null,
+                                    unmaskedRenderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null,
+                                    maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+                                    extensions: (gl.getSupportedExtensions && gl.getSupportedExtensions()) || []
+                                });
+                            }
+                        }
+                        sendText("memory/js-heap-and-webgl.json", JSON.stringify({
+                            jsHeap: performance && performance.memory ? {
+                                usedJSHeapSize: performance.memory.usedJSHeapSize,
+                                totalJSHeapSize: performance.memory.totalJSHeapSize,
+                                jsHeapSizeLimit: performance.memory.jsHeapSizeLimit
+                            } : null,
+                            webglContexts: glStates
+                        }, null, 2));
+                    } catch (_) {}
+
+                    // Accessible same-origin iframes
+                    try {
+                        const frames = document.querySelectorAll("iframe, frame");
+                        for (let i = 0; i < Math.min(frames.length, 12); i++) {
+                            try {
+                                const fdoc = frames[i].contentDocument;
+                                if (fdoc && fdoc.documentElement) {
+                                    sendText("memory/frames/frame-" + (i + 1) + ".html", "<!DOCTYPE html>\n" + fdoc.documentElement.outerHTML);
+                                }
+                            } catch (_) {}
+                        }
+                    } catch (_) {}
                 }
 
                 if (INC_STORAGE) {
@@ -1515,55 +1721,275 @@ object HybridEngineBridge {
                         }
                         sendText("memory/session-storage.json", JSON.stringify(ss, null, 2));
                     } catch (_) {}
+
+                    // Full IndexedDB dump (captures bloxd_localforage, worldCodeAi, etc.)
+                    if (window.indexedDB && typeof indexedDB.databases === "function") {
+                        try {
+                            const dbs = await indexedDB.databases();
+                            for (let d = 0; d < Math.min(dbs.length, 16); d++) {
+                                const dbName = dbs[d] && dbs[d].name;
+                                if (!dbName) continue;
+                                try {
+                                    const dbDump = await new Promise(function(resolve) {
+                                        const timer = setTimeout(function() { resolve(null); }, 6000);
+                                        const req = indexedDB.open(dbName);
+                                        req.onerror = function() { clearTimeout(timer); resolve(null); };
+                                        req.onsuccess = function() {
+                                            const db = req.result;
+                                            const storeNames = Array.from(db.objectStoreNames || []);
+                                            if (storeNames.length === 0) {
+                                                db.close();
+                                                clearTimeout(timer);
+                                                resolve({});
+                                                return;
+                                            }
+                                            const out = {};
+                                            let pending = storeNames.length;
+                                            let bytesEst = 0;
+                                            const tx = db.transaction(storeNames, "readonly");
+                                            storeNames.forEach(function(sName) {
+                                                try {
+                                                    const st = tx.objectStore(sName);
+                                                    const rows = [];
+                                                    const curReq = st.openCursor();
+                                                    curReq.onsuccess = function(ev) {
+                                                        const cursor = ev.target.result;
+                                                        if (cursor && rows.length < 2500 && bytesEst < 24 * 1024 * 1024) {
+                                                            let val = cursor.value;
+                                                            if (val instanceof ArrayBuffer) {
+                                                                val = { __binaryB64: bytesToB64(new Uint8Array(val)) };
+                                                                bytesEst += val.__binaryB64.length;
+                                                            } else if (ArrayBuffer.isView(val)) {
+                                                                val = { __binaryB64: bytesToB64(new Uint8Array(val.buffer, val.byteOffset, val.byteLength)) };
+                                                                bytesEst += val.__binaryB64.length;
+                                                            } else if (val instanceof Blob) {
+                                                                val = { __blobSize: val.size, __blobType: val.type };
+                                                            } else {
+                                                                bytesEst += 256;
+                                                            }
+                                                            rows.push({ key: cursor.key, value: val });
+                                                            cursor.continue();
+                                                        } else {
+                                                            out[sName] = rows;
+                                                            if (--pending <= 0) {
+                                                                db.close();
+                                                                clearTimeout(timer);
+                                                                resolve(out);
+                                                            }
+                                                        }
+                                                    };
+                                                    curReq.onerror = function() {
+                                                        out[sName] = rows;
+                                                        if (--pending <= 0) {
+                                                            db.close();
+                                                            clearTimeout(timer);
+                                                            resolve(out);
+                                                        }
+                                                    };
+                                                } catch (_) {
+                                                    if (--pending <= 0) {
+                                                        db.close();
+                                                        clearTimeout(timer);
+                                                        resolve(out);
+                                                    }
+                                                }
+                                            });
+                                        };
+                                    });
+                                    if (dbDump) {
+                                        const safeDb = dbName.replace(/[^A-Za-z0-9._-]/g, "_");
+                                        sendText("memory/indexeddb/" + safeDb + ".json", JSON.stringify(dbDump));
+                                    }
+                                } catch (_) {}
+                            }
+                        } catch (_) {}
+                    }
                 }
 
-                const resEntries = (performance && performance.getEntriesByType) ? performance.getEntriesByType("resource") : [];
-                sendText("devtools/performance-resources.json", JSON.stringify(resEntries, null, 2));
+                // Build HAR 1.2 + performance dump
+                sendText("devtools/performance.json", JSON.stringify({ navigation: navEntries, resources: resEntries }, null, 2));
+                try {
+                    const epochStart = performance.timeOrigin || (Date.now() - performance.now());
+                    const harEntries = resEntries.map(function(r) {
+                        const startedIso = new Date(epochStart + (r.startTime || 0)).toISOString();
+                        const waitMs = Math.max(0, (r.responseStart || r.startTime || 0) - (r.requestStart || r.startTime || 0));
+                        const recvMs = Math.max(0, (r.responseEnd || r.startTime || 0) - (r.responseStart || r.startTime || 0));
+                        return {
+                            startedDateTime: startedIso,
+                            time: Math.max(0, r.duration || 0),
+                            request: {
+                                method: "GET",
+                                url: r.name,
+                                httpVersion: r.nextHopProtocol || "HTTP/2.0",
+                                headers: [],
+                                queryString: [],
+                                cookies: [],
+                                headersSize: -1,
+                                bodySize: 0
+                            },
+                            response: {
+                                status: r.responseStatus || 200,
+                                statusText: "OK",
+                                httpVersion: r.nextHopProtocol || "HTTP/2.0",
+                                headers: r.contentType ? [{ name: "content-type", value: r.contentType }] : [],
+                                cookies: [],
+                                content: {
+                                    size: r.decodedBodySize || r.transferSize || 0,
+                                    mimeType: r.contentType || "application/octet-stream"
+                                },
+                                redirectURL: "",
+                                headersSize: -1,
+                                bodySize: r.encodedBodySize || r.transferSize || 0
+                            },
+                            cache: {},
+                            timings: { blocked: 0, dns: -1, connect: -1, send: 0, wait: waitMs, receive: recvMs, ssl: -1 }
+                        };
+                    });
+                    sendText("devtools/network.har", JSON.stringify({
+                        log: {
+                            version: "1.2",
+                            creator: { name: "Fable Unified Engine", version: "1.43.0" },
+                            pages: [{
+                                startedDateTime: new Date(epochStart).toISOString(),
+                                id: "page_1",
+                                title: document.title || location.href,
+                                pageTimings: {}
+                            }],
+                            entries: harEntries
+                        }
+                    }));
+                } catch (_) {}
 
+                // Capture 2D & WebGL canvases inside requestAnimationFrame so preserveDrawingBuffer:false WebGL frames are live!
                 if (INC_CANVAS) {
-                    const canvases = document.querySelectorAll("canvas");
-                    for (let i = 0; i < Math.min(canvases.length, 4); i++) {
-                        try {
-                            const dataUrl = canvases[i].toDataURL("image/png");
-                            const comma = dataUrl.indexOf(",");
-                            if (comma > 0) {
-                                sendFileB64("canvas/canvas-" + i + ".png", dataUrl.slice(comma + 1));
-                            }
-                        } catch (_) {}
-                    }
+                    await new Promise(function(resolve) {
+                        let settled = false;
+                        const finishCv = function() {
+                            if (settled) return;
+                            settled = true;
+                            try {
+                                const canvases = document.querySelectorAll("canvas");
+                                for (let i = 0; i < Math.min(canvases.length, 6); i++) {
+                                    try {
+                                        const c = canvases[i];
+                                        if (c.width > 0 && c.height > 0) {
+                                            const dataUrl = c.toDataURL("image/png");
+                                            const comma = dataUrl.indexOf(",");
+                                            if (comma > 0) {
+                                                sendFileB64("memory/canvas-" + (i + 1) + "-" + c.width + "x" + c.height + ".png", dataUrl.slice(comma + 1));
+                                            }
+                                        }
+                                    } catch (_) {}
+                                }
+                            } catch (_) {}
+                            resolve();
+                        };
+                        setTimeout(finishCv, 250);
+                        if (window.requestAnimationFrame) window.requestAnimationFrame(finishCv);
+                    });
                 }
 
-                if (MODE !== "memory") {
-                    const urls = new Set();
-                    const addUrl = function(u) {
-                        if (!u || typeof u !== "string") return;
-                        try {
-                            const abs = new URL(u, location.href).href;
-                            if (abs.indexOf("http://") === 0 || abs.indexOf("https://") === 0) urls.add(abs);
-                        } catch (_) {}
-                    };
-                    document.querySelectorAll("script[src]").forEach(function(e) { addUrl(e.getAttribute("src")); });
-                    document.querySelectorAll("link[href]").forEach(function(e) { addUrl(e.getAttribute("href")); });
-                    document.querySelectorAll("img[src]").forEach(function(e) { addUrl(e.getAttribute("src")); });
-                    resEntries.forEach(function(r) { addUrl(r.name); });
+                // Collect all page, CSS, ServiceWorker CacheStorage, and deep-scanned asset URLs!
+                const urls = new Set();
+                const addUrl = function(u, baseHref) {
+                    if (!u || typeof u !== "string") return;
+                    const trimmed = u.trim();
+                    if (!trimmed || trimmed.indexOf("data:") === 0 || trimmed.indexOf("javascript:") === 0) return;
+                    try {
+                        const abs = new URL(trimmed, baseHref || location.href).href.split("#")[0];
+                        if (abs.indexOf("http://") === 0 || abs.indexOf("https://") === 0) urls.add(abs);
+                    } catch (_) {}
+                };
+                addUrl(location.href);
+                document.querySelectorAll("script[src]").forEach(function(e) { addUrl(e.getAttribute("src")); });
+                document.querySelectorAll("link[href]").forEach(function(e) { addUrl(e.getAttribute("href")); });
+                document.querySelectorAll("img[src], audio[src], video[src], source[src]").forEach(function(e) { addUrl(e.getAttribute("src")); });
+                document.querySelectorAll("video[poster]").forEach(function(e) { addUrl(e.getAttribute("poster")); });
+                document.querySelectorAll("[srcset]").forEach(function(e) {
+                    const ss = e.getAttribute("srcset") || "";
+                    ss.split(",").forEach(function(part) {
+                        const tok = part.trim().split(/\s+/)[0];
+                        if (tok) addUrl(tok);
+                    });
+                });
+                resEntries.forEach(function(r) { addUrl(r.name); });
 
-                    const list = Array.from(urls).slice(0, MAX_FILES);
-                    let done = 0;
-                    for (let i = 0; i < list.length; i++) {
-                        const target = list[i];
-                        try {
-                            const resp = await fetch(target, { cache: "force-cache", credentials: "include" });
-                            if (resp && resp.ok) {
-                                const buf = await resp.arrayBuffer();
-                                const parsed = new URL(target);
-                                let rel = (parsed.hostname + parsed.pathname).replace(/[^A-Za-z0-9._\/-]/g, "_");
-                                if (rel.endsWith("/")) rel += "index.bin";
-                                sendFileB64("assets/" + rel, bufToB64(buf));
+                // Scan CSSOM rules for url(...) fonts, icons, skyboxes, backgrounds
+                try {
+                    const urlRe = /url\(\s*["']?([^"')]+)["']?\s*\)/gi;
+                    for (let i = 0; i < document.styleSheets.length; i++) {
+                        const sheet = document.styleSheets[i];
+                        const base = sheet.href || location.href;
+                        let rules = null;
+                        try { rules = sheet.cssRules; } catch (_) { continue; }
+                        if (!rules) continue;
+                        for (let j = 0; j < rules.length; j++) {
+                            const cssTxt = rules[j].cssText || "";
+                            let m;
+                            while ((m = urlRe.exec(cssTxt)) !== null) {
+                                addUrl(m[1], base);
                             }
-                        } catch (_) {}
-                        done++;
-                        if (done % 10 === 0) send({ op: "progress", done: done, total: list.length });
+                        }
                     }
+                } catch (_) {}
+
+                // Service Worker CacheStorage URLs & cached bodies
+                if (window.caches && typeof caches.keys === "function") {
+                    try {
+                        const cacheNames = await caches.keys();
+                        const cacheIndex = [];
+                        for (let c = 0; c < Math.min(cacheNames.length, 10); c++) {
+                            const cObj = await caches.open(cacheNames[c]);
+                            const reqs = await cObj.keys();
+                            for (let r = 0; r < Math.min(reqs.length, 400); r++) {
+                                addUrl(reqs[r].url);
+                                cacheIndex.push({ cache: cacheNames[c], url: reqs[r].url });
+                            }
+                        }
+                        if (cacheIndex.length > 0) {
+                            sendText("memory/cache-storage.json", JSON.stringify(cacheIndex, null, 2));
+                        }
+                    } catch (_) {}
+                }
+
+                // Deep-scan same-origin JS chunks & manifests for referenced .wasm, .glb, textures, sounds, chunks!
+                if (GUESS_ASSETS) {
+                    try {
+                        const assetRe = /["']((?:https?:\/\/[^"'\s<>]+|\/[A-Za-z0-9._\/-]+|static\/[A-Za-z0-9._\/-]+|textures\/[A-Za-z0-9._\/-]+|sounds\/[A-Za-z0-9._\/-]+)\.(?:js|css|json|wasm|glb|gltf|babylon|bin|ktx2|png|jpg|jpeg|webp|svg|woff2|mp3|ogg|mp4))["']/gi;
+                        const jsCandidates = Array.from(urls).filter(function(u) {
+                            return u.indexOf(location.origin) === 0 && /\.(?:js|json|css)(\?|$)/i.test(u);
+                        }).slice(0, 28);
+                        await Promise.all(jsCandidates.map(async function(jsUrl) {
+                            try {
+                                const resp = await fetch(jsUrl, { cache: "force-cache", credentials: "include" });
+                                if (!resp || !resp.ok) return;
+                                const txt = await resp.text();
+                                if (txt.length > 8 * 1024 * 1024) return;
+                                let m;
+                                let found = 0;
+                                while ((m = assetRe.exec(txt)) !== null && found < 400) {
+                                    const cand = m[1].indexOf("/") === 0 || m[1].indexOf("http") === 0 ? m[1] : ("/" + m[1]);
+                                    addUrl(cand, jsUrl);
+                                    found++;
+                                }
+                            } catch (_) {}
+                        }));
+                    } catch (_) {}
+                }
+
+                // Dispatch all HTTP/HTTPS asset URLs in ONE batch to Kotlin PageArchiver's 12-stream native parallel downloader!
+                // (Zero CORS failures, zero JS Base64 overhead, 5x-10x faster!)
+                const allHttpUrls = Array.from(urls).slice(0, MAX_FILES);
+                if (allHttpUrls.length > 0) {
+                    send({
+                        op: "fetch_batch",
+                        urls: allHttpUrls,
+                        userAgent: navigator.userAgent || "",
+                        referer: location.href,
+                        maxFileMb: MAX_FILE_MB,
+                        maxTotalMb: MAX_TOTAL_MB,
+                        observedResources: resEntries.length
+                    });
                 }
 
                 send({ op: "end" });

@@ -106,7 +106,7 @@ fun SettingsScreen(
     SettingsPage(title = "Settings", onBack = onBack, viewModel = viewModel) {
         SettingRow(
             title = "General",
-            subtitle = "Search engine, homepage, startup",
+            subtitle = "Engine: ${settings.defaultEngine.label}  ·  Search, homepage, startup",
             icon = Icons.Outlined.Tune,
             onClick = { onNavigate(Routes.SETTINGS_GENERAL) }
         )
@@ -128,7 +128,7 @@ fun SettingsScreen(
         ListDivider()
         SettingRow(
             title = "Beta: Gecko + Blink Engine",
-            subtitle = if (settings.hybridGeckoBlinkBeta) "Active (120Hz) · Edit all combined engine, CPU, WebGL, camera & click settings" else "Off · Tap to configure combined engine settings",
+            subtitle = "${settings.defaultEngine.label} · 120Hz, CPU, WebGL, video & click settings",
             icon = Icons.Outlined.Speed,
             onClick = { onNavigate(Routes.SETTINGS_HYBRID_BETA) }
         )

@@ -254,7 +254,7 @@ class PageArchiver @Inject constructor(
             .joinToString("/") { seg -> seg.replace(Regex("[^A-Za-z0-9._-]"), "_").take(100) }
         val q = u?.encodedQuery
         if (!q.isNullOrBlank()) {
-            val qHash = (NativeFastEngine.hash64(q) and 0xFFFFFFFFL).toString(16)
+            val qHash = (NativeFastEngine.hash64(q.toByteArray(Charsets.UTF_8)) and 0xFFFFFFFFL).toString(16)
             val dot = rawPath.lastIndexOf('.')
             val slash = rawPath.lastIndexOf('/')
             rawPath = if (dot > slash) {

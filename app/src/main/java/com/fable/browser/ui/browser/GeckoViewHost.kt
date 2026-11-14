@@ -139,6 +139,14 @@ private class FableHybridJsBridge(
     }
 
     @JavascriptInterface
+    fun saveBlobBase64(b64: String?, fileName: String?, mimeType: String?) {
+        val cleanB64 = b64?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val safeMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+        val dataUrl = "data:$safeMime;base64,$cleanB64"
+        tab.hybridDownloadHandler?.invoke(dataUrl, "attachment; filename="${fileName ?: "download.txt"}"", safeMime)
+    }
+
+    @JavascriptInterface
     fun getClipboardText(): String {
         return runCatching {
             val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -344,7 +352,19 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             }
             setDownloadListener { url, _, contentDisposition, mimeType, _ ->
                 if (!url.isNullOrBlank()) {
-                    tab.hybridDownloadHandler?.invoke(url, contentDisposition, mimeType)
+                    if (url.startsWith("blob:", ignoreCase = true)) {
+                        val safeUrl = url.replace("'", "\'")
+                        val fName = FableUnifiedEngine.guessDownloadFileName(url, contentDisposition, mimeType).replace("'", "_")
+                        val mType = (mimeType ?: "application/octet-stream").replace("'", "")
+                        post {
+                            evaluateJavascript(
+                                "fetch('$safeUrl').then(r=>r.blob()).then(b=>{const fr=new FileReader();fr.onloadend=()=>{const s=String(fr.result||'');const i=s.indexOf(',');if(i>=0)window.FableHybridBridge.saveBlobBase64(s.slice(i+1),'$fName','$mType');};fr.readAsDataURL(b);});",
+                                null
+                            )
+                        }
+                    } else {
+                        tab.hybridDownloadHandler?.invoke(url, contentDisposition, mimeType)
+                    }
                 }
             }
             setOnLongClickListener { v ->
@@ -364,6 +384,41 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     view: WebView,
                     request: WebResourceRequest
                 ): WebResourceResponse? {
+                    val fullReqUrl = request.url?.toString().orEmpty()
+                    if (fullReqUrl.startsWith("https://local.fable.app/opened_html/", ignoreCase = true)) {
+                        return runCatching {
+                            val relRaw = fullReqUrl.substringAfter("/opened_html/").substringBefore('?').substringBefore('#')
+                            val relDecoded = android.net.Uri.decode(relRaw)
+                            val baseRoot = java.io.File(context.cacheDir, "opened_html").canonicalFile
+                            val targetFile = java.io.File(baseRoot, relDecoded).canonicalFile
+                            if (!targetFile.path.startsWith(baseRoot.path + java.io.File.separator) || !targetFile.isFile) {
+                                return@runCatching WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+                            }
+                            val ext = targetFile.extension.lowercase()
+                            val mime = when (ext) {
+                                "html", "htm" -> "text/html"
+                                "xhtml" -> "application/xhtml+xml"
+                                "js", "mjs" -> "application/javascript"
+                                "css" -> "text/css"
+                                "json" -> "application/json"
+                                "svg" -> "image/svg+xml"
+                                "png" -> "image/png"
+                                "jpg", "jpeg" -> "image/jpeg"
+                                "webp" -> "image/webp"
+                                "mp4" -> "video/mp4"
+                                "webm" -> "video/webm"
+                                else -> android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "text/html"
+                            }
+                            WebResourceResponse(
+                                mime,
+                                "UTF-8",
+                                200,
+                                "OK",
+                                mapOf("Access-Control-Allow-Origin" to "*"),
+                                targetFile.inputStream().buffered(64 * 1024)
+                            )
+                        }.getOrNull()
+                    }
                     if (request.isForMainFrame) return null
                     val reqUrl = request.url?.toString() ?: return null
                     val docHost = cachedDocHost
@@ -659,10 +714,16 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
         val controller = object : HybridBlinkController {
             override fun loadUrl(url: String) {
                 wv.post {
+                    val effectiveUrl = if (url.startsWith("file://", ignoreCase = true) && url.contains("/cache/opened_html/")) {
+                        val rel = url.substringAfter("/cache/opened_html/")
+                        "https://local.fable.app/opened_html/$rel"
+                    } else {
+                        url
+                    }
                     applyDesktopState(tab.isDesktopMode.value)
-                    tab.lastLoadedBlinkUrl = url
-                    val headers = tab.hybridExtraHeadersProvider?.invoke(url).orEmpty()
-                    if (headers.isNotEmpty()) wv.loadUrl(url, headers) else wv.loadUrl(url)
+                    tab.lastLoadedBlinkUrl = effectiveUrl
+                    val headers = tab.hybridExtraHeadersProvider?.invoke(effectiveUrl).orEmpty()
+                    if (headers.isNotEmpty()) wv.loadUrl(effectiveUrl, headers) else wv.loadUrl(effectiveUrl)
                 }
             }
 
@@ -822,11 +883,16 @@ fun GeckoViewHost(
                 wv.visibility = View.VISIBLE
                 captureHandle.blinkView = wv
                 if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://") || currentUrl.startsWith("file://")) {
+                    val mappedUrl = if (currentUrl.startsWith("file://", ignoreCase = true) && currentUrl.contains("/cache/opened_html/")) {
+                        "https://local.fable.app/opened_html/" + currentUrl.substringAfter("/cache/opened_html/")
+                    } else {
+                        currentUrl
+                    }
                     val currentWvUrl = wv.url
                     if (tab.lastLoadedBlinkUrl.isBlank() && currentWvUrl.isNullOrBlank()) {
-                        tab.lastLoadedBlinkUrl = currentUrl
-                        val headers = tab.hybridExtraHeadersProvider?.invoke(currentUrl).orEmpty()
-                        if (headers.isNotEmpty()) wv.loadUrl(currentUrl, headers) else wv.loadUrl(currentUrl)
+                        tab.lastLoadedBlinkUrl = mappedUrl
+                        val headers = tab.hybridExtraHeadersProvider?.invoke(mappedUrl).orEmpty()
+                        if (headers.isNotEmpty()) wv.loadUrl(mappedUrl, headers) else wv.loadUrl(mappedUrl)
                     }
                 }
             } else {

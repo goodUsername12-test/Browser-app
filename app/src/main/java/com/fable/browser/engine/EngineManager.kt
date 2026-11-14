@@ -56,6 +56,7 @@ class EngineManager @Inject constructor(
     fun warmUp() {
         if (!warmedUp.compareAndSet(false, true)) return
         FableUnifiedEngine.prewarmAsync(context)
+        FableNetworkOptimizer.initAsync(context)
         mainHandler.post {
             runtime
             scope.launch {

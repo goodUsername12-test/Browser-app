@@ -570,8 +570,15 @@ class TabManager @Inject constructor(
             }
         } else {
             tab.destroyRetainedBlinkView()
-            val currentUrl = tab.url.value
-            if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://")) {
+            val rawUrl = tab.url.value
+            val currentUrl = if (rawUrl.startsWith("https://local.fable.app/opened_html/", ignoreCase = true)) {
+                val rel = android.net.Uri.decode(rawUrl.substringAfter("/opened_html/"))
+                val targetFile = java.io.File(java.io.File(appContext.cacheDir, "opened_html"), rel)
+                android.net.Uri.fromFile(targetFile).toString()
+            } else {
+                rawUrl
+            }
+            if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://") || currentUrl.startsWith("file://")) {
                 ensureLive(tab)
                 tab.session.load(GeckoSession.Loader().uri(currentUrl))
             }

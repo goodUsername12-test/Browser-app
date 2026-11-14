@@ -2,6 +2,13 @@ package com.fable.browser.engine
 
 import com.fable.browser.data.prefs.Settings
 
+data class NetworkPlan(
+    val qualityScore: Int,
+    val parallelStreams: Int,
+    val socketBufferKb: Int,
+    val uploadChunkKb: Int
+)
+
 data class PowerPlan(
     val targetDisplayHz: Int,
     val targetGameFps: Int,
@@ -19,6 +26,72 @@ object RustFastCore {
 
     @JvmStatic
     private external fun nativeRustVersion(): Int
+
+    @JvmStatic
+    private external fun nativeRecommendNetworkPlan(
+        rssiDbm: Int,
+        linkMbps: Int,
+        downKbps: Int,
+        upKbps: Int,
+        freqMhz: Int,
+        isWifi: Boolean,
+        isMetered: Boolean,
+        fastConn: Boolean,
+        fileSizeMb: Int
+    ): Long
+
+    fun recommendNetworkPlan(
+        rssiDbm: Int,
+        linkMbps: Int,
+        downKbps: Int,
+        upKbps: Int,
+        freqMhz: Int,
+        isWifi: Boolean,
+        isMetered: Boolean,
+        fastConn: Boolean,
+        fileSizeMb: Int
+    ): NetworkPlan {
+        val packed = if (isRustAvailable) {
+            runCatching {
+                nativeRecommendNetworkPlan(rssiDbm, linkMbps, downKbps, upKbps, freqMhz, isWifi, isMetered, fastConn, fileSizeMb)
+            }.getOrNull()
+        } else {
+            null
+        }
+        if (packed != null) {
+            return NetworkPlan(
+                qualityScore = (packed and 0xFFL).toInt().coerceIn(5, 100),
+                parallelStreams = ((packed ushr 8) and 0xFFL).toInt().coerceIn(1, 6),
+                socketBufferKb = ((packed ushr 16) and 0xFFFFL).toInt().coerceIn(64, 512),
+                uploadChunkKb = ((packed ushr 32) and 0xFFFFL).toInt().coerceIn(128, 2048)
+            )
+        }
+        val baseScore = if (isWifi) {
+            val rssiScore = ((rssiDbm + 95) * 2).coerceIn(10, 70)
+            val bandBonus = if (freqMhz >= 5900) 20 else if (freqMhz >= 4900) 15 else 5
+            val speedBonus = (linkMbps / 40).coerceIn(0, 15)
+            (rssiScore + bandBonus + speedBonus).coerceIn(5, 100)
+        } else {
+            (35 + (downKbps / 1000).coerceIn(0, 55)).coerceIn(15, 90)
+        }.let { if (isMetered && it > 75) 75 else it }
+
+        val streams = when {
+            !fastConn || fileSizeMb < 2 || isMetered -> 1
+            baseScore >= 85 && fileSizeMb >= 10 -> 6
+            baseScore >= 70 && fileSizeMb >= 4 -> 4
+            baseScore >= 50 -> 2
+            else -> 1
+        }
+        val bufKb = if (baseScore >= 80) 512 else if (baseScore >= 55) 256 else 128
+        val upMbps = maxOf(upKbps / 1000, linkMbps / 2)
+        val upChunk = when {
+            upMbps >= 80 && baseScore >= 80 -> 2048
+            upMbps >= 30 && baseScore >= 60 -> 1024
+            upMbps >= 10 -> 512
+            else -> 256
+        }
+        return NetworkPlan(baseScore, streams, bufKb, upChunk)
+    }
 
     @JvmStatic
     private external fun nativeComputePowerPlan(

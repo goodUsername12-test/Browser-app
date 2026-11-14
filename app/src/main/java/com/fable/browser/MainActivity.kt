@@ -305,8 +305,20 @@ class MainActivity : FragmentActivity() {
     private fun openLocalHtml(uri: Uri, type: String?) {
         lifecycleScope.launch {
             val local = withContext(Dispatchers.IO) { copyLocalHtml(uri, type) }
-            if (local != null) tabManager.openExternalUrl(Uri.fromFile(local).toString())
-            else activityBridge.toast(getString(R.string.cannot_open_file))
+            if (local != null) {
+                val root = File(cacheDir, "opened_html").canonicalPath
+                val full = local.canonicalPath
+                val rel = if (full.startsWith(root)) full.removePrefix(root).trimStart('/') else local.name
+                val encodedRel = rel.split('/').joinToString("/") { seg ->
+                    android.net.Uri.encode(seg)
+                }
+                val secureLocalUrl = "https://local.fable.app/opened_html/$encodedRel"
+                val tab = tabManager.openTab(incognito = false)
+                tabManager.setHybridBlinkMode(tab, true)
+                tabManager.load(tab, secureLocalUrl)
+            } else {
+                activityBridge.toast(getString(R.string.cannot_open_file))
+            }
         }
     }
 

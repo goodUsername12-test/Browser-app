@@ -45,6 +45,11 @@
   } catch (e) {
   }
 
+  const IS_LOCAL_TOOL =
+    HOST === "local" || HOST === "file:" || HOST === "local.fable.app" ||
+    (typeof location !== "undefined" && (location.protocol === "file:" || location.protocol === "blob:"));
+  if (IS_LOCAL_TOOL) return;
+
   const IS_CHALLENGE_HOST =
     /(?:^|\.)(challenges\.cloudflare\.com|recaptcha\.net|hcaptcha\.com|arkoselabs\.com|funcaptcha\.com)$/i.test(HOST) ||
     (HOST.endsWith(".google.com") && /^\/recaptcha\//i.test(location.pathname || "")) ||

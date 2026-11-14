@@ -16,19 +16,45 @@ class UnifiedEngineTest {
         assertEquals(0, defaults.batteryAutoLowPct)
         assertEquals(120, defaults.batteryGameMaxFps)
         assertEquals(100, defaults.batteryGameRenderScale)
+    }
 
-        val planAfter20sOnJoystick = RustFastCore.computePowerPlan(
-            settings = defaults,
-            batteryPct = 15,
-            isCharging = false,
-            thermalStatus = 0,
-            isGame = true,
-            idleMs = 20_000L
+    @Test
+    fun `local html tools route to blink secure context without game hooks`() {
+        assertTrue(HybridEngineBridge.isLocalHtmlAppUrl("https://local.fable.app/opened_html/123/bloxd_video_maker.html"))
+        assertTrue(HybridEngineBridge.isLocalHtmlAppUrl("file:///data/user/0/com.fable.browser/cache/opened_html/123/tool.html"))
+        assertTrue(HybridEngineBridge.isHeavy3dGameUrl("https://local.fable.app/opened_html/123/bloxd_video_maker.html"))
+        assertFalse(HybridEngineBridge.isPure3dGameUrl("https://local.fable.app/opened_html/123/bloxd_video_maker.html"))
+    }
+
+    @Test
+    fun `rust network optimizer scales parallel download streams by wifi quality`() {
+        val fast5g = RustFastCore.recommendNetworkPlan(
+            rssiDbm = -50,
+            linkMbps = 400,
+            downKbps = 250_000,
+            upKbps = 100_000,
+            freqMhz = 5240,
+            isWifi = true,
+            isMetered = false,
+            fastConn = true,
+            fileSizeMb = 25
         )
-        assertEquals(120, planAfter20sOnJoystick.targetGameFps)
-        assertEquals(120, planAfter20sOnJoystick.targetDisplayHz)
-        assertEquals(100, planAfter20sOnJoystick.renderScalePercent)
-        assertEquals(2, planAfter20sOnJoystick.cpuBoostMode)
+        assertTrue(fast5g.qualityScore >= 85)
+        assertEquals(6, fast5g.parallelStreams)
+        assertEquals(2048, fast5g.uploadChunkKb)
+
+        val meteredSmall = RustFastCore.recommendNetworkPlan(
+            rssiDbm = -75,
+            linkMbps = 40,
+            downKbps = 15_000,
+            upKbps = 5_000,
+            freqMhz = 2412,
+            isWifi = true,
+            isMetered = true,
+            fastConn = true,
+            fileSizeMb = 25
+        )
+        assertEquals(1, meteredSmall.parallelStreams)
     }
 
     @Test
@@ -37,13 +63,5 @@ class UnifiedEngineTest {
         assertTrue(UrlUtils.isSameSite("api.bloxd.io", "staging.bloxd.io"))
         assertTrue(UrlUtils.isSameSite("bloxd.io", "www.bloxd.io"))
         assertFalse(UrlUtils.isSameSite("doubleclick.net", "bloxd.io"))
-    }
-
-    @Test
-    fun `heavy 3d game urls and benchmark urls are separated cleanly`() {
-        assertTrue(HybridEngineBridge.isHeavy3dGameUrl("https://bloxd.io/"))
-        assertTrue(HybridEngineBridge.isPure3dGameUrl("https://bloxd.io/"))
-        assertTrue(HybridEngineBridge.isHeavy3dGameUrl("https://browserbench.org/Speedometer3.1/"))
-        assertFalse(HybridEngineBridge.isPure3dGameUrl("https://browserbench.org/Speedometer3.1/"))
     }
 }

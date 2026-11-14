@@ -47,13 +47,20 @@ object HybridEngineBridge {
         return false
     }
 
+    fun isLocalHtmlAppUrl(url: String): Boolean {
+        if (url.startsWith("https://local.fable.app/opened_html/", ignoreCase = true)) return true
+        if (url.startsWith("file://", ignoreCase = true) && url.contains("/cache/opened_html/")) return true
+        return false
+    }
+
     fun isBenchmarkUrl(url: String): Boolean {
+        if (isLocalHtmlAppUrl(url)) return true
         val host = UrlUtils.host(url)?.removePrefix("www.") ?: return false
         return BENCHMARK_HOSTS.any { host == it || host.endsWith(".$it") }
     }
 
     fun isHeavy3dGameUrl(url: String, customDomains: String = ""): Boolean {
-        if (isBenchmarkUrl(url)) return true
+        if (isLocalHtmlAppUrl(url) || isBenchmarkUrl(url)) return true
         return isPure3dGameUrl(url, customDomains)
     }
 
@@ -228,7 +235,7 @@ object HybridEngineBridge {
                         Object.defineProperty(Screen.prototype, "availHeight", { get: function() { return 1040; }, configurable: true });
                     } catch (_) {}
 
-                    const DESK_VP = "width=1280, initial-scale=0.1, minimum-scale=0.1, maximum-scale=5.0, user-scalable=yes";
+                    const DESK_VP = "width=1024, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes";
                     const enforceDesktopVp = function() {
                         const head = document.head || document.documentElement;
                         if (!head) return;
@@ -775,6 +782,26 @@ object HybridEngineBridge {
                         return origQuery(desc);
                     };
                 }
+                // Support blob: downloads (<a href="blob:..." download="name.txt">) in Blink Hybrid mode
+                document.addEventListener("click", function(ev) {
+                    const a = ev.target && typeof ev.target.closest === "function" ? ev.target.closest("a[href]") : null;
+                    if (!a) return;
+                    const href = a.href || "";
+                    if (href.indexOf("blob:") === 0 && window.FableHybridBridge && typeof window.FableHybridBridge.saveBlobBase64 === "function") {
+                        ev.preventDefault();
+                        const dlName = a.getAttribute("download") || "download.txt";
+                        fetch(href).then(function(r) { return r.blob(); }).then(function(b) {
+                            const reader = new FileReader();
+                            reader.onloadend = function() {
+                                const res = String(reader.result || "");
+                                const idx = res.indexOf(",");
+                                const b64 = idx >= 0 ? res.slice(idx + 1) : "";
+                                window.FableHybridBridge.saveBlobBase64(b64, dlName, b.type || "application/octet-stream");
+                            };
+                            reader.readAsDataURL(b);
+                        }).catch(function() {});
+                    }
+                }, true);
             } catch (_) {}
 
             try {

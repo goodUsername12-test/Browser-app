@@ -23,6 +23,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.mozilla.geckoview.GeckoWebExecutor
@@ -99,6 +102,10 @@ class Downloader @Inject constructor(
                 runDownload(name, "data:", decoded.first, decoded.second.size.toLong(), fromIncognito, { decoded.second.inputStream() }, null)
                 return@launch
             }
+            if (!fromIncognito && isHttp(url)) {
+                val segmentedDone = runCatching { tryParallelSegmentedDownload(url, fallbackName) }.getOrDefault(false)
+                if (segmentedDone) return@launch
+            }
             val fetched = runCatching { fetchStream(url, fromIncognito) }.getOrNull()
             if (fetched != null) {
                 val name = suggestedName?.takeIf { it.isNotBlank() }?.let { sanitize(it) } ?: fetched.fileName ?: fallbackName
@@ -166,6 +173,134 @@ class Downloader @Inject constructor(
     private class Fetched(val stream: InputStream, val mimeType: String?, val length: Long, val fileName: String?)
 
     private fun isHttp(url: String): Boolean = url.startsWith("http://") || url.startsWith("https://")
+
+    private suspend fun tryParallelSegmentedDownload(url: String, fallbackName: String): Boolean = withContext(Dispatchers.IO) {
+        val cookieHeader = runCatching { android.webkit.CookieManager.getInstance().getCookie(url) }.getOrNull()
+        val headConn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "HEAD"
+            connectTimeout = 8000
+            readTimeout = 10_000
+            instanceFollowRedirects = true
+            if (!cookieHeader.isNullOrBlank()) setRequestProperty("Cookie", cookieHeader)
+            connect()
+        }
+        val code = headConn.responseCode
+        val total = headConn.contentLengthLong
+        val acceptRanges = headConn.getHeaderField("Accept-Ranges").orEmpty()
+        val contentType = headConn.contentType
+        val dispName = nameFromDisposition(headConn.getHeaderField("Content-Disposition"))
+        headConn.disconnect()
+
+        if (code !in 200..299 || total < 2L * 1024L * 1024L || !acceptRanges.contains("bytes", ignoreCase = true)) {
+            return@withContext false
+        }
+        val plan = FableNetworkOptimizer.planForDownload(context, total, fastConn = true)
+        val streams = plan.parallelStreams.coerceIn(1, 6)
+        if (streams < 2) return@withContext false
+
+        val finalName = dispName ?: fallbackName
+        val mime = mimeOf(contentType, finalName)
+        val target = createTarget(finalName, mime) ?: return@withContext false
+        val id = runCatching {
+            repository.start(
+                DownloadEntry(
+                    fileName = target.fileName,
+                    url = url,
+                    filePath = target.displayPath,
+                    mimeType = mime,
+                    totalBytes = total,
+                    fromIncognito = false
+                )
+            )
+        }.getOrElse {
+            target.delete()
+            return@withContext false
+        }
+
+        val tmpFile = File(context.cacheDir, "seg_dl_${id}_${System.currentTimeMillis()}.part")
+        _activeCount.update { it + 1 }
+        try {
+            DownloadService.start(context)
+            notifications.showProgress(id, target.fileName, 0, total)
+            java.io.RandomAccessFile(tmpFile, "rw").use { it.setLength(total) }
+
+            val chunkSize = (total + streams - 1) / streams
+            val progressAtomic = java.util.concurrent.atomic.AtomicLong(0L)
+            val lastUiAtomic = java.util.concurrent.atomic.AtomicLong(0L)
+            val bufSize = plan.socketBufferKb.coerceIn(128, 512) * 1024
+
+            val allOk = coroutineScope {
+                (0 until streams).map { idx ->
+                    val startByte = idx * chunkSize
+                    val endByte = minOf(total - 1, startByte + chunkSize - 1)
+                    async(Dispatchers.IO) {
+                        if (startByte > endByte) return@async true
+                        val partConn = (URL(url).openConnection() as HttpURLConnection).apply {
+                            connectTimeout = 15_000
+                            readTimeout = 45_000
+                            instanceFollowRedirects = true
+                            setRequestProperty("Range", "bytes=$startByte-$endByte")
+                            if (!cookieHeader.isNullOrBlank()) setRequestProperty("Cookie", cookieHeader)
+                            connect()
+                        }
+                        if (partConn.responseCode != HttpURLConnection.HTTP_PARTIAL) {
+                            partConn.disconnect()
+                            return@async false
+                        }
+                        partConn.inputStream.use { input ->
+                            java.io.RandomAccessFile(tmpFile, "rw").use { raf ->
+                                raf.seek(startByte)
+                                val buf = ByteArray(bufSize)
+                                while (true) {
+                                    val n = input.read(buf)
+                                    if (n <= 0) break
+                                    raf.write(buf, 0, n)
+                                    val cur = progressAtomic.addAndGet(n.toLong())
+                                    val now = System.currentTimeMillis()
+                                    val prevT = lastUiAtomic.get()
+                                    if (now - prevT > 400 && lastUiAtomic.compareAndSet(prevT, now)) {
+                                        repository.updateProgress(id, cur, total)
+                                        notifications.showProgress(id, target.fileName, cur, total)
+                                    }
+                                }
+                            }
+                        }
+                        partConn.disconnect()
+                        true
+                    }
+                }.awaitAll().all { it }
+            }
+
+            if (!allOk || progressAtomic.get() != total) {
+                tmpFile.delete()
+                target.delete()
+                repository.setStatus(id, DownloadStatus.FAILED)
+                return@withContext false
+            }
+
+            tmpFile.inputStream().use { src ->
+                target.openOutput().use { dst ->
+                    src.copyTo(dst, 512 * 1024)
+                    dst.flush()
+                    target.sync(dst)
+                }
+            }
+            tmpFile.delete()
+            target.finish()
+            repository.updateProgress(id, total, total)
+            repository.setStatus(id, DownloadStatus.COMPLETED)
+            notifications.showComplete(id, target.fileName, target.contentUri, mime)
+            activityBridge.toast(context.getString(R.string.download_saved, target.locationLabel))
+            true
+        } catch (e: Throwable) {
+            tmpFile.delete()
+            target.delete()
+            runCatching { repository.setStatus(id, DownloadStatus.FAILED) }
+            false
+        } finally {
+            _activeCount.update { (it - 1).coerceAtLeast(0) }
+        }
+    }
 
     private fun fetchStream(url: String, fromIncognito: Boolean): Fetched? {
         if (!isHttp(url)) return null

@@ -3,6 +3,7 @@ package com.fable.browser.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fable.browser.data.model.DataSaverMode
+import com.fable.browser.data.model.DefaultBrowserEngine
 import com.fable.browser.data.model.DohProvider
 import com.fable.browser.data.model.SuperDeviceRange
 import com.fable.browser.data.model.SuperProxyType
@@ -336,6 +337,8 @@ class SettingsViewModel @Inject constructor(
     fun setArchiveMaxTotalMb(v: Int) = edit { store.setArchiveMaxTotalMb(v) }
     fun setArchiveMaxFileMb(v: Int) = edit { store.setArchiveMaxFileMb(v) }
     fun setArchiveStreamBufferMb(v: Int) = edit { store.setArchiveStreamBufferMb(v) }
+    fun setArchiveSplitPartMb(v: Int) = edit { store.setArchiveSplitPartMb(v) }
+    fun setDefaultEngine(v: DefaultBrowserEngine) = edit { store.setDefaultEngine(v) }
     fun setHybridGeckoBlinkBeta(v: Boolean) = edit { store.setHybridGeckoBlinkBeta(v) }
     fun setHybridAutoForGames(v: Boolean) = edit { store.setHybridAutoForGames(v) }
     fun setHybridNativeCpuBoost(v: Boolean) = edit { store.setHybridNativeCpuBoost(v) }

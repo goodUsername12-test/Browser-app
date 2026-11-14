@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.fable.browser.data.model.DataSaverMode
+import com.fable.browser.data.model.DefaultBrowserEngine
 import com.fable.browser.data.model.DohProvider
 import com.fable.browser.data.model.IncognitoAutoWipe
 import com.fable.browser.data.model.MemoryMode
@@ -157,6 +158,7 @@ data class Settings(
     val archiveMaxTotalMb: Int = 600,
     val archiveMaxFileMb: Int = 120,
     val archiveStreamBufferMb: Int = 160,
+    val archiveSplitPartMb: Int = 0,
     val hybridGeckoBlinkBeta: Boolean = true,
     val hybridAutoForGames: Boolean = true,
     val hybridNativeCpuBoost: Boolean = true,
@@ -217,6 +219,12 @@ data class Settings(
             !normalTabShield && !strictTrackingProtection && adBlockEnabled -> PerformanceProfile.BALANCED
             !normalTabShield && !strictTrackingProtection && !adBlockEnabled -> PerformanceProfile.MAX_SPEED
             else -> PerformanceProfile.CUSTOM
+        }
+    val defaultEngine: DefaultBrowserEngine
+        get() = when {
+            !hybridGeckoBlinkBeta -> DefaultBrowserEngine.GECKO_ONLY
+            hybridAutoForGames -> DefaultBrowserEngine.BLINK_GECKO_AUTO
+            else -> DefaultBrowserEngine.BLINK_GECKO_ALL
         }
 }
 
@@ -344,6 +352,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val ARCHIVE_MAX_TOTAL_MB = intPreferencesKey("archive_max_total_mb")
         val ARCHIVE_MAX_FILE_MB = intPreferencesKey("archive_max_file_mb")
         val ARCHIVE_STREAM_BUF_MB = intPreferencesKey("archive_stream_buf_mb")
+        val ARCHIVE_SPLIT_PART_MB = intPreferencesKey("archive_split_part_mb")
         val HYBRID_GECKO_BLINK_BETA = booleanPreferencesKey("hybrid_gecko_blink_beta_v2")
         val HYBRID_AUTO_FOR_GAMES = booleanPreferencesKey("hybrid_auto_for_games")
         val HYBRID_NATIVE_CPU_BOOST = booleanPreferencesKey("hybrid_native_cpu_boost")
@@ -511,6 +520,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             archiveMaxTotalMb = (p[Keys.ARCHIVE_MAX_TOTAL_MB] ?: 600).coerceIn(100, 2000),
             archiveMaxFileMb = (p[Keys.ARCHIVE_MAX_FILE_MB] ?: 120).coerceIn(20, 500),
             archiveStreamBufferMb = (p[Keys.ARCHIVE_STREAM_BUF_MB] ?: 160).coerceIn(32, 512),
+            archiveSplitPartMb = (p[Keys.ARCHIVE_SPLIT_PART_MB] ?: 0).coerceIn(0, 200),
             hybridGeckoBlinkBeta = p[Keys.HYBRID_GECKO_BLINK_BETA] ?: true,
             hybridAutoForGames = p[Keys.HYBRID_AUTO_FOR_GAMES] ?: true,
             hybridNativeCpuBoost = p[Keys.HYBRID_NATIVE_CPU_BOOST] ?: true,
@@ -740,6 +750,24 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setArchiveMaxTotalMb(v: Int) = set(Keys.ARCHIVE_MAX_TOTAL_MB, v.coerceIn(100, 2000))
     suspend fun setArchiveMaxFileMb(v: Int) = set(Keys.ARCHIVE_MAX_FILE_MB, v.coerceIn(20, 500))
     suspend fun setArchiveStreamBufferMb(v: Int) = set(Keys.ARCHIVE_STREAM_BUF_MB, v.coerceIn(32, 512))
+    suspend fun setArchiveSplitPartMb(v: Int) = set(Keys.ARCHIVE_SPLIT_PART_MB, v.coerceIn(0, 200))
+    suspend fun setDefaultEngine(engine: DefaultBrowserEngine) {
+        context.dataStore.edit { p ->
+            when (engine) {
+                DefaultBrowserEngine.BLINK_GECKO_AUTO -> {
+                    p[Keys.HYBRID_GECKO_BLINK_BETA] = true
+                    p[Keys.HYBRID_AUTO_FOR_GAMES] = true
+                }
+                DefaultBrowserEngine.BLINK_GECKO_ALL -> {
+                    p[Keys.HYBRID_GECKO_BLINK_BETA] = true
+                    p[Keys.HYBRID_AUTO_FOR_GAMES] = false
+                }
+                DefaultBrowserEngine.GECKO_ONLY -> {
+                    p[Keys.HYBRID_GECKO_BLINK_BETA] = false
+                }
+            }
+        }
+    }
     suspend fun setHybridGeckoBlinkBeta(v: Boolean) = set(Keys.HYBRID_GECKO_BLINK_BETA, v)
     suspend fun setHybridAutoForGames(v: Boolean) = set(Keys.HYBRID_AUTO_FOR_GAMES, v)
     suspend fun setHybridNativeCpuBoost(v: Boolean) = set(Keys.HYBRID_NATIVE_CPU_BOOST, v)

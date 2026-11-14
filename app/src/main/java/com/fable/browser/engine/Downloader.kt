@@ -87,49 +87,78 @@ class Downloader @Inject constructor(
         }
     }
 
-    fun enqueueUrl(url: String, suggestedName: String?, fromIncognito: Boolean) {
+    fun enqueueUrl(
+        url: String,
+        suggestedName: String?,
+        fromIncognito: Boolean,
+        mimeTypeHint: String? = null,
+        userAgentHint: String? = null,
+        preferBlinkNetwork: Boolean = false
+    ) {
         activityBridge.ensureNotificationPermission()
-        activityBridge.toast(context.getString(R.string.download_started, suggestedName?.takeIf { it.isNotBlank() } ?: fileNameFromUrl(url)))
+        val displayHint = suggestedName?.takeIf { it.isNotBlank() } ?: fileNameFromUrl(url)
+        activityBridge.toast(context.getString(R.string.download_started, displayHint))
         scope.launch {
-            val fallbackName = suggestedName?.takeIf { it.isNotBlank() }?.let { sanitize(it) } ?: fileNameFromUrl(url)
-            if (url.startsWith("data:")) {
+            val rawFallback = suggestedName?.takeIf { it.isNotBlank() }?.let { sanitize(it) } ?: fileNameFromUrl(url)
+            val fallbackName = withExtension(rawFallback, mimeTypeHint)
+            if (url.startsWith("data:", ignoreCase = true)) {
                 val decoded = runCatching { decodeDataUrl(url) }.getOrNull()
                 if (decoded == null) {
                     reportFailure(fallbackName)
                     return@launch
                 }
-                val name = withExtension(fallbackName, decoded.first)
-                runDownload(name, "data:", decoded.first, decoded.second.size.toLong(), fromIncognito, { decoded.second.inputStream() }, null)
+                val effMime = decoded.first ?: mimeTypeHint
+                val name = withExtension(fallbackName, effMime)
+                runDownload(name, "data:", mimeOf(effMime, name), decoded.second.size.toLong(), fromIncognito, { decoded.second.inputStream() }, null)
                 return@launch
             }
             if (!fromIncognito && isHttp(url)) {
-                val segmentedDone = runCatching { tryParallelSegmentedDownload(url, fallbackName) }.getOrDefault(false)
+                val segmentedDone = runCatching { tryParallelSegmentedDownload(url, fallbackName, userAgentHint) }.getOrDefault(false)
                 if (segmentedDone) return@launch
+            }
+            if (preferBlinkNetwork && isHttp(url)) {
+                val blinkStream = runCatching { legacyStream(url, fromIncognito, userAgentHint) }.getOrNull()
+                if (blinkStream != null) {
+                    val name = suggestedName?.takeIf { it.isNotBlank() }?.let { sanitize(it) } ?: blinkStream.fileName ?: fallbackName
+                    val effMime = mimeOf(blinkStream.mimeType ?: mimeTypeHint, name)
+                    runDownload(
+                        fileName = withExtension(name, effMime),
+                        url = url,
+                        mimeType = effMime,
+                        totalBytes = blinkStream.length,
+                        fromIncognito = fromIncognito,
+                        openStream = { blinkStream.stream },
+                        retry = { fetchStream(url, fromIncognito) }
+                    )
+                    return@launch
+                }
             }
             val fetched = runCatching { fetchStream(url, fromIncognito) }.getOrNull()
             if (fetched != null) {
                 val name = suggestedName?.takeIf { it.isNotBlank() }?.let { sanitize(it) } ?: fetched.fileName ?: fallbackName
+                val effMime = mimeOf(fetched.mimeType ?: mimeTypeHint, name)
                 runDownload(
-                    fileName = name,
+                    fileName = withExtension(name, effMime),
                     url = url,
-                    mimeType = mimeOf(fetched.mimeType, name),
+                    mimeType = effMime,
                     totalBytes = fetched.length,
                     fromIncognito = fromIncognito,
                     openStream = { fetched.stream },
-                    retry = { legacyStream(url) }
+                    retry = { legacyStream(url, fromIncognito, userAgentHint) }
                 )
                 return@launch
             }
-            val legacy = runCatching { legacyStream(url) }.getOrNull()
+            val legacy = runCatching { legacyStream(url, fromIncognito, userAgentHint) }.getOrNull()
             if (legacy == null) {
                 reportFailure(fallbackName)
                 return@launch
             }
             val name = suggestedName?.takeIf { it.isNotBlank() }?.let { sanitize(it) } ?: legacy.fileName ?: fallbackName
+            val effMime = mimeOf(legacy.mimeType ?: mimeTypeHint, name)
             runDownload(
-                fileName = name,
+                fileName = withExtension(name, effMime),
                 url = url,
-                mimeType = mimeOf(legacy.mimeType, name),
+                mimeType = effMime,
                 totalBytes = legacy.length,
                 fromIncognito = fromIncognito,
                 openStream = { legacy.stream },
@@ -153,11 +182,18 @@ class Downloader @Inject constructor(
     }
 
     fun saveLocalFile(file: File, fileName: String, mimeType: String, fromIncognito: Boolean) {
+        activityBridge.ensureNotificationPermission()
         scope.launch {
             try {
+                val safeRaw = sanitize(fileName)
+                val finalName = if (mimeType == "application/zip" && !safeRaw.endsWith(".zip", ignoreCase = true)) {
+                    "$safeRaw.zip"
+                } else {
+                    withExtension(safeRaw, mimeType)
+                }
                 runDownload(
-                    fileName = sanitize(fileName),
-                    url = "about:page-code",
+                    fileName = finalName,
+                    url = "about:local-save",
                     mimeType = mimeType,
                     totalBytes = file.length(),
                     fromIncognito = fromIncognito,
@@ -174,14 +210,16 @@ class Downloader @Inject constructor(
 
     private fun isHttp(url: String): Boolean = url.startsWith("http://") || url.startsWith("https://")
 
-    private suspend fun tryParallelSegmentedDownload(url: String, fallbackName: String): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun tryParallelSegmentedDownload(url: String, fallbackName: String, userAgentHint: String? = null): Boolean = withContext(Dispatchers.IO) {
         val cookieHeader = runCatching { android.webkit.CookieManager.getInstance().getCookie(url) }.getOrNull()
+        val ua = userAgentHint?.takeIf { it.isNotBlank() } ?: FableUnifiedEngine.defaultBlinkUserAgent
         val headConn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "HEAD"
             connectTimeout = 8000
             readTimeout = 10_000
             instanceFollowRedirects = true
             if (!cookieHeader.isNullOrBlank()) setRequestProperty("Cookie", cookieHeader)
+            if (ua.isNotBlank()) setRequestProperty("User-Agent", ua)
             connect()
         }
         val code = headConn.responseCode
@@ -241,6 +279,7 @@ class Downloader @Inject constructor(
                             instanceFollowRedirects = true
                             setRequestProperty("Range", "bytes=$startByte-$endByte")
                             if (!cookieHeader.isNullOrBlank()) setRequestProperty("Cookie", cookieHeader)
+                            if (ua.isNotBlank()) setRequestProperty("User-Agent", ua)
                             connect()
                         }
                         if (partConn.responseCode != HttpURLConnection.HTTP_PARTIAL) {
@@ -322,14 +361,20 @@ class Downloader @Inject constructor(
         )
     }
 
-    private fun legacyStream(url: String): Fetched? {
+    private fun legacyStream(url: String, fromIncognito: Boolean = false, userAgentHint: String? = null): Fetched? {
         if (!isHttp(url)) return null
+        val cookieHeader = if (!fromIncognito) {
+            runCatching { android.webkit.CookieManager.getInstance().getCookie(url) }.getOrNull()
+        } else null
+        val ua = userAgentHint?.takeIf { it.isNotBlank() } ?: FableUnifiedEngine.defaultBlinkUserAgent
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 60_000
             instanceFollowRedirects = true
             setRequestProperty("DNT", "1")
             setRequestProperty("Sec-GPC", "1")
+            if (!cookieHeader.isNullOrBlank()) setRequestProperty("Cookie", cookieHeader)
+            if (ua.isNotBlank()) setRequestProperty("User-Agent", ua)
             connect()
         }
         if (conn.responseCode !in 200..299) {
@@ -346,12 +391,14 @@ class Downloader @Inject constructor(
 
     private fun decodeDataUrl(url: String): Pair<String?, ByteArray> {
         val comma = url.indexOf(',')
-        require(comma > 5)
+        require(comma >= 5)
         val meta = url.substring(5, comma)
         val data = url.substring(comma + 1)
         val mime = meta.substringBefore(';').ifBlank { null }
-        val bytes = if (meta.endsWith(";base64")) {
-            android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+        val bytes = if (meta.contains(";base64", ignoreCase = true)) {
+            runCatching { NativeFastEngine.decodeBase64(data) }.getOrElse {
+                android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+            }
         } else {
             URLDecoder.decode(data, "UTF-8").toByteArray()
         }

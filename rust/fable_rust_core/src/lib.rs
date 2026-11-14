@@ -42,7 +42,7 @@ pub extern "C" fn Java_com_fable_browser_engine_RustFastCore_nativeComputePowerP
     let hot_severe = t_guard && thermal_status >= 3;
 
     let clamped_timeout = idle_timeout_sec.clamp(3, 120) as i64;
-    let is_idle = idle_ms >= clamped_timeout * 1000;
+    let is_idle = idle_game_fps > 0 && idle_ms >= clamped_timeout * 1000;
 
     // 1. Target Display Refresh Rate (Hz)
     let mut target_hz: i32 = if !hi_hz {

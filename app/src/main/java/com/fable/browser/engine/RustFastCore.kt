@@ -187,7 +187,7 @@ object RustFastCore {
         val saverActive = settings.batterySaverMaster || lowTriggered
         val hotModerate = settings.batteryThermalGuard && thermalStatus >= 2
         val hotSevere = settings.batteryThermalGuard && thermalStatus >= 3
-        val isIdle = idleMs >= settings.batteryIdleTimeoutSec.coerceIn(3, 120) * 1000L
+        val isIdle = settings.batteryIdleGameFps > 0 && idleMs >= settings.batteryIdleTimeoutSec.coerceIn(3, 120) * 1000L
 
         var targetHz = when {
             !settings.highRefreshRate -> 60

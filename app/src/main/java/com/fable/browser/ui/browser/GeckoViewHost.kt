@@ -142,8 +142,9 @@ private class FableHybridJsBridge(
     fun saveBlobBase64(b64: String?, fileName: String?, mimeType: String?) {
         val cleanB64 = b64?.trim()?.takeIf { it.isNotEmpty() } ?: return
         val safeMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+        val safeName = (fileName?.takeIf { it.isNotBlank() } ?: "download.txt").replace('"', '_')
         val dataUrl = "data:$safeMime;base64,$cleanB64"
-        tab.hybridDownloadHandler?.invoke(dataUrl, "attachment; filename="${fileName ?: "download.txt"}"", safeMime)
+        tab.hybridDownloadHandler?.invoke(dataUrl, "attachment; filename=$safeName", safeMime)
     }
 
     @JavascriptInterface

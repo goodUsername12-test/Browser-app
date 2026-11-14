@@ -186,7 +186,19 @@ data class Settings(
     val recStopOnScreenLock: Boolean = true,
     val recShowTouches: Boolean = false,
     val recShowButtonPresses: Boolean = false,
-    val recZeroLagBlinkMode: Boolean = true
+    val recZeroLagBlinkMode: Boolean = true,
+    val batterySaverMaster: Boolean = false,
+    val batteryAutoLowPct: Int = 20,
+    val batteryThermalGuard: Boolean = true,
+    val batteryAdaptiveRefresh: Boolean = true,
+    val batteryGameMaxFps: Int = 120,
+    val batteryGameRenderScale: Int = 100,
+    val batteryEcoCpu: Boolean = false,
+    val batteryIdleGameFps: Int = 30,
+    val batteryIdleTimeoutSec: Int = 8,
+    val batteryFreezeBgTabs: Boolean = true,
+    val batteryReduceMotion: Boolean = false,
+    val batteryOledDimPct: Int = 0
 ) {
     fun toRecorderConfig(): RecorderConfig = RecorderConfig(
         resolution = recResolution,
@@ -362,6 +374,18 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val REC_SHOW_TOUCHES = booleanPreferencesKey("rec_show_touches")
         val REC_SHOW_BUTTONS = booleanPreferencesKey("rec_show_buttons")
         val REC_ZERO_LAG_BLINK = booleanPreferencesKey("rec_zero_lag_blink")
+        val BAT_SAVER_MASTER = booleanPreferencesKey("bat_saver_master")
+        val BAT_AUTO_LOW_PCT = intPreferencesKey("bat_auto_low_pct")
+        val BAT_THERMAL_GUARD = booleanPreferencesKey("bat_thermal_guard")
+        val BAT_ADAPTIVE_REFRESH = booleanPreferencesKey("bat_adaptive_refresh")
+        val BAT_GAME_MAX_FPS = intPreferencesKey("bat_game_max_fps")
+        val BAT_GAME_RENDER_SCALE = intPreferencesKey("bat_game_render_scale")
+        val BAT_ECO_CPU = booleanPreferencesKey("bat_eco_cpu")
+        val BAT_IDLE_GAME_FPS = intPreferencesKey("bat_idle_game_fps")
+        val BAT_IDLE_TIMEOUT_SEC = intPreferencesKey("bat_idle_timeout_sec")
+        val BAT_FREEZE_BG_TABS = booleanPreferencesKey("bat_freeze_bg_tabs")
+        val BAT_REDUCE_MOTION = booleanPreferencesKey("bat_reduce_motion")
+        val BAT_OLED_DIM_PCT = intPreferencesKey("bat_oled_dim_pct")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -516,7 +540,19 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             recStopOnScreenLock = p[Keys.REC_STOP_LOCK] ?: true,
             recShowTouches = p[Keys.REC_SHOW_TOUCHES] ?: false,
             recShowButtonPresses = p[Keys.REC_SHOW_BUTTONS] ?: false,
-            recZeroLagBlinkMode = p[Keys.REC_ZERO_LAG_BLINK] ?: true
+            recZeroLagBlinkMode = p[Keys.REC_ZERO_LAG_BLINK] ?: true,
+            batterySaverMaster = p[Keys.BAT_SAVER_MASTER] ?: false,
+            batteryAutoLowPct = (p[Keys.BAT_AUTO_LOW_PCT] ?: 20).coerceIn(0, 80),
+            batteryThermalGuard = p[Keys.BAT_THERMAL_GUARD] ?: true,
+            batteryAdaptiveRefresh = p[Keys.BAT_ADAPTIVE_REFRESH] ?: true,
+            batteryGameMaxFps = (p[Keys.BAT_GAME_MAX_FPS] ?: 120).coerceIn(15, 120),
+            batteryGameRenderScale = (p[Keys.BAT_GAME_RENDER_SCALE] ?: 100).coerceIn(50, 100),
+            batteryEcoCpu = p[Keys.BAT_ECO_CPU] ?: false,
+            batteryIdleGameFps = (p[Keys.BAT_IDLE_GAME_FPS] ?: 30).coerceIn(0, 60),
+            batteryIdleTimeoutSec = (p[Keys.BAT_IDLE_TIMEOUT_SEC] ?: 8).coerceIn(3, 60),
+            batteryFreezeBgTabs = p[Keys.BAT_FREEZE_BG_TABS] ?: true,
+            batteryReduceMotion = p[Keys.BAT_REDUCE_MOTION] ?: false,
+            batteryOledDimPct = (p[Keys.BAT_OLED_DIM_PCT] ?: 0).coerceIn(0, 50)
         )
     }.distinctUntilChanged()
 
@@ -734,6 +770,44 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setRecShowTouches(v: Boolean) = set(Keys.REC_SHOW_TOUCHES, v)
     suspend fun setRecShowButtonPresses(v: Boolean) = set(Keys.REC_SHOW_BUTTONS, v)
     suspend fun setRecZeroLagBlinkMode(v: Boolean) = set(Keys.REC_ZERO_LAG_BLINK, v)
+    suspend fun setBatterySaverMaster(v: Boolean) = set(Keys.BAT_SAVER_MASTER, v)
+    suspend fun setBatteryAutoLowPct(v: Int) = set(Keys.BAT_AUTO_LOW_PCT, v.coerceIn(0, 80))
+    suspend fun setBatteryThermalGuard(v: Boolean) = set(Keys.BAT_THERMAL_GUARD, v)
+    suspend fun setBatteryAdaptiveRefresh(v: Boolean) = set(Keys.BAT_ADAPTIVE_REFRESH, v)
+    suspend fun setBatteryGameMaxFps(v: Int) = set(Keys.BAT_GAME_MAX_FPS, v.coerceIn(15, 120))
+    suspend fun setBatteryGameRenderScale(v: Int) = set(Keys.BAT_GAME_RENDER_SCALE, v.coerceIn(50, 100))
+    suspend fun setBatteryEcoCpu(v: Boolean) = set(Keys.BAT_ECO_CPU, v)
+    suspend fun setBatteryIdleGameFps(v: Int) = set(Keys.BAT_IDLE_GAME_FPS, v.coerceIn(0, 60))
+    suspend fun setBatteryIdleTimeoutSec(v: Int) = set(Keys.BAT_IDLE_TIMEOUT_SEC, v.coerceIn(3, 60))
+    suspend fun setBatteryFreezeBgTabs(v: Boolean) = set(Keys.BAT_FREEZE_BG_TABS, v)
+    suspend fun setBatteryReduceMotion(v: Boolean) = set(Keys.BAT_REDUCE_MOTION, v)
+    suspend fun setBatteryOledDimPct(v: Int) = set(Keys.BAT_OLED_DIM_PCT, v.coerceIn(0, 50))
+    suspend fun applyEcoGamingPreset() {
+        context.dataStore.edit {
+            it[Keys.BAT_SAVER_MASTER] = true
+            it[Keys.BAT_THERMAL_GUARD] = true
+            it[Keys.BAT_ADAPTIVE_REFRESH] = true
+            it[Keys.BAT_GAME_MAX_FPS] = 90
+            it[Keys.BAT_GAME_RENDER_SCALE] = 85
+            it[Keys.BAT_ECO_CPU] = true
+            it[Keys.BAT_IDLE_GAME_FPS] = 30
+            it[Keys.BAT_IDLE_TIMEOUT_SEC] = 6
+            it[Keys.BAT_FREEZE_BG_TABS] = true
+        }
+    }
+    suspend fun applyMaxCompetitivePreset() {
+        context.dataStore.edit {
+            it[Keys.BAT_SAVER_MASTER] = false
+            it[Keys.BAT_THERMAL_GUARD] = true
+            it[Keys.BAT_ADAPTIVE_REFRESH] = true
+            it[Keys.BAT_GAME_MAX_FPS] = 120
+            it[Keys.BAT_GAME_RENDER_SCALE] = 100
+            it[Keys.BAT_ECO_CPU] = false
+            it[Keys.BAT_IDLE_GAME_FPS] = 30
+            it[Keys.BAT_IDLE_TIMEOUT_SEC] = 10
+            it[Keys.BAT_OLED_DIM_PCT] = 0
+        }
+    }
 
     suspend fun copyIncognitoFromNormal(s: Settings) {
         context.dataStore.edit {

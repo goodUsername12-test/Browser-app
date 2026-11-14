@@ -32,6 +32,7 @@ import com.fable.browser.ui.settings.SuperIncognitoSettingsScreen
 import com.fable.browser.ui.settings.WifiBoosterSettingsScreen
 import com.fable.browser.ui.settings.HybridBetaSettingsScreen
 import com.fable.browser.ui.settings.ScreenRecorderSettingsScreen
+import com.fable.browser.ui.settings.BatterySaverSettingsScreen
 import com.fable.browser.ui.settings.PerformanceSettingsScreen
 import com.fable.browser.ui.settings.PrivacySettingsScreen
 import com.fable.browser.ui.settings.SettingsScreen
@@ -54,6 +55,7 @@ object Routes {
     const val SETTINGS_DOWNLOADS = "settings/downloads"
     const val SETTINGS_ABOUT = "settings/about"
     const val SETTINGS_PERFORMANCE = "settings/performance"
+    const val SETTINGS_BATTERY = "settings/battery"
     const val SETTINGS_HYBRID_BETA = "settings/hybrid_beta"
     const val SETTINGS_RECORDER = "settings/recorder"
     const val SETTINGS_SUPER = "settings/super"
@@ -153,8 +155,12 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
         composable(Routes.SETTINGS_PERFORMANCE) {
             PerformanceSettingsScreen(
                 onBack = { navController.popIfNotRoot() },
-                onOpenHybridBeta = { navController.navigate(Routes.SETTINGS_HYBRID_BETA) { launchSingleTop = true } }
+                onOpenHybridBeta = { navController.navigate(Routes.SETTINGS_HYBRID_BETA) { launchSingleTop = true } },
+                onOpenBattery = { navController.navigate(Routes.SETTINGS_BATTERY) { launchSingleTop = true } }
             )
+        }
+        composable(Routes.SETTINGS_BATTERY) {
+            BatterySaverSettingsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS_HYBRID_BETA) {
             HybridBetaSettingsScreen(

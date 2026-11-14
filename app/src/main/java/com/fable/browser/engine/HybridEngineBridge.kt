@@ -20,25 +20,37 @@ interface HybridBlinkController {
 }
 
 object HybridEngineBridge {
-    private val GAME_HOSTS = setOf(
+    private val BENCHMARK_HOSTS = setOf(
+        "browserbench.org", "web.basemark.com", "html5test.com"
+    )
+
+    private val PURE_GAME_HOSTS = setOf(
         "bloxd.io", "staging.bloxd.io", "testufo.com", "ufo.test",
         "vsynctester.com", "displayhz.com", "poki.com", "crazygames.com",
         "krunker.io", "shellshock.io", "1v1.lol", "ev.io", "voxiom.io",
         "venge.io", "kirka.io", "kour.io", "miniblox.io", "vectaria.io",
         "deadshot.io", "babylonjs.com", "playcanvas.com",
-        "threejs.org", "itch.io", "coolmathgames.com",
-        "browserbench.org", "web.basemark.com", "html5test.com"
+        "threejs.org", "itch.io", "coolmathgames.com"
     )
 
-    fun isHeavy3dGameUrl(url: String, customDomains: String = ""): Boolean {
-        if (url.contains("hybrid=1", ignoreCase = true)) return true
+    fun isPure3dGameUrl(url: String, customDomains: String = ""): Boolean {
         val host = UrlUtils.host(url)?.removePrefix("www.") ?: return false
-        if (GAME_HOSTS.any { host == it || host.endsWith(".$it") }) return true
+        if (BENCHMARK_HOSTS.any { host == it || host.endsWith(".$it") }) return false
+        if (url.contains("hybrid=1", ignoreCase = true)) return true
+        if (PURE_GAME_HOSTS.any { host == it || host.endsWith(".$it") }) return true
         if (customDomains.isNotBlank()) {
-            val extra = customDomains.split(',', ';', ' ', '\n', '\r', '\t').map { it.trim().lowercase().removePrefix("www.") }.filter { it.isNotEmpty() }
+            val extra = customDomains.split(',', ';', ' ', '\n', '\r', '\t')
+                .map { it.trim().lowercase().removePrefix("www.") }
+                .filter { it.isNotEmpty() && it !in BENCHMARK_HOSTS }
             if (extra.any { host == it || host.endsWith(".$it") }) return true
         }
         return false
+    }
+
+    fun isHeavy3dGameUrl(url: String, customDomains: String = ""): Boolean {
+        val host = UrlUtils.host(url)?.removePrefix("www.")
+        if (host != null && BENCHMARK_HOSTS.any { host == it || host.endsWith(".$it") }) return true
+        return isPure3dGameUrl(url, customDomains)
     }
 
     fun buildCombinedBootstrapScript(
@@ -48,13 +60,15 @@ object HybridEngineBridge {
         superIdentity: SuperIdentity?,
         pageUrl: String
     ): String {
-        val isGame = isHeavy3dGameUrl(pageUrl, settings.hybridCustomDomains)
+        val isPureGame = isPure3dGameUrl(pageUrl, settings.hybridCustomDomains)
+        val isGameOrBench = isHeavy3dGameUrl(pageUrl, settings.hybridCustomDomains)
+        val plan = FableBatteryGovernor.evaluatePlan(settings, isPureGame)
         val hideLocalIp = settings.hybridHideLocalIp && (settings.hideLocalIp || isIncognito || isSuper)
         val gpc = if (isIncognito) settings.incognitoGpc else settings.sendGpc
         val dnt = if (isIncognito) settings.incognitoSendDnt else settings.sendGpc
         val blockBattery = !settings.featureBatteryApi
-        val touchFix = settings.gameTouchFix && settings.hybridCameraAntiShutter
-        val applyIdentity = (isSuper || (isIncognito && settings.incognitoFingerprintProtection) || settings.normalTabShield) && !isGame
+        val touchFix = settings.gameTouchFix && settings.hybridCameraAntiShutter && isPureGame
+        val applyIdentity = (isSuper || (isIncognito && settings.incognitoFingerprintProtection) || settings.normalTabShield) && !isGameOrBench
 
         val cfg = JSONObject().apply {
             put("hideLocalIp", hideLocalIp)
@@ -63,7 +77,12 @@ object HybridEngineBridge {
             put("dnt", dnt)
             put("blockBattery", blockBattery)
             put("touchFix", touchFix)
-            put("isGame", isGame)
+            put("isGame", isPureGame)
+            put("gameMaxFps", plan.targetGameFps)
+            put("renderScalePct", plan.renderScalePercent)
+            put("idleGameFps", settings.batteryIdleGameFps)
+            put("idleTimeoutMs", settings.batteryIdleTimeoutSec.coerceIn(3, 60) * 1000)
+            put("reduceMotion", settings.batteryReduceMotion && !isPureGame)
             put("isIncognito", isIncognito)
             put("isSuper", isSuper)
             put("applyIdentity", applyIdentity)
@@ -643,14 +662,69 @@ object HybridEngineBridge {
                         });
                     }
 
-                    // 4c. 120 FPS Frame Pacing & Heavy Burst Promoter (never suppress post-render FPS timer!)
-                    if (CFG.teleportStabilizer !== false && window.requestAnimationFrame) {
+                    // 4b. Live 3D Render Resolution Scale & Power Plan Updater (Mali/Adreno Fill-Rate Battery Saver)
+                    const rawNativeDpr = window.devicePixelRatio || 1;
+                    const powerState = {
+                        maxFps: CFG.gameMaxFps || 120,
+                        idleFps: CFG.idleGameFps || 0,
+                        idleTimeoutMs: CFG.idleTimeoutMs || 8000,
+                        scalePct: CFG.renderScalePct || 100
+                    };
+                    const applyDprScale = function(pct) {
+                        powerState.scalePct = pct;
+                        try {
+                            if (pct > 0 && pct < 100) {
+                                const scaled = Math.max(0.75, Math.round((rawNativeDpr * pct)) / 100);
+                                Object.defineProperty(window, "devicePixelRatio", {
+                                    configurable: true,
+                                    get: function() { return scaled; }
+                                });
+                            } else {
+                                Object.defineProperty(window, "devicePixelRatio", {
+                                    configurable: true,
+                                    get: function() { return rawNativeDpr; }
+                                });
+                            }
+                        } catch (_) {}
+                    };
+                    if (powerState.scalePct < 100) applyDprScale(powerState.scalePct);
+                    let lastUserInputTs = performance.now();
+                    const markInput = function() { lastUserInputTs = performance.now(); };
+                    window.addEventListener("pointerdown", markInput, { capture: true, passive: true });
+                    window.addEventListener("pointermove", markInput, { capture: true, passive: true });
+                    window.addEventListener("touchstart", markInput, { capture: true, passive: true });
+                    window.addEventListener("keydown", markInput, { capture: true, passive: true });
+                    window.__fableSetPowerPlan = function(maxFps, idleFps, idleTimeoutMs, scalePct) {
+                        powerState.maxFps = maxFps || 120;
+                        powerState.idleFps = idleFps || 0;
+                        powerState.idleTimeoutMs = idleTimeoutMs || 8000;
+                        applyDprScale(scalePct || 100);
+                    };
+
+                    // 4c. Adaptive Battery FPS Cap, Instant Touch-Wake AFK Drop & Burst Promoter
+                    if (window.requestAnimationFrame) {
                         let lastFrameTs = 0;
                         let lastBurstTs = 0;
                         const origRaf = window.requestAnimationFrame;
                         window.requestAnimationFrame = function(cb) {
+                            const nowCheck = performance.now();
+                            const isIdleNow = powerState.idleFps > 0 && (nowCheck - lastUserInputTs) >= powerState.idleTimeoutMs;
+                            const effCap = isIdleNow ? Math.min(powerState.maxFps, powerState.idleFps) : powerState.maxFps;
+                            if (effCap > 0 && effCap < 115) {
+                                const minInterval = 1000 / effCap;
+                                const waitMs = minInterval - (nowCheck - lastFrameTs);
+                                if (waitMs > 4) {
+                                    return window.setTimeout(function() {
+                                        origRaf.call(window, function(ts) {
+                                            lastFrameTs = ts;
+                                            return cb(ts);
+                                        });
+                                    }, Math.floor(waitMs - 2));
+                                }
+                            }
                             return origRaf.call(window, function(ts) {
-                                if (lastFrameTs > 0 && (ts - lastFrameTs) > 20 && (ts - lastBurstTs) > 350) {
+                                if (!isIdleNow && powerState.maxFps >= 90 && CFG.teleportStabilizer !== false &&
+                                    lastFrameTs > 0 && (ts - lastFrameTs) > 20 && (ts - lastBurstTs) > 350) {
                                     lastBurstTs = ts;
                                     try {
                                         if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
@@ -1074,7 +1148,7 @@ object HybridEngineBridge {
                     if (!head || document.getElementById("__fable_hybrid_fast_fonts")) return;
                     const style = document.createElement("style");
                     style.id = "__fable_hybrid_fast_fonts";
-                    const gameHudCss = CFG.isGame ? " #noa-container, .hud, .chat, .scoreboard { font-kerning: none; text-rendering: optimizeSpeed; }" : "";
+                    const gameHudCss = CFG.isGame ? " #noa-container, .hud, .chat, .scoreboard { font-kerning: none; text-rendering: optimizeSpeed; }" : (CFG.reduceMotion ? " *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }" : "");
                     style.textContent = "*, *::before, *::after { -webkit-tap-highlight-color: transparent !important; } canvas, #noa-container { touch-action: none !important; -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; } input, textarea, [contenteditable], [contenteditable='true'] { -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important; touch-action: auto !important; }" + gameHudCss;
                     head.appendChild(style);
 

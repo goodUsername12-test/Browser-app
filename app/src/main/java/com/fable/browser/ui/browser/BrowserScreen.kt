@@ -312,6 +312,28 @@ fun BrowserScreen(
                     .fillMaxWidth()
                     .then(pageInsets)
             ) {
+                LaunchedEffect(
+                    tab?.id,
+                    settings.batterySaverMaster,
+                    settings.batteryGameMaxFps,
+                    settings.batteryGameRenderScale,
+                    settings.batteryIdleGameFps,
+                    settings.batteryIdleTimeoutSec
+                ) {
+                    val wv = captureHandle.blinkView ?: tab?.retainedBlinkView
+                    if (wv != null && tab != null) {
+                        val pureGame = com.fable.browser.engine.HybridEngineBridge.isPure3dGameUrl(
+                            tab.url.value,
+                            settings.hybridCustomDomains
+                        )
+                        val plan = com.fable.browser.engine.FableBatteryGovernor.evaluatePlan(settings, pureGame)
+                        val timeoutMs = settings.batteryIdleTimeoutSec.coerceIn(3, 60) * 1000
+                        wv.evaluateJavascript(
+                            "if(window.__fableSetPowerPlan)window.__fableSetPowerPlan(${plan.targetGameFps},${settings.batteryIdleGameFps},$timeoutMs,${plan.renderScalePercent});",
+                            null
+                        )
+                    }
+                }
                 if (tab != null) {
                     GeckoViewHost(
                         tab = tab,
@@ -338,6 +360,13 @@ fun BrowserScreen(
                             modifier = Modifier.fillMaxSize()
                         )
                     }
+                }
+                if (settings.batteryOledDimPct > 0) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = (settings.batteryOledDimPct.coerceIn(0, 60) / 100f)))
+                    )
                 }
                 if (locked && incognito) {
                     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {

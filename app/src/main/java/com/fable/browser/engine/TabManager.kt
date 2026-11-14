@@ -315,6 +315,11 @@ class TabManager @Inject constructor(
     fun onAppBackgrounded(temporary: Boolean = false) {
         appVisible = false
         FableUnifiedEngine.flushBlinkCookies()
+        if (!temporary && settings.batteryFreezeBgTabs) {
+            _tabs.value.forEach { t ->
+                runCatching { t.retainedBlinkView?.onPause() }
+            }
+        }
         persist()
         idleSweepJob?.cancel()
         activeTab?.session?.takeIf { it.isOpen }?.setActive(false)
@@ -334,6 +339,7 @@ class TabManager @Inject constructor(
 
     fun onAppForegrounded() {
         appVisible = true
+        runCatching { activeTab?.retainedBlinkView?.onResume() }
         hiddenUnloadJob?.cancel()
         restartIdleSweep()
         activeTab?.let { tab ->

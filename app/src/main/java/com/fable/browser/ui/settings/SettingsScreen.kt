@@ -10,6 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Backup
+import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Info
@@ -115,6 +116,14 @@ fun SettingsScreen(
             subtitle = "${settings.performanceProfile.label}  ·  Tabs: ${settings.tabUnloadMode.label}",
             icon = Icons.Outlined.Speed,
             onClick = { onNavigate(Routes.SETTINGS_PERFORMANCE) }
+        )
+        ListDivider()
+        SettingRow(
+            title = "Battery & Eco Gaming",
+            subtitle = (if (settings.batterySaverMaster) "Saver ON" else "Adaptive") +
+                "  ·  Games: ${settings.batteryGameMaxFps} FPS @ ${settings.batteryGameRenderScale}% 3D",
+            icon = Icons.Outlined.BatteryChargingFull,
+            onClick = { onNavigate(Routes.SETTINGS_BATTERY) }
         )
         ListDivider()
         SettingRow(

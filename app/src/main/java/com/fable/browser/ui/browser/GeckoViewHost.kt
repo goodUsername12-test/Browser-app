@@ -33,7 +33,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fable.browser.engine.BrowserTab
+import com.fable.browser.engine.FableBatteryGovernor
 import com.fable.browser.engine.FableUnifiedEngine
+import com.fable.browser.engine.HybridEngineBridge
 import com.fable.browser.engine.FindMatch
 import com.fable.browser.engine.HybridBlinkController
 import com.fable.browser.engine.NativeFastEngine
@@ -627,9 +629,10 @@ fun GeckoViewHost(
             captureHandle.hybridActive = hybridBlink
             HighRefreshRateEnforcer.applyToViewTree(container)
             val target = session
-            FableUnifiedEngine.setFrameMonitorActive(hybridBlink)
+            val isPureGame = hybridBlink && HybridEngineBridge.isPure3dGameUrl(currentUrl)
+            FableUnifiedEngine.setFrameMonitorActive(isPureGame)
             if (hybridBlink) {
-                NativeFastEngine.setGameBoost(true)
+                NativeFastEngine.setGameBoost(isPureGame)
                 if (tab.hibernateGeckoWhenHybrid) {
                     if (gv.session != null) {
                         runCatching { gv.releaseSession() }

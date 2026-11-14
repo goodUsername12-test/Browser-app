@@ -19,6 +19,7 @@ import com.fable.browser.ui.components.SwitchRow
 fun PerformanceSettingsScreen(
     onBack: () -> Unit,
     onOpenHybridBeta: () -> Unit = {},
+    onOpenBattery: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -35,6 +36,14 @@ fun PerformanceSettingsScreen(
     val deviceCores = remember { com.fable.browser.engine.MemoryPolicy.cpuCores() }
 
     SettingsPage(title = "Performance", onBack = onBack, viewModel = viewModel) {
+        SectionHeader("Battery & Eco Gaming (Rust Power Governor)")
+        SettingRow(
+            title = "Battery Saver & In-Game Eco Controls",
+            subtitle = "Set 3D game FPS cap (${settings.batteryGameMaxFps} FPS), 3D render resolution (${settings.batteryGameRenderScale}%), AFK idle drop, Eco CPU cores, and Thermal Guard",
+            onClick = onOpenBattery
+        )
+        ListDivider()
+
         SectionHeader("Optimizer")
         SwitchRow(
             title = "Weak device optimizer",

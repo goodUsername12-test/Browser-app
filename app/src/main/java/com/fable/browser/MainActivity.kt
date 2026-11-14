@@ -22,6 +22,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import android.view.KeyEvent
+import android.view.MotionEvent
+import com.fable.browser.engine.FableBatteryGovernor
 import com.fable.browser.engine.ScreenRecorderManager
 import com.fable.browser.util.FreezeWatchdog
 import com.fable.browser.util.HighRefreshRateEnforcer
@@ -76,6 +78,7 @@ class MainActivity : FragmentActivity() {
         window.setFormat(android.graphics.PixelFormat.OPAQUE)
         enableEdgeToEdge()
 
+        FableBatteryGovernor.init(this)
         activityBridge.bind(this)
 
         if (tabManager.tabs.value.isEmpty()) tabManager.restoreOrCreate()
@@ -142,15 +145,26 @@ class MainActivity : FragmentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 settingsStore.settings
-                    .map { it.highRefreshRate to it.recShowButtonPresses }
-                    .distinctUntilChanged()
-                    .collect { (high, showButtons) ->
-                        currentHighRefresh = high
-                        currentShowButtonPresses = showButtons
-                        runCatching { applyRefreshRate(high) }
+                    .collect { s ->
+                        currentHighRefresh = s.highRefreshRate && !s.batterySaverMaster
+                        currentShowButtonPresses = s.recShowButtonPresses
+                        val isGame = tabManager.activeTab?.let {
+                            com.fable.browser.engine.HybridEngineBridge.isPure3dGameUrl(it.url.value, s.hybridCustomDomains)
+                        } ?: false
+                        val plan = FableBatteryGovernor.evaluatePlan(s, isGame)
+                        runCatching {
+                            HighRefreshRateEnforcer.applyCustomRateToWindow(this@MainActivity, plan.targetDisplayHz.toFloat())
+                        }
                     }
             }
         }
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        if (ev?.actionMasked == MotionEvent.ACTION_DOWN || ev?.actionMasked == MotionEvent.ACTION_MOVE) {
+            FableBatteryGovernor.onUserInteraction()
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     private fun applyRefreshRate(high: Boolean) {

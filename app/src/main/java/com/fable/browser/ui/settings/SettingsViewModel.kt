@@ -366,6 +366,26 @@ class SettingsViewModel @Inject constructor(
     fun setRecShowTouches(v: Boolean) = edit { store.setRecShowTouches(v) }
     fun setRecShowButtonPresses(v: Boolean) = edit { store.setRecShowButtonPresses(v) }
     fun setRecZeroLagBlinkMode(v: Boolean) = edit { store.setRecZeroLagBlinkMode(v) }
+    fun setBatterySaverMaster(v: Boolean) = edit { store.setBatterySaverMaster(v) }
+    fun setBatteryAutoLowPct(v: Int) = edit { store.setBatteryAutoLowPct(v) }
+    fun setBatteryThermalGuard(v: Boolean) = edit { store.setBatteryThermalGuard(v) }
+    fun setBatteryAdaptiveRefresh(v: Boolean) = edit { store.setBatteryAdaptiveRefresh(v) }
+    fun setBatteryGameMaxFps(v: Int) = edit { store.setBatteryGameMaxFps(v) }
+    fun setBatteryGameRenderScale(v: Int) = edit { store.setBatteryGameRenderScale(v) }
+    fun setBatteryEcoCpu(v: Boolean) = edit { store.setBatteryEcoCpu(v) }
+    fun setBatteryIdleGameFps(v: Int) = edit { store.setBatteryIdleGameFps(v) }
+    fun setBatteryIdleTimeoutSec(v: Int) = edit { store.setBatteryIdleTimeoutSec(v) }
+    fun setBatteryFreezeBgTabs(v: Boolean) = edit { store.setBatteryFreezeBgTabs(v) }
+    fun setBatteryReduceMotion(v: Boolean) = edit { store.setBatteryReduceMotion(v) }
+    fun setBatteryOledDimPct(v: Int) = edit { store.setBatteryOledDimPct(v) }
+    fun applyEcoGamingPreset() = edit {
+        store.applyEcoGamingPreset()
+        _message.value = "Applied Eco Gaming Battery Preset (90 FPS, 85% 3D Scale, Eco CPU)"
+    }
+    fun applyMaxCompetitivePreset() = edit {
+        store.applyMaxCompetitivePreset()
+        _message.value = "Applied Competitive 120 Hz Preset (100% Scale, Big-Core Turbo)"
+    }
     fun resetHybridSiteOverrides(context: android.content.Context) {
         runCatching {
             context.getSharedPreferences("fable_hybrid_tab_state", android.content.Context.MODE_PRIVATE)

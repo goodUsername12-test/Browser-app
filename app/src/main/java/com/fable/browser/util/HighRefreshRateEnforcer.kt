@@ -32,6 +32,34 @@ object HighRefreshRateEnforcer {
         }
     }.getOrNull()
 
+    fun applyCustomRateToWindow(activity: Activity, desiredHz: Float) {
+        val clamped = desiredHz.coerceIn(30f, 144f)
+        if (clamped <= 62f) {
+            applyToWindow(activity, false)
+            return
+        }
+        runCatching {
+            val window = activity.window ?: return
+            val display = resolveDisplay(activity) ?: return
+            val current = display.mode
+            val modes = display.supportedModes.toList()
+            val bestMatch = modes
+                .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
+                .minByOrNull { kotlin.math.abs(it.refreshRate - clamped) }
+                ?: modes.minByOrNull { kotlin.math.abs(it.refreshRate - clamped) }
+            targetRefreshRate = clamped
+            val attrs = window.attributes
+            val modeId = bestMatch?.modeId ?: 0
+            if (attrs.preferredDisplayModeId != modeId || attrs.preferredRefreshRate != clamped) {
+                attrs.preferredDisplayModeId = modeId
+                attrs.preferredRefreshRate = clamped
+                window.attributes = attrs
+            }
+            setPowerSavingsBalanced(window, clamped < 100f)
+            applyToViewTree(window.decorView, clamped)
+        }
+    }
+
     fun applyToWindow(activity: Activity, highRefresh: Boolean) {
         runCatching {
             val window = activity.window ?: return

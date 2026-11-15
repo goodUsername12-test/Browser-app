@@ -348,6 +348,12 @@ class SettingsViewModel @Inject constructor(
     fun setAgentReactionIntervalMs(v: Int) = edit { store.setAgentReactionIntervalMs(v) }
     fun setAgentJoystickCenterX(v: Int) = edit { store.setAgentJoystickCenterX(v) }
     fun setAgentJoystickCenterY(v: Int) = edit { store.setAgentJoystickCenterY(v) }
+    fun setAgentAttackBtnX(v: Int) = edit { store.setAgentAttackBtnX(v) }
+    fun setAgentAttackBtnY(v: Int) = edit { store.setAgentAttackBtnY(v) }
+    fun setAgentJumpBtnX(v: Int) = edit { store.setAgentJumpBtnX(v) }
+    fun setAgentJumpBtnY(v: Int) = edit { store.setAgentJumpBtnY(v) }
+    fun setAgentCameraSensitivityPct(v: Int) = edit { store.setAgentCameraSensitivityPct(v) }
+    fun setOwnerAutoLockMinutes(v: Int) = edit { store.setOwnerAutoLockMinutes(v) }
     fun setAgentShowHudOverlay(v: Boolean) = edit { store.setAgentShowHudOverlay(v) }
     fun setAgentLocalLlmEndpoint(v: String) = edit { store.setAgentLocalLlmEndpoint(v); _message.value = "Saved AI model endpoint" }
     fun setRiskZonePolicy(zone: AgentRiskZone, policy: RiskZonePolicy) = edit { store.setRiskZonePolicy(zone, policy) }

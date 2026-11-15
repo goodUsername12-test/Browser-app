@@ -429,7 +429,7 @@ fun BrowserScreen(
             }
         }
 
-        if (settings.agentShowHudOverlay && (agentState.running || agentState.pendingConfirmation != null || agentState.activeInputsLabel != "None")) {
+        if (settings.agentShowHudOverlay && (agentState.running || agentState.pendingConfirmation != null || agentState.activeInputsLabel != "None" || agentState.ownerResearchUnlocked)) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = if (agentState.pendingConfirmation != null) Color(0xE67F1D1D) else Color(0xCC0F172A),
@@ -443,10 +443,11 @@ fun BrowserScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (agentState.pendingConfirmation != null) {
-                            "⚠️ AI Confirm Needed (Tap)"
-                        } else {
-                            "🤖 ${agentState.statusLine.take(32)}"
+                        text = when {
+                            agentState.pendingConfirmation != null -> "⚠️ AI Confirm Needed (Tap)"
+                            agentState.ownerResearchUnlocked && !agentState.running -> "🔓 OWNER BETA · ${agentState.statusLine.take(22)}"
+                            agentState.ownerResearchUnlocked -> "🔓🤖 ${agentState.statusLine.take(28)}"
+                            else -> "🤖 ${agentState.statusLine.take(32)}"
                         },
                         color = Color.White,
                         style = MaterialTheme.typography.labelSmall,
@@ -573,7 +574,8 @@ fun BrowserScreen(
             onOpenAgentSettings = {
                 agentSheetOpen = false
                 onOpenAgentSettings()
-            }
+            },
+            onLockOwnerMode = viewModel.agentEngine::lockOwnerModeNow
         )
     }
 

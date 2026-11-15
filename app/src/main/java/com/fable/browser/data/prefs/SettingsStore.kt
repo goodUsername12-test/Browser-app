@@ -210,6 +210,12 @@ data class Settings(
     val agentReactionIntervalMs: Int = 60,
     val agentJoystickCenterX: Int = 18,
     val agentJoystickCenterY: Int = 74,
+    val agentAttackBtnX: Int = 78,
+    val agentAttackBtnY: Int = 58,
+    val agentJumpBtnX: Int = 86,
+    val agentJumpBtnY: Int = 74,
+    val agentCameraSensitivityPct: Int = 100,
+    val ownerAutoLockMinutes: Int = 30,
     val agentShowHudOverlay: Boolean = true,
     val agentLocalLlmEndpoint: String = "",
     val riskAccessibility: RiskZonePolicy = RiskZonePolicy.ALLOWED,
@@ -612,6 +618,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             agentReactionIntervalMs = (p[Keys.AGENT_REACTION_MS] ?: 60).coerceIn(40, 200),
             agentJoystickCenterX = (p[Keys.AGENT_JOY_X] ?: 18).coerceIn(8, 40),
             agentJoystickCenterY = (p[Keys.AGENT_JOY_Y] ?: 74).coerceIn(50, 90),
+            agentAttackBtnX = (p[Keys.AGENT_ATK_X] ?: 78).coerceIn(45, 96),
+            agentAttackBtnY = (p[Keys.AGENT_ATK_Y] ?: 58).coerceIn(25, 94),
+            agentJumpBtnX = (p[Keys.AGENT_JUMP_X] ?: 86).coerceIn(45, 96),
+            agentJumpBtnY = (p[Keys.AGENT_JUMP_Y] ?: 74).coerceIn(30, 95),
+            agentCameraSensitivityPct = (p[Keys.AGENT_CAM_SENS] ?: 100).coerceIn(40, 220),
+            ownerAutoLockMinutes = (p[Keys.OWNER_AUTOLOCK_MIN] ?: 30).coerceIn(5, 240),
             agentShowHudOverlay = p[Keys.AGENT_SHOW_HUD] ?: true,
             agentLocalLlmEndpoint = p[Keys.AGENT_LLM_ENDPOINT] ?: "",
             riskAccessibility = enum(p[Keys.RISK_ACCESSIBILITY], RiskZonePolicy.ALLOWED),
@@ -815,6 +827,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setAgentReactionIntervalMs(v: Int) = set(Keys.AGENT_REACTION_MS, v.coerceIn(40, 200))
     suspend fun setAgentJoystickCenterX(v: Int) = set(Keys.AGENT_JOY_X, v.coerceIn(8, 40))
     suspend fun setAgentJoystickCenterY(v: Int) = set(Keys.AGENT_JOY_Y, v.coerceIn(50, 90))
+    suspend fun setAgentAttackBtnX(v: Int) = set(Keys.AGENT_ATK_X, v.coerceIn(45, 96))
+    suspend fun setAgentAttackBtnY(v: Int) = set(Keys.AGENT_ATK_Y, v.coerceIn(25, 94))
+    suspend fun setAgentJumpBtnX(v: Int) = set(Keys.AGENT_JUMP_X, v.coerceIn(45, 96))
+    suspend fun setAgentJumpBtnY(v: Int) = set(Keys.AGENT_JUMP_Y, v.coerceIn(30, 95))
+    suspend fun setAgentCameraSensitivityPct(v: Int) = set(Keys.AGENT_CAM_SENS, v.coerceIn(40, 220))
+    suspend fun setOwnerAutoLockMinutes(v: Int) = set(Keys.OWNER_AUTOLOCK_MIN, v.coerceIn(5, 240))
     suspend fun setAgentShowHudOverlay(v: Boolean) = set(Keys.AGENT_SHOW_HUD, v)
     suspend fun setAgentLocalLlmEndpoint(v: String) = set(Keys.AGENT_LLM_ENDPOINT, v.trim())
     suspend fun setRiskZonePolicy(zone: AgentRiskZone, policy: RiskZonePolicy) {

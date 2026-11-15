@@ -280,3 +280,121 @@ pub extern "C" fn Java_com_fable_browser_engine_RustFastCore_nativeComputeContro
         | ((cy_u & 0xFF) << 24)
         | (should_attack << 32)
 }
+
+
+#[no_mangle]
+pub extern "C" fn Java_com_fable_browser_engine_RustFastCore_nativeComputeControlVectorV2(
+    _env: *mut c_void,
+    _cls: *mut c_void,
+    target_x_permille: i32,
+    target_y_permille: i32,
+    prev_x_permille: i32,
+    prev_y_permille: i32,
+    coverage_permille: i32,
+    confidence: i32,
+    mode_code: i32,
+    strafe_phase: i32,
+    cam_sensitivity_pct: i32,
+) -> i64 {
+    if confidence < 15 {
+        return 0;
+    }
+    let tx = target_x_permille.clamp(0, 1000);
+    let ty = target_y_permille.clamp(0, 1000);
+    let px = if prev_x_permille < 0 { tx } else { prev_x_permille.clamp(0, 1000) };
+    let py = if prev_y_permille < 0 { ty } else { prev_y_permille.clamp(0, 1000) };
+    let cov = coverage_permille.clamp(0, 1000);
+    let sens = cam_sensitivity_pct.clamp(40, 220);
+
+    // Predictive velocity lead for moving players/mobs
+    let vx = (tx - px).clamp(-180, 180);
+    let vy = (ty - py).clamp(-140, 140);
+    let lead_x = (tx + (vx * 55) / 100).clamp(0, 1000);
+    let lead_y = (ty + (vy * 35) / 100).clamp(0, 1000);
+
+    let raw_err_x = lead_x - 500;
+    let raw_err_y = lead_y - 480;
+
+    // Micro-deadzone prevents camera jitter when locked on target
+    let err_x = if raw_err_x.abs() <= 14 { 0 } else { raw_err_x };
+    let err_y = if raw_err_y.abs() <= 16 { 0 } else { raw_err_y };
+
+    let cam_dx = ((err_x * 24 * sens) / 10000).clamp(-100, 100);
+    let cam_dy = ((err_y * 15 * sens) / 10000).clamp(-70, 70);
+
+    // mode_code: 0 = APPROACH, 1 = FOLLOW, 2 = COMBAT, 3 = MINE_HARVEST
+    let (joy_x, joy_y, tap_attack, hold_primary, jump_tap) = match mode_code {
+        1 => {
+            // FOLLOW: smooth elastic distance keeping
+            let jy = if cov < 88 {
+                -(105 - cov).clamp(25, 95)
+            } else if cov > 168 {
+                42
+            } else {
+                0
+            };
+            let jx = (err_x / 9).clamp(-40, 40);
+            let jump = if jy < -70 && (strafe_phase % 14 == 0) { 1i64 } else { 0i64 };
+            (jx, jy, 0i64, 0i64, jump)
+        }
+        2 => {
+            // COMBAT: fast predictive tracking, alternating orbit strafe, sprint-jump & attack
+            let jy = if cov < 80 {
+                -92
+            } else if cov > 195 {
+                48
+            } else {
+                -35
+            };
+            let orbit_dir = if ((strafe_phase / 6) & 1) == 0 { 1 } else { -1 };
+            let jx = if err_x.abs() < 175 {
+                orbit_dir * 56
+            } else {
+                (err_x / 6).clamp(-65, 65)
+            };
+            let aligned = err_x.abs() <= 120 && err_y.abs() <= 135 && cov >= 16;
+            let atk = if aligned { 1i64 } else { 0i64 };
+            let jump = if in_range_combat(cov) && (strafe_phase % 9 == 0) { 1i64 } else { 0i64 };
+            (jx, jy, atk, 0i64, jump)
+        }
+        3 => {
+            // MINE / HARVEST: approach resource block/tree/ore & hold primary break button
+            let jy = if cov < 118 {
+                -(125 - cov).clamp(24, 85)
+            } else {
+                0
+            };
+            let jx = (err_x / 10).clamp(-35, 35);
+            let hold = if err_x.abs() <= 110 && err_y.abs() <= 130 && cov >= 45 { 1i64 } else { 0i64 };
+            (jx, jy, 0i64, hold, 0i64)
+        }
+        _ => {
+            // APPROACH: walk cleanly to visible target
+            let jy = if cov < 115 {
+                -(120 - cov).clamp(22, 92)
+            } else {
+                0
+            };
+            let jx = (err_x / 8).clamp(-45, 45);
+            (jx, jy, 0i64, 0i64, 0i64)
+        }
+    };
+
+    let jx_u = (joy_x + 128).clamp(28, 228) as i64;
+    let jy_u = (joy_y + 128).clamp(28, 228) as i64;
+    let cx_u = (cam_dx + 128).clamp(28, 228) as i64;
+    let cy_u = (cam_dy + 128).clamp(28, 228) as i64;
+
+    (jx_u & 0xFF)
+        | ((jy_u & 0xFF) << 8)
+        | ((cx_u & 0xFF) << 16)
+        | ((cy_u & 0xFF) << 24)
+        | ((tap_attack & 0x01) << 32)
+        | ((hold_primary & 0x01) << 33)
+        | ((jump_tap & 0x01) << 34)
+}
+
+#[inline]
+fn in_range_combat(cov: i32) -> bool {
+    cov >= 30 && cov <= 145
+}

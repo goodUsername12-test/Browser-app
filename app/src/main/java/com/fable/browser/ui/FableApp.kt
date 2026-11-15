@@ -158,7 +158,14 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
                 onBack = { navController.popIfNotRoot() },
                 agentState = agentState,
                 onDownloadCompactModel = viewModel.agentEngine::downloadCompactModelPreset,
-                onImportModelUri = viewModel.agentEngine::importLocalModelUri
+                onImportModelUri = viewModel.agentEngine::importLocalModelUri,
+                onLoadModel = viewModel.agentEngine::loadAndWarmupModel,
+                onUnloadModel = viewModel.agentEngine::unloadModelNow,
+                onCreateOwnerPassword = viewModel.agentEngine::createOwnerPassword,
+                onUnlockOwnerPassword = viewModel.agentEngine::unlockOwnerModeWithPassword,
+                onBiometricOwnerResult = viewModel.agentEngine::onBiometricOwnerUnlockResult,
+                onLockOwnerMode = viewModel.agentEngine::lockOwnerModeNow,
+                onResetOwnerMode = viewModel.agentEngine::resetOwnerModeCredentials
             )
         }
         composable(Routes.SETTINGS_GENERAL) {

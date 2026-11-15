@@ -25,7 +25,9 @@ import kotlin.math.abs
 object FableVisionAndOcr {
     private const val GRID_W = 96
     private const val GRID_H = 54
+    private const val GRID_CELLS = GRID_W * GRID_H
     private var prevGrid: IntArray? = null
+    private val scratchGrid = IntArray(GRID_CELLS)
 
     private val recognizer by lazy {
         runCatching { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }.getOrNull()
@@ -44,7 +46,7 @@ object FableVisionAndOcr {
         val view: View = FableScreenInputController.getAttachedView() ?: return@withContext null
         if (view.width <= 8 || view.height <= 8 || !view.isShown) return@withContext null
 
-        val scale = (targetMaxWidth.toFloat() / view.width.toFloat()).coerceIn(0.15f, 1.0f)
+        val scale = (targetMaxWidth.toFloat() / view.width.toFloat()).coerceIn(0.14f, 1.0f)
         val outW = (view.width * scale).toInt().coerceAtLeast(64)
         val outH = (view.height * scale).toInt().coerceAtLeast(36)
 
@@ -114,6 +116,22 @@ object FableVisionAndOcr {
         }
     }
 
+    fun findBestInputBoxCoordinate(obs: ScreenObservation?, fieldHint: String): Pair<Int, Int>? {
+        val blocks = obs?.ocrBlocks ?: return null
+        if (blocks.isEmpty()) return null
+        val hint = fieldHint.trim().lowercase()
+        if (hint.isNotEmpty()) {
+            val exact = blocks.firstOrNull { it.text.contains(hint, ignoreCase = true) }
+            if (exact != null) return exact.normCenterX to exact.normCenterY
+        }
+        val genericHints = listOf("search", "type", "message", "chat", "enter", "username", "email", "ask", "prompt", "query")
+        val fallback = blocks.firstOrNull { b ->
+            val l = b.text.lowercase()
+            genericHints.any { l.contains(it) }
+        }
+        return fallback?.let { it.normCenterX to it.normCenterY }
+    }
+
     suspend fun observeFullScreen(): ScreenObservation? {
         val t0 = SystemClock.uptimeMillis()
         val bmp = captureScreenOnlyBitmap(720) ?: return null
@@ -149,12 +167,12 @@ object FableVisionAndOcr {
 
     suspend fun waitUntilScreenVisuallyReady(
         maxWaitMs: Long = 10_000L,
-        pollMs: Long = 220L,
+        pollMs: Long = 200L,
         onProgress: ((String) -> Unit)? = null
     ): Boolean {
         val start = SystemClock.uptimeMillis()
         var stableStreak = 0
-        delay(260L)
+        delay(220L)
         while (SystemClock.uptimeMillis() - start < maxWaitMs) {
             val bmp = captureScreenOnlyBitmap(320)
             if (bmp != null) {
@@ -173,6 +191,7 @@ object FableVisionAndOcr {
         return false
     }
 
+    @Synchronized
     fun analyzeFastTarget(
         bmp: Bitmap,
         targetQuery: String,
@@ -185,15 +204,14 @@ object FableVisionAndOcr {
         } else {
             Bitmap.createScaledBitmap(bmp, GRID_W, GRID_H, false)
         }
-        val pixels = IntArray(GRID_W * GRID_H)
-        scaled.getPixels(pixels, 0, GRID_W, 0, 0, GRID_W, GRID_H)
+        scaled.getPixels(scratchGrid, 0, GRID_W, 0, 0, GRID_W, GRID_H)
         if (scaled !== bmp) scaled.recycle()
 
         val prev = prevGrid
         var diffCount = 0
-        if (prev != null && prev.size == pixels.size) {
-            for (i in pixels.indices) {
-                val p1 = pixels[i]
+        if (prev != null && prev.size == GRID_CELLS) {
+            for (i in 0 until GRID_CELLS) {
+                val p1 = scratchGrid[i]
                 val p0 = prev[i]
                 val dr = abs(((p1 ushr 16) and 0xFF) - ((p0 ushr 16) and 0xFF))
                 val dg = abs(((p1 ushr 8) and 0xFF) - ((p0 ushr 8) and 0xFF))
@@ -201,63 +219,82 @@ object FableVisionAndOcr {
                 if (dr + dg + db > 42) diffCount++
             }
         }
-        prevGrid = pixels
-        val diffPermille = if (prev == null) 0 else ((diffCount * 1000) / pixels.size).coerceIn(0, 1000)
+        val nextPrev = prev ?: IntArray(GRID_CELLS)
+        System.arraycopy(scratchGrid, 0, nextPrev, 0, GRID_CELLS)
+        prevGrid = nextPrev
+
+        val diffPermille = if (prev == null) 0 else ((diffCount * 1000) / GRID_CELLS).coerceIn(0, 1000)
 
         val q = targetQuery.lowercase().trim()
-        val lookForCow = q.contains("cow") || q.contains("sheep") || q.contains("pig") || q.contains("animal") || q.contains("mob")
+        val lookForCow = q.contains("cow") || q.contains("animal") || q.contains("mob")
+        val lookForSheep = q.contains("sheep")
+        val lookForPig = q.contains("pig")
         val lookForTreeOrWood = q.contains("tree") || q.contains("wood") || q.contains("log")
-        val lookForDiamondOrGold = q.contains("diamond") || q.contains("gold") || q.contains("ore")
+        val lookForDiamondOrGold = q.contains("diamond") || q.contains("gold") || q.contains("iron") || q.contains("coal") || q.contains("ore")
+        val lookForChestOrBed = q.contains("chest") || q.contains("bed") || q.contains("crate")
 
         var sumX = 0L
         var sumY = 0L
         var sumW = 0L
         var matchedCells = 0
 
-        val yStart = (GRID_H * 0.16f).toInt()
-        val yEnd = (GRID_H * 0.80f).toInt()
+        val yStart = (GRID_H * 0.14f).toInt()
+        val yEnd = (GRID_H * 0.82f).toInt()
         val xStart = (GRID_W * 0.06f).toInt()
         val xEnd = (GRID_W * 0.94f).toInt()
 
         for (gy in yStart until yEnd) {
             val rowOff = gy * GRID_W
             for (gx in xStart until xEnd) {
-                // Skip bottom-left joystick HUD & right-side action buttons
+                // Mask bottom-left joystick HUD & right-side action buttons
                 if (gx < GRID_W * 0.28 && gy > GRID_H * 0.56) continue
-                if (gx > GRID_W * 0.78 && gy > GRID_H * 0.54) continue
+                if (gx > GRID_W * 0.76 && gy > GRID_H * 0.52) continue
 
-                val c = pixels[rowOff + gx]
+                val c = scratchGrid[rowOff + gx]
                 val r = (c ushr 16) and 0xFF
                 val g = (c ushr 8) and 0xFF
                 val b = c and 0xFF
 
-                // Sky & grass background rejection for voxel/3D worlds
                 val isSky = b > 155 && g > 120 && b > r + 35 && gy < GRID_H / 2
                 val isGrass = g > r + 22 && g > b + 28
                 if (isSky || isGrass) continue
 
                 var weight = 0
-                if (lookForCow) {
-                    // Cow / animal voxel colors: brown/tan hide + bright white patches
-                    val isBrownHide = r in 75..175 && g in 45..130 && b in 25..95 && r > b + 25
-                    val isWhitePatch = r > 205 && g > 205 && b > 200 && gy > GRID_H * 0.25
-                    if (isBrownHide) weight = 4 else if (isWhitePatch) weight = 2
-                } else if (lookForTreeOrWood) {
-                    val isWood = r in 85..165 && g in 55..115 && b in 20..70 && r > g + 15
-                    if (isWood) weight = 4
-                } else if (lookForDiamondOrGold) {
-                    val isDiamond = b > 180 && g > 175 && r < 110
-                    val isGold = r > 195 && g > 165 && b < 90
-                    if (isDiamond || isGold) weight = 5
-                } else {
-                    // Player / character / dynamic target: motion contrast + distinct non-terrain figure
-                    val moved = if (prev != null) {
-                        val p0 = prev[rowOff + gx]
-                        abs(r - ((p0 ushr 16) and 0xFF)) + abs(g - ((p0 ushr 8) and 0xFF)) + abs(b - (p0 and 0xFF)) > 48
-                    } else false
-                    val saturation = maxOf(r, g, b) - minOf(r, g, b)
-                    if (moved && saturation > 28) weight = 4
-                    else if (saturation > 55 && gy in (GRID_H / 4)..(GRID_H * 3 / 4)) weight = 2
+                when {
+                    lookForCow -> {
+                        val isBrownHide = r in 75..175 && g in 45..130 && b in 25..95 && r > b + 25
+                        val isWhitePatch = r > 205 && g > 205 && b > 200 && gy > GRID_H * 0.24
+                        if (isBrownHide) weight = 4 else if (isWhitePatch) weight = 2
+                    }
+                    lookForSheep -> {
+                        if (r > 205 && g > 205 && b > 200 && abs(r - b) < 22) weight = 4
+                    }
+                    lookForPig -> {
+                        if (r > 185 && g in 115..175 && b in 115..175 && r > g + 22) weight = 4
+                    }
+                    lookForTreeOrWood -> {
+                        if (r in 80..168 && g in 50..118 && b in 18..72 && r > g + 15) weight = 4
+                    }
+                    lookForDiamondOrGold -> {
+                        val isDiamond = b > 180 && g > 175 && r < 115
+                        val isGold = r > 195 && g > 165 && b < 92
+                        val isIron = r in 175..215 && g in 155..195 && b in 140..180 && r > b + 12
+                        if (isDiamond || isGold) weight = 5 else if (isIron) weight = 3
+                    }
+                    lookForChestOrBed -> {
+                        val isRedBed = r > 175 && g < 75 && b < 75
+                        val isChestAmber = r in 150..215 && g in 95..155 && b in 20..70
+                        if (isRedBed || isChestAmber) weight = 5
+                    }
+                    else -> {
+                        val moved = if (prev != null) {
+                            val p0 = prev[rowOff + gx]
+                            abs(r - ((p0 ushr 16) and 0xFF)) + abs(g - ((p0 ushr 8) and 0xFF)) + abs(b - (p0 and 0xFF)) > 46
+                        } else false
+                        val saturation = maxOf(r, g, b) - minOf(r, g, b)
+                        if (moved && saturation > 26) weight = 4
+                        else if (saturation > 54 && gy in (GRID_H / 4)..(GRID_H * 3 / 4)) weight = 2
+                    }
                 }
 
                 if (weight > 0 && hintNormX != null && hintNormY != null) {
@@ -295,8 +332,8 @@ object FableVisionAndOcr {
 
         val cx = ((sumX.toDouble() / sumW.toDouble()) * 1000.0 / GRID_W).toInt().coerceIn(0, 1000)
         val cy = ((sumY.toDouble() / sumW.toDouble()) * 1000.0 / GRID_H).toInt().coerceIn(0, 1000)
-        val cov = ((matchedCells * 1000) / (GRID_W * GRID_H)).coerceIn(5, 600)
-        val conf = (35 + matchedCells * 2).coerceIn(40, 96)
+        val cov = ((matchedCells * 1000) / GRID_CELLS).coerceIn(5, 600)
+        val conf = (38 + matchedCells * 2).coerceIn(42, 97)
         return VisualTargetMatch(true, targetQuery, cx, cy, cov, conf, diffPermille, elapsed)
     }
 }

@@ -31,13 +31,22 @@ object FableVideoSkillLearner {
     }.getOrDefault(0L)
 
     fun listInstalledModels(context: Context): List<String> = runCatching {
-        val builtIn = listOf("Fable-Nano-Intent + MLKit-OCR + Rust-Vision (Built-in, <4 MB, Active)")
-        val external = modelsDir(context).listFiles()
-            ?.filter { it.isFile && (it.name.endsWith(".gguf", true) || it.name.endsWith(".onnx", true) || it.name.endsWith(".tflite", true) || it.name.endsWith(".bin", true)) }
-            ?.map { "${it.name} (${it.length() / (1024 * 1024)} MB)" }
+        val builtIn = listOf("Fable-Nano-Intent + MLKit-OCR + Rust-PD-V2 (Built-in, <4 MB, Always Ready)")
+        val ggufs = FableLocalLlmRuntime.resolveInstalledGgufFiles(context).map { f ->
+            val role = when {
+                f.name.contains("qwen3.5", true) || f.name.contains("0.8b", true) -> "Primary Brain"
+                f.name.contains("qwen3-0.6b", true) || f.name.contains("0.6b", true) -> "Fast Command Router"
+                else -> "Local GGUF"
+            }
+            val activeTag = if (FableLocalLlmRuntime.loadedModelPath == f.absolutePath) " · LOADED" else ""
+            "${f.name} (${f.length() / (1024L * 1024L)} MB · $role$activeTag)"
+        }
+        val other = modelsDir(context).listFiles()
+            ?.filter { it.isFile && (it.name.endsWith(".onnx", true) || it.name.endsWith(".tflite", true)) }
+            ?.map { "${it.name} (${it.length() / (1024L * 1024L)} MB)" }
             .orEmpty()
-        builtIn + external
-    }.getOrDefault(listOf("Fable-Nano-Intent + Rust-Vision (Active)"))
+        builtIn + ggufs + other
+    }.getOrDefault(listOf("Fable-Nano-Intent + Rust-PD-V2 (Active)"))
 
     suspend fun importModelFile(context: Context, uri: Uri): String? = withContext(Dispatchers.IO) {
         runCatching {
@@ -47,8 +56,12 @@ object FableVideoSkillLearner {
             context.contentResolver.openInputStream(uri)?.use { inp ->
                 dst.outputStream().buffered(512 * 1024).use { out -> inp.copyTo(out, 512 * 1024) }
             } ?: return@runCatching null
-            "${dst.name} (${dst.length() / (1024 * 1024)} MB)"
+            "${dst.name} (${dst.length() / (1024L * 1024L)} MB)"
         }.getOrNull()
+    }
+
+    fun persistLearnedSkill(context: Context, skill: LearnedVideoSkill) {
+        saveSkillJson(context, skill)
     }
 
     fun loadSavedSkills(context: Context): List<LearnedVideoSkill> = runCatching {
@@ -67,31 +80,32 @@ object FableVideoSkillLearner {
     ): LearnedVideoSkill? = withContext(Dispatchers.IO) {
         val retriever = MediaMetadataRetriever()
         try {
-            onProgress?.invoke("Opening video file...")
+            onProgress?.invoke("Opening demonstration video...")
             retriever.setDataSource(context, videoUri)
             val durMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
             if (durMs <= 0L) return@withContext null
 
             val fileName = queryDisplayName(context, videoUri) ?: "video_demo.mp4"
-            val sampleCount = (durMs / 650L).toInt().coerceIn(8, 22)
-            val stepIntervalMs = (durMs / sampleCount).coerceAtLeast(200L)
+            val sampleCount = (durMs / 500L).toInt().coerceIn(8, 28)
+            val stepIntervalMs = (durMs / sampleCount).coerceAtLeast(180L)
 
             val steps = ArrayList<SkillStep>()
             val ocrHighlights = LinkedHashSet<String>()
             var prevSmall: IntArray? = null
+            var consecutiveActionFlashes = 0
             val sw = 80
             val sh = 45
 
             for (idx in 0 until sampleCount) {
                 val timeMs = idx * stepIntervalMs
-                onProgress?.invoke("Deep-analyzing video frame ${idx + 1}/$sampleCount...")
+                onProgress?.invoke("Analyzing video frame ${idx + 1}/$sampleCount...")
                 val rawFrame = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
                     retriever.getScaledFrameAtTime(timeMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST, 480, 270)
                 } else {
                     retriever.getFrameAtTime(timeMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST)
                 } ?: continue
 
-                if (idx % 4 == 0) {
+                if (idx % 3 == 0) {
                     val blocks = FableVisionAndOcr.recognizeVisibleText(rawFrame)
                     blocks.take(6).forEach { b ->
                         if (b.text.length in 2..42) ocrHighlights.add(b.text)
@@ -106,17 +120,17 @@ object FableVideoSkillLearner {
 
                 val prev = prevSmall
                 if (prev != null) {
-                    // Estimate horizontal/vertical camera pan + forward expansion + HUD button flashes
                     var flowX = 0L
                     var flowY = 0L
                     var activeMotion = 0
-                    var rightTapFlash = 0
-                    for (y in 6 until (sh - 6)) {
-                        for (x in 6 until (sw - 6)) {
+                    var primaryHudFlash = 0
+                    var jumpHudFlash = 0
+                    for (y in 6 until (sh - 5)) {
+                        for (x in 6 until (sw - 5)) {
                             val cNow = luma(curPx[y * sw + x])
                             val cPrev = luma(prev[y * sw + x])
                             val diff = abs(cNow - cPrev)
-                            if (diff > 22) {
+                            if (diff > 20) {
                                 activeMotion++
                                 val lRight = abs(cNow - luma(prev[y * sw + (x + 2)]))
                                 val lLeft = abs(cNow - luma(prev[y * sw + (x - 2)]))
@@ -124,23 +138,33 @@ object FableVideoSkillLearner {
                                 val lUp = abs(cNow - luma(prev[(y - 2) * sw + x]))
                                 flowX += (lLeft - lRight)
                                 flowY += (lUp - lDown)
-                                if (x > sw * 0.72 && y > sh * 0.52 && diff > 45) {
-                                    rightTapFlash++
+                                if (x in (sw * 70 / 100)..(sw * 86 / 100) && y in (sh * 46 / 100)..(sh * 68 / 100) && diff > 42) {
+                                    primaryHudFlash++
+                                }
+                                if (x > sw * 82 / 100 && y > sh * 66 / 100 && diff > 42) {
+                                    jumpHudFlash++
                                 }
                             }
                         }
                     }
                     val motionRatio = (activeMotion * 100) / (sw * sh)
-                    val camDx = if (activeMotion > 20) ((flowX / activeMotion) * 3).toInt().coerceIn(-85, 85) else 0
-                    val camDy = if (activeMotion > 20) ((flowY / activeMotion) * 2).toInt().coerceIn(-55, 55) else 0
-                    val joyY = if (motionRatio >= 14) -80 else if (motionRatio >= 6) -45 else 0
-                    val joyX = (camDx / 3).coerceIn(-45, 45)
-                    val tapX = if (rightTapFlash > 12) 820 else -1
-                    val tapY = if (rightTapFlash > 12) 680 else -1
+                    val camDx = if (activeMotion > 18) ((flowX / activeMotion) * 3).toInt().coerceIn(-88, 88) else 0
+                    val camDy = if (activeMotion > 18) ((flowY / activeMotion) * 2).toInt().coerceIn(-55, 55) else 0
+                    val joyY = if (motionRatio >= 14) -82 else if (motionRatio >= 6) -48 else 0
+                    val joyX = (camDx / 3).coerceIn(-50, 50)
+
+                    if (primaryHudFlash > 9) consecutiveActionFlashes++ else consecutiveActionFlashes = 0
+                    val holdPrim = consecutiveActionFlashes >= 2
+                    val tapX = if (primaryHudFlash > 9 && !holdPrim) 780 else -1
+                    val tapY = if (primaryHudFlash > 9 && !holdPrim) 580 else -1
+                    val jumpTap = jumpHudFlash > 8
+
                     val note = buildString {
                         if (joyY < 0) append("Move forward ")
                         if (abs(camDx) >= 12) append(if (camDx > 0) "+ Turn right " else "+ Turn left ")
-                        if (tapX > 0) append("+ Action button tap")
+                        if (holdPrim) append("+ Hold action ")
+                        else if (tapX > 0) append("+ Tap action ")
+                        if (jumpTap) append("+ Jump")
                         if (isEmpty()) append("Hold/Observe")
                     }.trim()
 
@@ -154,6 +178,8 @@ object FableVideoSkillLearner {
                             camDyPercent = camDy,
                             tapNormX = tapX,
                             tapNormY = tapY,
+                            holdPrimaryButton = holdPrim,
+                            tapSecondaryJump = jumpTap,
                             note = note
                         )
                     )
@@ -165,12 +191,12 @@ object FableVideoSkillLearner {
                 fileName.substringBeforeLast('.').replace('_', ' ').trim().ifBlank { "Video Skill" }
             }
             val moveSteps = steps.count { it.joyYPercent != 0 || abs(it.camDxPercent) >= 10 }
-            val actionTaps = steps.count { it.tapNormX > 0 }
+            val actionCount = steps.count { it.tapNormX > 0 || it.holdPrimaryButton || it.tapSecondaryJump }
             val summary = buildString {
-                append("Learned from '$fileName' (${"%.1f".format(durMs / 1000.0)}s, $sampleCount key frames analyzed). ")
-                append("Detected $moveSteps active movement/camera segments and $actionTaps action-button presses. ")
+                append("Learned from '$fileName' (${"%.1f".format(durMs / 1000.0)}s, $sampleCount frames). ")
+                append("Extracted $moveSteps movement/camera vectors and $actionCount button holds/taps. ")
                 if (ocrHighlights.isNotEmpty()) {
-                    append("On-screen text understood: ${ocrHighlights.take(8).joinToString(", ")}.")
+                    append("Visible labels: ${ocrHighlights.take(8).joinToString(", ")}.")
                 }
             }
 
@@ -220,6 +246,8 @@ object FableVideoSkillLearner {
                     .put("camDy", st.camDyPercent)
                     .put("tapX", st.tapNormX)
                     .put("tapY", st.tapNormY)
+                    .put("holdPrimary", st.holdPrimaryButton)
+                    .put("tapJump", st.tapSecondaryJump)
                     .put("note", st.note)
             )
         }
@@ -259,6 +287,8 @@ object FableVideoSkillLearner {
                         camDyPercent = o.optInt("camDy"),
                         tapNormX = o.optInt("tapX", -1),
                         tapNormY = o.optInt("tapY", -1),
+                        holdPrimaryButton = o.optBoolean("holdPrimary", false),
+                        tapSecondaryJump = o.optBoolean("tapJump", false),
                         note = o.optString("note")
                     )
                 )

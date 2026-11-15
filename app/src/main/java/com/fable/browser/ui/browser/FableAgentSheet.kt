@@ -28,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -56,7 +57,8 @@ fun FableAgentSheet(
     onReadScreenNow: () -> Unit,
     onUploadVideo: (Uri) -> Unit,
     onResolveConfirmation: (ConfirmationDecision) -> Unit,
-    onOpenAgentSettings: () -> Unit
+    onOpenAgentSettings: () -> Unit,
+    onLockOwnerMode: () -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var promptText by rememberSaveable { mutableStateOf("") }
@@ -89,6 +91,8 @@ fun FableAgentSheet(
                     Text(
                         text = buildString {
                             append(state.statusLine)
+                            append(" · ")
+                            append(state.activeModelBadge)
                             if (state.strictScreenOnlyActive) append(" · Screen-Only")
                             if (state.lastReactionMs > 0L) append(" · ${state.lastReactionMs}ms")
                         },
@@ -105,9 +109,45 @@ fun FableAgentSheet(
                     }
                 } else {
                     TextButton(onClick = onOpenAgentSettings) {
-                        Text("Settings & Risk")
+                        Text("Models & Settings")
                     }
                 }
+            }
+
+            // Visible Owner Research Mode · Beta indicator + 1-tap Lock
+            if (state.ownerResearchUnlocked) {
+                Spacer(Modifier.height(6.dp))
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFF7C2D12),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "🔓 OWNER RESEARCH · BETA (READ-ONLY · ${state.ownerUnlockRemainingSec / 60}m left)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onLockOwnerMode) {
+                            Text("Lock", color = Color(0xFFFED7AA), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            if (state.modelDownloadStatus.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "⬇️ ${state.modelDownloadStatus}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
 
             Spacer(Modifier.height(8.dp))
@@ -168,7 +208,7 @@ fun FableAgentSheet(
 
             Spacer(Modifier.height(8.dp))
 
-            // Action Tools Row: Read Screen + Upload Video to Learn + Learned Skills
+            // Action Tools Row: Read Screen + YT Best Method + Type Text + Learn Video + Saved Skills
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -180,13 +220,21 @@ fun FableAgentSheet(
                     label = { Text("👁 Read Screen") }
                 )
                 AssistChip(
-                    onClick = { videoPicker.launch(arrayOf("video/*")) },
-                    label = { Text("🎬 Learn from Video") }
+                    onClick = { promptText = "find best method on youtube to " },
+                    label = { Text("🎥 YT Best Method") }
                 )
-                state.learnedSkills.take(4).forEach { sk ->
+                AssistChip(
+                    onClick = { promptText = "type \"\" and press enter" },
+                    label = { Text("⌨️ Type Text") }
+                )
+                AssistChip(
+                    onClick = { videoPicker.launch(arrayOf("video/*")) },
+                    label = { Text("🎬 Learn Video") }
+                )
+                state.learnedSkills.take(5).forEach { sk ->
                     AssistChip(
                         onClick = { onSendInstruction("run skill ${sk.name}") },
-                        label = { Text("▶ ${sk.name}") }
+                        label = { Text("▶ ${sk.name.take(22)}") }
                     )
                 }
             }
@@ -230,14 +278,16 @@ fun FableAgentSheet(
             ) {
                 val presets = when (state.mode) {
                     AgentMode.BASIC_BROWSING -> listOf(
-                        "go to example.com and copy the page text and deliver whole page code as in zip file",
-                        "what is on screen right now?",
-                        "search WebGPU browser benchmarks"
+                        "find best method on youtube to farm diamonds in bloxd",
+                        "in search type WebGPU benchmarks and press enter",
+                        "go to example.com and copy the page text and deliver whole page code as in zip file"
                     )
                     AgentMode.GAMING_SCREEN_ONLY -> listOf(
                         "go to the nearest cow you see on the screen",
-                        "follow player X and stop doing it in 10 seconds",
-                        "hold forward for 3 seconds and jump"
+                        "follow player OraOraRush and stop doing it in 10 seconds",
+                        "turn camera right 180",
+                        "hold forward and hold button for 4 seconds and jump",
+                        "find best bridging method on youtube and do the same"
                     )
                     AgentMode.LONG_TASK -> listOf(
                         "open analytics, members, upgrade sections and check them for 5 minutes, if no changes stop",
@@ -257,7 +307,7 @@ fun FableAgentSheet(
             OutlinedTextField(
                 value = promptText,
                 onValueChange = { promptText = it },
-                placeholder = { Text("Ask anything or give a Browsing / Gaming / Long Task command...") },
+                placeholder = { Text("Ask anything, type text, learn YT methods, or give Gaming/Long Task commands...") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
                 maxLines = 4
@@ -286,7 +336,7 @@ fun FableAgentSheet(
                     Text(if (state.mode == AgentMode.GAMING_SCREEN_ONLY) "Run on Screen (Close Sheet)" else "Send / Run")
                 }
                 OutlinedButton(onClick = onOpenAgentSettings) {
-                    Text("Risk Zones")
+                    Text("Settings")
                 }
             }
         }

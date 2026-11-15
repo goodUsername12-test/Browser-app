@@ -43,3 +43,7 @@
 -dontwarn org.mozilla.thirdparty.**
 
 -keep class org.yaml.snakeyaml.** { *; }
+
+-keep class com.fable.browser.agent.FableLocalLlmRuntime { *; }
+-keep class com.fable.browser.engine.RustFastCore { *; }
+-keep class com.fable.browser.engine.NativeFastEngine { *; }

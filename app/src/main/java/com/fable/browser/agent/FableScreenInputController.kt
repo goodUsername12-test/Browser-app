@@ -4,8 +4,11 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.InputDevice
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.inputmethod.BaseInputConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -13,16 +16,25 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.lang.ref.WeakReference
+import kotlin.math.abs
 import kotlin.math.hypot
 
+/**
+ * Pure OS/View input controller for Fable AI Agent:
+ * - Simultaneous 4-pointer multi-touch (Pointer 0 = Virtual Joystick, Pointer 1 = Smooth Camera Drag,
+ *   Pointer 2 = Holdable/Tappable Primary/Attack/Mine button, Pointer 3 = Jump/Crouch/Secondary button).
+ * - Screen-safe natural text typing via Android KeyCharacterMap + KeyEvents (zero JS/DOM injection).
+ * - Hardware/PC KeyEvent hold support with automatic 80 ms watchdog release on stop/focus-loss/timeout.
+ */
 object FableScreenInputController {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @Volatile private var targetViewRef: WeakReference<View>? = null
 
+    private var sessionDownTime = 0L
+
     private var joyHeld = false
-    private var joyDownTime = 0L
     private var joyCurX = 0f
     private var joyCurY = 0f
     @Volatile private var joyLeaseUntilMs = 0L
@@ -31,6 +43,14 @@ object FableScreenInputController {
     private var camCurX = 0f
     private var camCurY = 0f
     @Volatile private var camLeaseUntilMs = 0L
+
+    private var primaryBtnHeld = false
+    private var primaryBtnX = 0f
+    private var primaryBtnY = 0f
+    @Volatile private var primaryLeaseUntilMs = 0L
+
+    private val heldKeyCodes = LinkedHashSet<Int>()
+    @Volatile private var keysLeaseUntilMs = 0L
 
     @Volatile var activeSummary: String = "None"
         private set
@@ -41,9 +61,15 @@ object FableScreenInputController {
                 delay(80L)
                 val now = SystemClock.uptimeMillis()
                 val view = targetViewRef?.get()
-                if (joyHeld || camHeld) {
-                    if (view == null || !view.isAttachedToWindow || !view.hasWindowFocus() ||
-                        (joyHeld && now > joyLeaseUntilMs) || (camHeld && now > camLeaseUntilMs)) {
+                val anyTouchHeld = joyHeld || camHeld || primaryBtnHeld
+                val anyKeysHeld = heldKeyCodes.isNotEmpty()
+                if (anyTouchHeld || anyKeysHeld) {
+                    val viewInvalid = view == null || !view.isAttachedToWindow || !view.hasWindowFocus()
+                    val touchExpired = (joyHeld && now > joyLeaseUntilMs) ||
+                        (camHeld && now > camLeaseUntilMs) ||
+                        (primaryBtnHeld && now > primaryLeaseUntilMs)
+                    val keysExpired = anyKeysHeld && now > keysLeaseUntilMs
+                    if (viewInvalid || touchExpired || keysExpired) {
                         releaseAllImmediately()
                     }
                 }
@@ -65,14 +91,26 @@ object FableScreenInputController {
     fun releaseAllImmediately() {
         mainHandler.post {
             val view = targetViewRef?.get()
-            if ((joyHeld || camHeld) && view != null) {
-                val now = SystemClock.uptimeMillis()
-                dispatchMultiState(view, MotionEvent.ACTION_CANCEL, now, includeTap = null)
+            val now = SystemClock.uptimeMillis()
+            if ((joyHeld || camHeld || primaryBtnHeld) && view != null) {
+                dispatchMultiState(view, MotionEvent.ACTION_CANCEL, now)
             }
+            if (heldKeyCodes.isNotEmpty() && view != null) {
+                for (kc in heldKeyCodes) {
+                    runCatching {
+                        view.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, kc, 0))
+                    }
+                }
+            }
+            heldKeyCodes.clear()
             joyHeld = false
             camHeld = false
+            primaryBtnHeld = false
+            sessionDownTime = 0L
             joyLeaseUntilMs = 0L
             camLeaseUntilMs = 0L
+            primaryLeaseUntilMs = 0L
+            keysLeaseUntilMs = 0L
             activeSummary = "None"
         }
     }
@@ -81,17 +119,17 @@ object FableScreenInputController {
         val view = targetViewRef?.get()?.takeIf { it.width > 10 && it.height > 10 } ?: return@withContext false
         val x = (normX.coerceIn(20, 980) / 1000f) * view.width
         val y = (normY.coerceIn(20, 980) / 1000f) * view.height
-        if (joyHeld || camHeld) {
+        if (joyHeld || camHeld || primaryBtnHeld) {
             val now = SystemClock.uptimeMillis()
-            dispatchMultiState(view, MotionEvent.ACTION_POINTER_DOWN, now, includeTap = x to y)
-            delay(holdMs.coerceIn(30L, 250L))
-            dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, SystemClock.uptimeMillis(), includeTap = x to y)
+            dispatchMultiState(view, MotionEvent.ACTION_POINTER_DOWN, now, transientTap = x to y)
+            delay(holdMs.coerceIn(28L, 250L))
+            dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, SystemClock.uptimeMillis(), transientTap = x to y)
             return@withContext true
         }
         val down = SystemClock.uptimeMillis()
         activeSummary = "Tap (${normX / 10}%, ${normY / 10}%)"
         sendSingleMotion(view, down, down, MotionEvent.ACTION_DOWN, x, y)
-        delay(holdMs.coerceIn(30L, 400L))
+        delay(holdMs.coerceIn(28L, 450L))
         val up = SystemClock.uptimeMillis()
         sendSingleMotion(view, down, up, MotionEvent.ACTION_UP, x, y)
         activeSummary = "None"
@@ -114,8 +152,8 @@ object FableScreenInputController {
         val down = SystemClock.uptimeMillis()
         activeSummary = "Swipe"
         sendSingleMotion(view, down, down, MotionEvent.ACTION_DOWN, x0, y0)
-        val steps = 8
-        val stepWait = (durationMs.coerceIn(80L, 800L) / steps).coerceAtLeast(10L)
+        val steps = 10
+        val stepWait = (durationMs.coerceIn(80L, 900L) / steps).coerceAtLeast(10L)
         for (i in 1..steps) {
             delay(stepWait)
             val t = i.toFloat() / steps.toFloat()
@@ -128,6 +166,142 @@ object FableScreenInputController {
         true
     }
 
+    /**
+     * Smoothly turns/tilts the camera in 3D games using pure touch drag on the right look-pad area,
+     * automatically re-anchoring mid-turn if needed so 180°/360° turns never hit the screen edge.
+     */
+    suspend fun moveCameraSmooth(
+        yawPercent: Int,
+        pitchPercent: Int,
+        durationMs: Long = 380L,
+        sensitivityPct: Int = 100
+    ): Boolean = withContext(Dispatchers.Main) {
+        val view = targetViewRef?.get()?.takeIf { it.width > 10 && it.height > 10 } ?: return@withContext false
+        val w = view.width.toFloat()
+        val h = view.height.toFloat()
+        val sens = sensitivityPct.coerceIn(40, 220) / 100f
+
+        val totalDxPx = (yawPercent.coerceIn(-360, 360) / 100f) * (w * 0.24f) * sens
+        val totalDyPx = (pitchPercent.coerceIn(-180, 180) / 100f) * (h * 0.20f) * sens
+
+        val maxSingleStrokeX = w * 0.28f
+        val segments = (abs(totalDxPx) / maxSingleStrokeX).toInt().coerceAtLeast(0) + 1
+        val segDx = totalDxPx / segments
+        val segDy = totalDyPx / segments
+        val segDur = (durationMs.coerceIn(90L, 2_500L) / segments).coerceAtLeast(60L)
+
+        activeSummary = "Camera(${yawPercent}%, ${pitchPercent}%)"
+        for (s in 0 until segments) {
+            val anchorX = w * 0.68f
+            val anchorY = h * 0.46f
+            val steps = 8
+            val down = SystemClock.uptimeMillis()
+            sendSingleMotion(view, down, down, MotionEvent.ACTION_DOWN, anchorX, anchorY)
+            val waitMs = (segDur / steps).coerceAtLeast(8L)
+            for (i in 1..steps) {
+                delay(waitMs)
+                val frac = i.toFloat() / steps.toFloat()
+                val cx = (anchorX + segDx * frac).coerceIn(w * 0.36f, w * 0.96f)
+                val cy = (anchorY + segDy * frac).coerceIn(h * 0.10f, h * 0.88f)
+                sendSingleMotion(view, down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, cx, cy)
+            }
+            val endX = (anchorX + segDx).coerceIn(w * 0.36f, w * 0.96f)
+            val endY = (anchorY + segDy).coerceIn(h * 0.10f, h * 0.88f)
+            sendSingleMotion(view, down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, endX, endY)
+            if (s < segments - 1) delay(18L)
+        }
+        activeSummary = "None"
+        true
+    }
+
+    /**
+     * Pure OS/View natural typing — ZERO JavaScript or DOM injection!
+     * Optionally taps target coordinates to focus an input/chat box first, clears existing characters
+     * via KEYCODE_DEL if requested, types every character via KeyCharacterMap / InputConnection, and
+     * optionally presses Enter.
+     */
+    suspend fun typeTextOnScreen(
+        textToType: String,
+        focusNormX: Int? = null,
+        focusNormY: Int? = null,
+        clearExistingFirst: Boolean = false,
+        pressEnter: Boolean = false
+    ): Boolean = withContext(Dispatchers.Main) {
+        val rootView = targetViewRef?.get()?.takeIf { it.width > 10 && it.height > 10 } ?: return@withContext false
+        releaseAllImmediately()
+
+        if (focusNormX != null && focusNormY != null) {
+            tapNormalized(focusNormX, focusNormY, holdMs = 60L)
+            delay(180L)
+        }
+
+        val target = rootView.findFocus() ?: rootView
+        target.requestFocus()
+
+        if (clearExistingFirst) {
+            val now = SystemClock.uptimeMillis()
+            repeat(24) {
+                target.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL, 0))
+                target.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL, 0))
+            }
+            delay(30L)
+        }
+
+        activeSummary = "Typing (${textToType.length} chars)"
+        val kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
+
+        for (ch in textToType) {
+            val events = kcm.getEvents(charArrayOf(ch))
+            if (events != null && events.isNotEmpty()) {
+                for (ev in events) {
+                    target.dispatchKeyEvent(ev)
+                }
+            } else {
+                // Non-ASCII / Unicode fallback via standard Android InputConnection commitText (no JS!)
+                val ic = BaseInputConnection(target, false)
+                ic.commitText(ch.toString(), 1)
+            }
+            delay(14L)
+        }
+
+        if (pressEnter) {
+            delay(35L)
+            val now = SystemClock.uptimeMillis()
+            target.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER, 0))
+            target.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER, 0))
+        }
+
+        activeSummary = "None"
+        true
+    }
+
+    suspend fun holdHardwareKeys(
+        keyCodes: List<Int>,
+        durationMs: Long
+    ) = withContext(Dispatchers.Main) {
+        val view = targetViewRef?.get() ?: return@withContext
+        val target = view.findFocus() ?: view
+        val clampedMs = durationMs.coerceIn(80L, 30_000L)
+        val downAt = SystemClock.uptimeMillis()
+        keysLeaseUntilMs = downAt + clampedMs + 250L
+        for (kc in keyCodes) {
+            heldKeyCodes.add(kc)
+            target.dispatchKeyEvent(KeyEvent(downAt, downAt, KeyEvent.ACTION_DOWN, kc, 0))
+        }
+        activeSummary = "Keys(${keyCodes.size} held)"
+        try {
+            delay(clampedMs)
+        } finally {
+            val upAt = SystemClock.uptimeMillis()
+            for (kc in heldKeyCodes.toList()) {
+                target.dispatchKeyEvent(KeyEvent(downAt, upAt, KeyEvent.ACTION_UP, kc, 0))
+            }
+            heldKeyCodes.clear()
+            keysLeaseUntilMs = 0L
+            activeSummary = "None"
+        }
+    }
+
     suspend fun stepGamingControl(
         joyCenterXPercent: Int,
         joyCenterYPercent: Int,
@@ -136,6 +310,12 @@ object FableScreenInputController {
         camDxPercent: Int,
         camDyPercent: Int,
         tapAttack: Boolean,
+        holdPrimaryButton: Boolean = false,
+        tapJumpButton: Boolean = false,
+        attackBtnXPercent: Int = 78,
+        attackBtnYPercent: Int = 58,
+        jumpBtnXPercent: Int = 86,
+        jumpBtnYPercent: Int = 74,
         leaseMs: Long = 320L
     ) = withContext(Dispatchers.Main) {
         val view = targetViewRef?.get()?.takeIf { it.width > 10 && it.height > 10 } ?: return@withContext
@@ -143,102 +323,149 @@ object FableScreenInputController {
         val h = view.height.toFloat()
         val now = SystemClock.uptimeMillis()
 
-        val jCenterX = (joyCenterXPercent.coerceIn(8, 40) / 100f) * w
-        val jCenterY = (joyCenterYPercent.coerceIn(50, 90) / 100f) * h
-        val joyRadius = minOf(w, h) * 0.13f
+        val jCenterX = (joyCenterXPercent.coerceIn(8, 42) / 100f) * w
+        val jCenterY = (joyCenterYPercent.coerceIn(48, 92) / 100f) * h
+        val joyRadius = minOf(w, h) * 0.135f
 
         val wantJoy = hypot(joyXPercent.toDouble(), joyYPercent.toDouble()) >= 12.0
-        val wantCam = kotlin.math.abs(camDxPercent) >= 4 || kotlin.math.abs(camDyPercent) >= 4
+        val wantCam = abs(camDxPercent) >= 4 || abs(camDyPercent) >= 4
+        val wantHoldPrim = holdPrimaryButton
 
-        if (!wantJoy && joyHeld) {
-            if (camHeld) {
-                dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, now, dropJoy = true)
-            } else {
-                sendSingleMotion(view, joyDownTime, now, MotionEvent.ACTION_UP, joyCurX, joyCurY)
-            }
-            joyHeld = false
+        if (sessionDownTime == 0L && (wantJoy || wantCam || wantHoldPrim)) {
+            sessionDownTime = now
         }
 
-        if (wantJoy) {
+        // 1. Update Joystick pointer (id=0)
+        if (!wantJoy && joyHeld) {
+            if (camHeld || primaryBtnHeld) {
+                dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, now, droppingId = 0)
+            } else {
+                sendSingleMotion(view, sessionDownTime, now, MotionEvent.ACTION_UP, joyCurX, joyCurY)
+            }
+            joyHeld = false
+        } else if (wantJoy) {
             val targetJx = (jCenterX + (joyXPercent.coerceIn(-100, 100) / 100f) * joyRadius).coerceIn(8f, w * 0.48f)
-            val targetJy = (jCenterY + (joyYPercent.coerceIn(-100, 100) / 100f) * joyRadius).coerceIn(h * 0.35f, h - 8f)
+            val targetJy = (jCenterY + (joyYPercent.coerceIn(-100, 100) / 100f) * joyRadius).coerceIn(h * 0.34f, h - 8f)
             if (!joyHeld) {
-                joyDownTime = now
                 joyCurX = jCenterX
                 joyCurY = jCenterY
                 joyHeld = true
-                sendSingleMotion(view, joyDownTime, now, MotionEvent.ACTION_DOWN, joyCurX, joyCurY)
+                if (camHeld || primaryBtnHeld) {
+                    dispatchMultiState(view, MotionEvent.ACTION_POINTER_DOWN, now, addingId = 0)
+                } else {
+                    sendSingleMotion(view, sessionDownTime, now, MotionEvent.ACTION_DOWN, joyCurX, joyCurY)
+                }
             }
             joyCurX = targetJx
             joyCurY = targetJy
-            joyLeaseUntilMs = now + leaseMs.coerceIn(150L, 1800L)
+            joyLeaseUntilMs = now + leaseMs.coerceIn(150L, 2_000L)
         }
 
+        // 2. Update Camera pointer (id=1) with seamless edge re-anchoring
         if (wantCam) {
-            val camAnchorX = w * 0.68f
-            val camAnchorY = h * 0.46f
-            if (!camHeld || hypot((camCurX - camAnchorX).toDouble(), (camCurY - camAnchorY).toDouble()) > w * 0.22) {
+            val camAnchorX = w * 0.66f
+            val camAnchorY = h * 0.44f
+            val nearEdge = camHeld && (camCurX < w * 0.42f || camCurX > w * 0.92f || camCurY < h * 0.14f || camCurY > h * 0.82f)
+            if (!camHeld || nearEdge) {
                 if (camHeld) {
-                    if (joyHeld) {
-                        dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, now, dropCam = true)
+                    if (joyHeld || primaryBtnHeld) {
+                        dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, now, droppingId = 1)
                     } else {
-                        sendSingleMotion(view, joyDownTime, now, MotionEvent.ACTION_UP, camCurX, camCurY)
+                        sendSingleMotion(view, sessionDownTime, now, MotionEvent.ACTION_UP, camCurX, camCurY)
                     }
+                    camHeld = false
                 }
                 camCurX = camAnchorX
                 camCurY = camAnchorY
                 camHeld = true
-                if (!joyHeld) joyDownTime = now
-                if (joyHeld) {
-                    dispatchMultiState(view, MotionEvent.ACTION_POINTER_DOWN, now, camJustDown = true)
+                if (joyHeld || primaryBtnHeld) {
+                    dispatchMultiState(view, MotionEvent.ACTION_POINTER_DOWN, now, addingId = 1)
                 } else {
-                    sendSingleMotion(view, joyDownTime, now, MotionEvent.ACTION_DOWN, camCurX, camCurY)
+                    sendSingleMotion(view, sessionDownTime, now, MotionEvent.ACTION_DOWN, camCurX, camCurY)
                 }
             }
-            val stepPxX = (camDxPercent.coerceIn(-100, 100) / 100f) * (w * 0.045f)
+            val stepPxX = (camDxPercent.coerceIn(-100, 100) / 100f) * (w * 0.048f)
             val stepPxY = (camDyPercent.coerceIn(-100, 100) / 100f) * (h * 0.045f)
-            camCurX = (camCurX + stepPxX).coerceIn(w * 0.48f, w * 0.94f)
-            camCurY = (camCurY + stepPxY).coerceIn(h * 0.14f, h * 0.84f)
-            camLeaseUntilMs = now + leaseMs.coerceIn(150L, 1800L)
+            camCurX = (camCurX + stepPxX).coerceIn(w * 0.40f, w * 0.95f)
+            camCurY = (camCurY + stepPxY).coerceIn(h * 0.12f, h * 0.86f)
+            camLeaseUntilMs = now + leaseMs.coerceIn(150L, 2_000L)
         } else if (camHeld) {
-            if (joyHeld) {
-                dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, now, dropCam = true)
+            if (joyHeld || primaryBtnHeld) {
+                dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, now, droppingId = 1)
             } else {
-                sendSingleMotion(view, joyDownTime, now, MotionEvent.ACTION_UP, camCurX, camCurY)
+                sendSingleMotion(view, sessionDownTime, now, MotionEvent.ACTION_UP, camCurX, camCurY)
             }
             camHeld = false
         }
 
-        if (joyHeld || camHeld) {
-            dispatchMultiState(view, MotionEvent.ACTION_MOVE, SystemClock.uptimeMillis(), includeTap = null)
-        }
-
-        if (tapAttack) {
-            val atkX = w * 0.76f
-            val atkY = h * 0.56f
-            if (joyHeld || camHeld) {
-                val tDown = SystemClock.uptimeMillis()
-                dispatchMultiState(view, MotionEvent.ACTION_POINTER_DOWN, tDown, includeTap = atkX to atkY)
-                delay(28L)
-                dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, SystemClock.uptimeMillis(), includeTap = atkX to atkY)
-            } else {
-                val tDown = SystemClock.uptimeMillis()
-                sendSingleMotion(view, tDown, tDown, MotionEvent.ACTION_DOWN, atkX, atkY)
-                delay(28L)
-                sendSingleMotion(view, tDown, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, atkX, atkY)
+        // 3. Update Holdable Primary/Mine/Attack button pointer (id=2)
+        val pBtnX = (attackBtnXPercent.coerceIn(45, 96) / 100f) * w
+        val pBtnY = (attackBtnYPercent.coerceIn(25, 94) / 100f) * h
+        if (wantHoldPrim) {
+            primaryBtnX = pBtnX
+            primaryBtnY = pBtnY
+            if (!primaryBtnHeld) {
+                primaryBtnHeld = true
+                if (joyHeld || camHeld) {
+                    dispatchMultiState(view, MotionEvent.ACTION_POINTER_DOWN, now, addingId = 2)
+                } else {
+                    sendSingleMotion(view, sessionDownTime, now, MotionEvent.ACTION_DOWN, primaryBtnX, primaryBtnY)
+                }
             }
+            primaryLeaseUntilMs = now + leaseMs.coerceIn(150L, 2_000L)
+        } else if (primaryBtnHeld) {
+            if (joyHeld || camHeld) {
+                dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, now, droppingId = 2)
+            } else {
+                sendSingleMotion(view, sessionDownTime, now, MotionEvent.ACTION_UP, primaryBtnX, primaryBtnY)
+            }
+            primaryBtnHeld = false
         }
 
-        val parts = ArrayList<String>(3)
-        if (joyHeld) parts.add("Joystick(${joyXPercent}%,${joyYPercent}%)")
+        if (joyHeld || camHeld || primaryBtnHeld) {
+            dispatchMultiState(view, MotionEvent.ACTION_MOVE, SystemClock.uptimeMillis())
+        } else {
+            sessionDownTime = 0L
+        }
+
+        // 4. Transient Attack tap (when not already holding primary button)
+        if (tapAttack && !primaryBtnHeld) {
+            pulseTransientButton(view, pBtnX, pBtnY, holdMs = 26L)
+        }
+
+        // 5. Transient Jump / Secondary button tap (id=3)
+        if (tapJumpButton) {
+            val jBtnX = (jumpBtnXPercent.coerceIn(45, 96) / 100f) * w
+            val jBtnY = (jumpBtnYPercent.coerceIn(30, 95) / 100f) * h
+            pulseTransientButton(view, jBtnX, jBtnY, holdMs = 32L)
+        }
+
+        val parts = ArrayList<String>(4)
+        if (joyHeld) parts.add("Joy(${joyXPercent}%,${joyYPercent}%)")
         if (camHeld) parts.add("Cam(${camDxPercent}%,${camDyPercent}%)")
-        if (tapAttack) parts.add("Attack")
+        if (primaryBtnHeld) parts.add("HoldBtn")
+        else if (tapAttack) parts.add("Attack")
+        if (tapJumpButton) parts.add("Jump")
         activeSummary = if (parts.isEmpty()) "Idle" else parts.joinToString(" + ")
+    }
+
+    private suspend fun pulseTransientButton(view: View, x: Float, y: Float, holdMs: Long) {
+        if (joyHeld || camHeld || primaryBtnHeld) {
+            val tDown = SystemClock.uptimeMillis()
+            dispatchMultiState(view, MotionEvent.ACTION_POINTER_DOWN, tDown, transientTap = x to y)
+            delay(holdMs)
+            dispatchMultiState(view, MotionEvent.ACTION_POINTER_UP, SystemClock.uptimeMillis(), transientTap = x to y)
+        } else {
+            val tDown = SystemClock.uptimeMillis()
+            sendSingleMotion(view, tDown, tDown, MotionEvent.ACTION_DOWN, x, y)
+            delay(holdMs)
+            sendSingleMotion(view, tDown, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y)
+        }
     }
 
     private fun sendSingleMotion(view: View, downTime: Long, eventTime: Long, action: Int, x: Float, y: Float) {
         runCatching {
-            val ev = MotionEvent.obtain(downTime, eventTime, action, x, y, 0)
+            val ev = MotionEvent.obtain(if (downTime > 0L) downTime else eventTime, eventTime, action, x, y, 0)
             ev.source = InputDevice.SOURCE_TOUCHSCREEN
             view.dispatchTouchEvent(ev)
             ev.recycle()
@@ -249,15 +476,15 @@ object FableScreenInputController {
         view: View,
         baseAction: Int,
         eventTime: Long,
-        includeTap: Pair<Float, Float>? = null,
-        camJustDown: Boolean = false,
-        dropCam: Boolean = false,
-        dropJoy: Boolean = false
+        transientTap: Pair<Float, Float>? = null,
+        addingId: Int = -1,
+        droppingId: Int = -1
     ) {
-        val ptrs = ArrayList<Triple<Int, Float, Float>>(3)
+        val ptrs = ArrayList<Triple<Int, Float, Float>>(4)
         if (joyHeld) ptrs.add(Triple(0, joyCurX, joyCurY))
         if (camHeld) ptrs.add(Triple(1, camCurX, camCurY))
-        if (includeTap != null) ptrs.add(Triple(2, includeTap.first, includeTap.second))
+        if (primaryBtnHeld) ptrs.add(Triple(2, primaryBtnX, primaryBtnY))
+        if (transientTap != null) ptrs.add(Triple(3, transientTap.first, transientTap.second))
         if (ptrs.isEmpty()) return
 
         val count = ptrs.size
@@ -276,9 +503,9 @@ object FableScreenInputController {
             }
         }
         val actionIndex = when {
-            includeTap != null -> count - 1
-            camJustDown || dropCam -> ptrs.indexOfFirst { it.first == 1 }.coerceAtLeast(0)
-            dropJoy -> ptrs.indexOfFirst { it.first == 0 }.coerceAtLeast(0)
+            transientTap != null -> count - 1
+            addingId >= 0 -> ptrs.indexOfFirst { it.first == addingId }.coerceAtLeast(0)
+            droppingId >= 0 -> ptrs.indexOfFirst { it.first == droppingId }.coerceAtLeast(0)
             else -> 0
         }
         val fullAction = when (baseAction) {
@@ -290,7 +517,7 @@ object FableScreenInputController {
         }
         runCatching {
             val ev = MotionEvent.obtain(
-                if (joyDownTime > 0L) joyDownTime else eventTime,
+                if (sessionDownTime > 0L) sessionDownTime else eventTime,
                 eventTime,
                 fullAction,
                 count,

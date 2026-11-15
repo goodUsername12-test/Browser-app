@@ -35,6 +35,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.fable.browser.agent.FableScreenInputController
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.engine.FableUnifiedEngine
 import com.fable.browser.engine.HybridEngineBridge
@@ -467,6 +468,7 @@ class BlinkGamingActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        FableScreenInputController.releaseAllImmediately()
         FableUnifiedEngine.setFrameMonitorActive(false)
         FableUnifiedEngine.flushBlinkCookies()
         super.onPause()
@@ -474,10 +476,12 @@ class BlinkGamingActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        webView?.let { FableScreenInputController.attachSurfaceView(it) }
         FableUnifiedEngine.setFrameMonitorActive(true)
     }
 
     override fun onDestroy() {
+        FableScreenInputController.releaseAllImmediately()
         ioScope.cancel()
         FableUnifiedEngine.setFrameMonitorActive(false)
         FableUnifiedEngine.flushBlinkCookies()

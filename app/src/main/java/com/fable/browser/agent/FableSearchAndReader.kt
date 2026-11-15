@@ -21,7 +21,9 @@ data class WebPageUnderstanding(
     val title: String,
     val plainText: String,
     val summaryBullets: List<String>,
-    val discoveredLinks: List<Pair<String, String>>
+    val discoveredLinks: List<Pair<String, String>>,
+    val rawHtmlPreview: String = "",
+    val responseHeadersSummary: String = ""
 )
 
 object FableSearchAndReader {
@@ -36,8 +38,8 @@ object FableSearchAndReader {
                 "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36"
             }
             val conn = (URL(searchUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 8_000
-                readTimeout = 12_000
+                connectTimeout = 7_500
+                readTimeout = 10_000
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", ua)
                 setRequestProperty("Accept-Language", "en-US,en;q=0.9")
@@ -68,7 +70,14 @@ object FableSearchAndReader {
         }.getOrDefault(emptyList())
     }
 
-    suspend fun fetchAndReadPage(url: String, allowCookies: Boolean = true): WebPageUnderstanding? = withContext(Dispatchers.IO) {
+    /**
+     * Strictly Read-Only HTTP GET reader (zero DOM/JS injection into live browser page).
+     */
+    suspend fun fetchAndReadPage(
+        url: String,
+        allowCookies: Boolean = true,
+        includeRawSourcePreview: Boolean = false
+    ): WebPageUnderstanding? = withContext(Dispatchers.IO) {
         if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) return@withContext null
         runCatching {
             val ua = FableUnifiedEngine.defaultBlinkUserAgent.ifBlank {
@@ -76,14 +85,21 @@ object FableSearchAndReader {
             }
             val cookie = if (allowCookies) runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull() else null
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10_000
-                readTimeout = 15_000
+                connectTimeout = 9_000
+                readTimeout = 13_000
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", ua)
                 if (!cookie.isNullOrBlank()) setRequestProperty("Cookie", cookie)
                 connect()
             }
             val status = conn.responseCode
+            val headerSummary = if (includeRawSourcePreview) {
+                conn.headerFields.entries
+                    .filter { it.key != null }
+                    .take(12)
+                    .joinToString("\n") { (k, v) -> "$k: ${v.joinToString(", ")}" }
+            } else ""
+
             if (status !in 200..299) {
                 conn.disconnect()
                 return@runCatching null
@@ -137,7 +153,9 @@ object FableSearchAndReader {
                 title = title,
                 plainText = plainText,
                 summaryBullets = bullets,
-                discoveredLinks = links.distinctBy { it.second }
+                discoveredLinks = links.distinctBy { it.second },
+                rawHtmlPreview = if (includeRawSourcePreview) rawHtml.take(2400) else "",
+                responseHeadersSummary = headerSummary
             )
         }.getOrNull()
     }

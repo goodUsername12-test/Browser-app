@@ -27,8 +27,8 @@ android {
         applicationId = "com.fable.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 40
-        versionName = "1.44.0"
+        versionCode = 41
+        versionName = "1.45.0"
 
         externalNativeBuild {
             cmake {
@@ -246,6 +246,124 @@ abstract class BuildRustCoreTask : DefaultTask() {
     }
 }
 
+
+abstract class BuildLlamaJniTask : DefaultTask() {
+    @get:InputDirectory
+    abstract val jniProjectDir: DirectoryProperty
+
+    @get:org.gradle.api.tasks.Input
+    abstract val requestedAbis: org.gradle.api.provider.ListProperty<String>
+
+    @get:org.gradle.api.tasks.Internal
+    abstract val sharedCacheRoot: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun buildLlama() {
+        val outRoot = outputDir.get().asFile.apply { mkdirs() }
+        if (System.getenv("FABLE_SKIP_LLAMA_JNI") == "1") return
+        try {
+            val sdk = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT") ?: return
+            val ndkDir = File(sdk, "ndk").listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name } ?: return
+            val toolchainFile = File(ndkDir, "build/cmake/android.toolchain.cmake")
+            if (!toolchainFile.isFile) return
+
+            val sysCmake = File("/usr/bin/cmake")
+            val sdkCmake = File(sdk, "cmake").listFiles()
+                ?.filter { it.isDirectory }
+                ?.maxByOrNull { it.name }
+                ?.let { File(it, "bin/cmake") }
+            val cmakeExe = when {
+                sysCmake.canExecute() -> sysCmake.absolutePath
+                sdkCmake != null && sdkCmake.canExecute() -> sdkCmake.absolutePath
+                else -> return
+            }
+
+            val sysNinja = File("/usr/bin/ninja")
+            val sdkNinja = sdkCmake?.parentFile?.let { File(it, "ninja") }
+            val ninjaExe = when {
+                sysNinja.canExecute() -> sysNinja.absolutePath
+                sdkNinja != null && sdkNinja.canExecute() -> sdkNinja.absolutePath
+                else -> null
+            }
+
+            val cacheBase = sharedCacheRoot.get().asFile.apply { mkdirs() }
+            val llamaSrcDir = File(cacheBase, "llama_cpp_src")
+            if (!File(llamaSrcDir, "include/llama.h").isFile) {
+                llamaSrcDir.deleteRecursively()
+                val clonePb = ProcessBuilder(
+                    "git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", llamaSrcDir.absolutePath
+                ).redirectErrorStream(true)
+                val cloneProc = clonePb.start()
+                val cloneLog = cloneProc.inputStream.bufferedReader().readText()
+                if (cloneProc.waitFor() != 0) {
+                    logger.warn("llama.cpp clone skipped: $cloneLog")
+                    return
+                }
+            }
+
+            val abis = requestedAbis.get().ifEmpty { listOf("arm64-v8a") }
+            val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+
+            for (abi in abis) {
+                val cachedSo = File(cacheBase, "built/$abi/libfable_llama.so")
+                if (!cachedSo.isFile || cachedSo.length() < 100_000L) {
+                    val buildDir = File(cacheBase, "cmake_build_$abi").apply { mkdirs() }
+                    val cfgCmd = mutableListOf(
+                        cmakeExe,
+                        "-S", jniProjectDir.get().asFile.absolutePath,
+                        "-B", buildDir.absolutePath,
+                        "-DCMAKE_BUILD_TYPE=Release",
+                        "-DCMAKE_TOOLCHAIN_FILE=${toolchainFile.absolutePath}",
+                        "-DANDROID_ABI=$abi",
+                        "-DANDROID_PLATFORM=android-26",
+                        "-DLLAMA_CPP_DIR=${llamaSrcDir.absolutePath}"
+                    )
+                    if (ninjaExe != null) {
+                        cfgCmd.add("-GNinja")
+                        cfgCmd.add("-DCMAKE_MAKE_PROGRAM=$ninjaExe")
+                    }
+                    val cfgProc = ProcessBuilder(cfgCmd).redirectErrorStream(true).start()
+                    val cfgLog = cfgProc.inputStream.bufferedReader().readText()
+                    if (cfgProc.waitFor() != 0) {
+                        logger.warn("CMake configure for fable_llama ($abi) failed: $cfgLog")
+                        continue
+                    }
+
+                    val bldProc = ProcessBuilder(
+                        cmakeExe, "--build", buildDir.absolutePath, "--config", "Release", "--target", "fable_llama", "-j", cores.toString()
+                    ).redirectErrorStream(true).start()
+                    val bldLog = bldProc.inputStream.bufferedReader().readText()
+                    if (bldProc.waitFor() != 0) {
+                        logger.warn("CMake build for fable_llama ($abi) failed: $bldLog")
+                        continue
+                    }
+
+                    val builtSo = buildDir.walkTopDown().firstOrNull { it.isFile && it.name == "libfable_llama.so" }
+                    if (builtSo != null) {
+                        cachedSo.parentFile.mkdirs()
+                        builtSo.copyTo(cachedSo, overwrite = true)
+                    }
+                }
+
+                if (cachedSo.isFile) {
+                    val dest = File(File(outRoot, abi).apply { mkdirs() }, "libfable_llama.so")
+                    cachedSo.copyTo(dest, overwrite = true)
+                    logger.lifecycle("Bundled native llama.cpp JNI $abi/libfable_llama.so (${dest.length() / 1024} KB)")
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn("Native llama.cpp JNI build skipped: ${e.message}")
+        }
+    }
+}
+
+val configuredAbis: List<String> = (project.findProperty("fable.abis") as String?)
+    ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+    ?: listOf("arm64-v8a")
+
 androidComponents {
     onVariants { variant ->
         val capName = variant.name.replaceFirstChar { it.uppercase() }
@@ -256,6 +374,13 @@ androidComponents {
             rustProjectDir.set(rootProject.layout.projectDirectory.dir("rust/fable_rust_core"))
         }
         variant.sources.jniLibs?.addGeneratedSourceDirectory(rustTask, BuildRustCoreTask::outputDir)
+
+        val llamaTask = tasks.register<BuildLlamaJniTask>("build${capName}LlamaJni") {
+            jniProjectDir.set(rootProject.layout.projectDirectory.dir("cpp_llama"))
+            requestedAbis.set(configuredAbis)
+            sharedCacheRoot.set(rootProject.layout.buildDirectory.dir("fable_llama_shared"))
+        }
+        variant.sources.jniLibs?.addGeneratedSourceDirectory(llamaTask, BuildLlamaJniTask::outputDir)
     }
 }
 

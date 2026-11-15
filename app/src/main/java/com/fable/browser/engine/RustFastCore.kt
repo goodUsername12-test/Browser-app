@@ -7,7 +7,9 @@ data class AgentControlVector(
     val joyYPercent: Int,
     val camDxPercent: Int,
     val camDyPercent: Int,
-    val shouldAttack: Boolean
+    val shouldAttack: Boolean,
+    val shouldHoldPrimary: Boolean = false,
+    val shouldJump: Boolean = false
 )
 
 data class NetworkPlan(
@@ -151,6 +153,117 @@ object RustFastCore {
         }
         val atk = combatMode && kotlin.math.abs(errX) <= 115 && kotlin.math.abs(errY) <= 125 && cov >= 18
         return AgentControlVector(joyX, joyY, camDx, camDy, atk)
+    }
+
+    @JvmStatic
+    private external fun nativeComputeControlVectorV2(
+        targetXPermille: Int,
+        targetYPermille: Int,
+        prevXPermille: Int,
+        prevYPermille: Int,
+        coveragePermille: Int,
+        confidence: Int,
+        modeCode: Int,
+        strafePhase: Int,
+        camSensitivityPct: Int
+    ): Long
+
+    /**
+     * modeCode: 0 = APPROACH, 1 = FOLLOW, 2 = COMBAT, 3 = MINE_HARVEST
+     */
+    fun computeAgentControlVectorV2(
+        targetXPermille: Int,
+        targetYPermille: Int,
+        prevXPermille: Int = -1,
+        prevYPermille: Int = -1,
+        coveragePermille: Int,
+        confidence: Int,
+        modeCode: Int,
+        strafePhase: Int = 0,
+        camSensitivityPct: Int = 100
+    ): AgentControlVector {
+        if (confidence < 15) return AgentControlVector(0, 0, 0, 0, false, false, false)
+        val packed = if (isRustAvailable) {
+            runCatching {
+                nativeComputeControlVectorV2(
+                    targetXPermille,
+                    targetYPermille,
+                    prevXPermille,
+                    prevYPermille,
+                    coveragePermille,
+                    confidence,
+                    modeCode,
+                    strafePhase,
+                    camSensitivityPct
+                )
+            }.getOrNull()
+        } else null
+        if (packed != null && packed != 0L) {
+            val jx = ((packed and 0xFFL).toInt() - 128).coerceIn(-100, 100)
+            val jy = (((packed ushr 8) and 0xFFL).toInt() - 128).coerceIn(-100, 100)
+            val cx = (((packed ushr 16) and 0xFFL).toInt() - 128).coerceIn(-100, 100)
+            val cy = (((packed ushr 24) and 0xFFL).toInt() - 128).coerceIn(-100, 100)
+            val atk = ((packed ushr 32) and 0x01L) == 1L
+            val holdPrim = ((packed ushr 33) and 0x01L) == 1L
+            val jump = ((packed ushr 34) and 0x01L) == 1L
+            return AgentControlVector(jx, jy, cx, cy, atk, holdPrim, jump)
+        }
+
+        val tx = targetXPermille.coerceIn(0, 1000)
+        val ty = targetYPermille.coerceIn(0, 1000)
+        val px = if (prevXPermille < 0) tx else prevXPermille.coerceIn(0, 1000)
+        val py = if (prevYPermille < 0) ty else prevYPermille.coerceIn(0, 1000)
+        val cov = coveragePermille.coerceIn(0, 1000)
+        val sens = camSensitivityPct.coerceIn(40, 220)
+
+        val vx = (tx - px).coerceIn(-180, 180)
+        val vy = (ty - py).coerceIn(-140, 140)
+        val leadX = (tx + (vx * 55) / 100).coerceIn(0, 1000)
+        val leadY = (ty + (vy * 35) / 100).coerceIn(0, 1000)
+
+        val rawErrX = leadX - 500
+        val rawErrY = leadY - 480
+        val errX = if (kotlin.math.abs(rawErrX) <= 14) 0 else rawErrX
+        val errY = if (kotlin.math.abs(rawErrY) <= 16) 0 else rawErrY
+
+        val camDx = ((errX * 24 * sens) / 10000).coerceIn(-100, 100)
+        val camDy = ((errY * 15 * sens) / 10000).coerceIn(-70, 70)
+
+        return when (modeCode) {
+            1 -> {
+                val jy = when {
+                    cov < 88 -> -(105 - cov).coerceIn(25, 95)
+                    cov > 168 -> 42
+                    else -> 0
+                }
+                val jx = (errX / 9).coerceIn(-40, 40)
+                val jump = jy < -70 && (strafePhase % 14 == 0)
+                AgentControlVector(jx, jy, camDx, camDy, false, false, jump)
+            }
+            2 -> {
+                val jy = when {
+                    cov < 80 -> -92
+                    cov > 195 -> 48
+                    else -> -35
+                }
+                val orbitDir = if (((strafePhase / 6) and 1) == 0) 1 else -1
+                val jx = if (kotlin.math.abs(errX) < 175) orbitDir * 56 else (errX / 6).coerceIn(-65, 65)
+                val aligned = kotlin.math.abs(errX) <= 120 && kotlin.math.abs(errY) <= 135 && cov >= 16
+                val jump = cov in 30..145 && (strafePhase % 9 == 0)
+                AgentControlVector(jx, jy, camDx, camDy, aligned, false, jump)
+            }
+            3 -> {
+                val jy = if (cov < 118) -(125 - cov).coerceIn(24, 85) else 0
+                val jx = (errX / 10).coerceIn(-35, 35)
+                val hold = kotlin.math.abs(errX) <= 110 && kotlin.math.abs(errY) <= 130 && cov >= 45
+                AgentControlVector(jx, jy, camDx, camDy, false, hold, false)
+            }
+            else -> {
+                val jy = if (cov < 115) -(120 - cov).coerceIn(22, 92) else 0
+                val jx = (errX / 8).coerceIn(-45, 45)
+                AgentControlVector(jx, jy, camDx, camDy, false, false, false)
+            }
+        }
     }
 
     @JvmStatic

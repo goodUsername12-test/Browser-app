@@ -6,18 +6,25 @@ enum class AgentMode(val label: String, val shortLabel: String, val summary: Str
     BASIC_BROWSING(
         label = "Basic Browsing Mode",
         shortLabel = "Browsing",
-        summary = "Fast web understanding, live search, navigate, copy page text, and full .zip page code export"
+        summary = "Fast web understanding, live search, YouTube/method research, type text, navigate, copy page text & .zip page code export"
     ),
     GAMING_SCREEN_ONLY(
         label = "Gaming Mode (Strict Screen-Only · 50-100ms)",
         shortLabel = "Gaming",
-        summary = "100% pixel & touch only (zero page-code/console access). Fast 30-80ms target tracking, multi-touch joystick, camera & combat"
+        summary = "100% pixel & touch/key only (zero page-code/console access). Predictive target follow, smooth camera, button holds, typing & combat"
     ),
     LONG_TASK(
         label = "Long Task Mode",
         shortLabel = "Long Task",
         summary = "Multi-step state machine with adaptive load waiting, multi-tab section monitoring, change detection, and bounded cycles"
     )
+}
+
+enum class GamingTrackingStyle(val code: Int, val label: String) {
+    APPROACH(0, "Approach"),
+    FOLLOW(1, "Follow"),
+    COMBAT(2, "Combat"),
+    MINE_HARVEST(3, "Mine/Harvest")
 }
 
 enum class AgentAutonomyPolicy(val label: String, val summary: String) {
@@ -31,11 +38,11 @@ enum class AgentAutonomyPolicy(val label: String, val summary: String) {
     ),
     ASK_IMPORTANT(
         label = "Ask Before External / State-Changing Actions",
-        summary = "Asks before navigating to new sites, downloading, switching modes, or clicking action buttons"
+        summary = "Asks before navigating to new sites, downloading, switching modes, typing into forms, or clicking action buttons"
     ),
     ALWAYS_ASK_EVERYTHING(
         label = "Always Ask Everything",
-        summary = "Asks for confirmation before every single tap, navigation, search, or joystick command"
+        summary = "Asks for confirmation before every single tap, navigation, search, typing, or joystick command"
     )
 }
 
@@ -47,12 +54,12 @@ enum class RiskZonePolicy(val label: String) {
 }
 
 enum class AgentRiskZone(val title: String, val subtitle: String) {
-    ACCESSIBILITY("Accessibility & Voice Control", "Hands-free voice/text navigation and assistive touch control"),
-    PRIVATE_WORLDS("Private Worlds", "Automation and movement inside private lobbies or your own worlds"),
+    ACCESSIBILITY("Accessibility & Voice Control", "Hands-free voice/text navigation, typing, and assistive touch control"),
+    PRIVATE_WORLDS("Private Worlds", "Automation, camera, and movement inside private lobbies or your own worlds"),
     SINGLE_PLAYER("Single-Player Games", "Offline or solo web games"),
-    GAME_TESTING("Game Testing & Diagnostics", "Automated QA, stress movement, and FPS testing"),
+    GAME_TESTING("Game Testing & Diagnostics", "Automated QA, stress movement, camera sweeps, and FPS testing"),
     ALLOWED_AUTOMATION_GAMES("Games Allowing Automation", "Games/servers that explicitly permit bots or scripts"),
-    USER_APPROVED_MACROS("User-Approved Macros & Learned Skills", "Replaying movement/action skills learned from your uploaded videos"),
+    USER_APPROVED_MACROS("User-Approved Macros & Learned Skills", "Replaying movement/action skills learned from your videos or YouTube guides"),
     COMPETITIVE_ONLINE("Competitive Online Games (Risk Zone)", "PvP combat/target tracking on public multiplayer servers"),
     IMPORTANT_SENSITIVE("Important Actions (Buy, Account, Delete, Upload)", "Payments, upgrades, deleting data, sending messages, or private exports")
 }
@@ -107,6 +114,8 @@ data class SkillStep(
     val camDyPercent: Int,
     val tapNormX: Int = -1,
     val tapNormY: Int = -1,
+    val holdPrimaryButton: Boolean = false,
+    val tapSecondaryJump: Boolean = false,
     val note: String = ""
 )
 
@@ -139,5 +148,10 @@ data class AgentLiveState(
     val logs: List<AgentLogEntry> = emptyList(),
     val learnedSkills: List<LearnedVideoSkill> = emptyList(),
     val freeStorageGb: Long = 0L,
-    val installedModels: List<String> = emptyList()
+    val installedModels: List<String> = emptyList(),
+    val activeModelBadge: String = "Built-in Fast Brain",
+    val modelDownloadStatus: String = "",
+    val ownerPasswordConfigured: Boolean = false,
+    val ownerResearchUnlocked: Boolean = false,
+    val ownerUnlockRemainingSec: Int = 0
 )

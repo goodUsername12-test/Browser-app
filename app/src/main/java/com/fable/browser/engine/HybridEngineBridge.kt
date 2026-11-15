@@ -102,6 +102,9 @@ object HybridEngineBridge {
             put("applyIdentity", applyIdentity)
             put("highPerfWebGl", settings.hybridHighPerfWebGl)
             put("webGpuBoost", settings.hybridWebGpuBoost)
+            put("webGpuProfile", settings.hybridWebGpuProfile.wire)
+            put("disableGameMsaa", settings.hybridDisableGameMsaa)
+            put("customDomains", settings.hybridCustomDomains)
             put("accel3d2d", settings.hybrid3d2dAccel)
             put("teleportStabilizer", settings.hybridTeleportStabilizer)
             put("reportedCores", settings.hybridReportedCores.coerceIn(2, 16))
@@ -124,8 +127,54 @@ object HybridEngineBridge {
                 } catch (_) {}
                 return;
             }
+            const dynHost = (typeof location !== "undefined" && location.hostname ? location.hostname : "").toLowerCase();
+            if (/(?:^|\.)(challenges\.cloudflare\.com|recaptcha\.net|hcaptcha\.com|arkoselabs\.com|funcaptcha\.com)$/i.test(dynHost)) {
+                return;
+            }
+            if (window.__fableHybridBootstrapped) return;
             window.__fableHybridBootstrapped = true;
             const CFG = ${cfg.toString()};
+            if (!CFG.isGame && dynHost) {
+                if (/(?:^|\.)(bloxd\.io|staging\.bloxd\.io|miniblox\.io|krunker\.io|1v1\.lol|voxiom\.io|kirka\.io|kour\.io|poki\.com|crazygames\.com)$/i.test(dynHost)) {
+                    CFG.isGame = true;
+                } else if (typeof CFG.customDomains === "string" && CFG.customDomains.length > 0) {
+                    const cList = CFG.customDomains.split(",");
+                    for (let ci = 0; ci < cList.length; ci++) {
+                        const cd = cList[ci].trim().toLowerCase();
+                        if (cd && (dynHost === cd || dynHost.endsWith("." + cd))) {
+                            CFG.isGame = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            const __fableNativeToStringMap = typeof WeakMap === "function" ? new WeakMap() : null;
+            const markNativeFn = function(wrappedFn, fnName) {
+                if (__fableNativeToStringMap && typeof wrappedFn === "function") {
+                    try { __fableNativeToStringMap.set(wrappedFn, "function " + (fnName || wrappedFn.name || "") + "() { [native code] }"); } catch (_) {}
+                }
+                return wrappedFn;
+            };
+            if (__fableNativeToStringMap && Function.prototype && !Function.prototype.__fableToStringCloaked) {
+                try {
+                    const origFnToString = Function.prototype.toString;
+                    const wrappedToString = function() {
+                        if (__fableNativeToStringMap.has(this)) return __fableNativeToStringMap.get(this);
+                        return origFnToString.call(this);
+                    };
+                    __fableNativeToStringMap.set(wrappedToString, "function toString() { [native code] }");
+                    Object.defineProperty(Function.prototype, "toString", {
+                        configurable: true,
+                        writable: true,
+                        value: wrappedToString
+                    });
+                    Object.defineProperty(Function.prototype, "__fableToStringCloaked", {
+                        configurable: false,
+                        enumerable: false,
+                        value: true
+                    });
+                } catch (_) {}
+            }
 
             // 0a. Persistent Game Account Storage Vault (prevents Bloxd / 3D games from ever resetting to a new account!)
             if (CFG.isGame && !CFG.isIncognito && !CFG.isSuper) try {
@@ -498,31 +547,86 @@ object HybridEngineBridge {
                 } catch (_) {}
             }
 
-            // 3. Blink 3D/2D WebGL, OffscreenCanvas & WebGPU High-Performance Promoter
+            // 3. Blink 3D/2D WebGL2 Tile-Memory Promoter, OffscreenCanvas & WebGPU Vulkan Hyper-Core (v46)
+            const gpuStats = {
+                supported: !!(navigator.gpu && typeof navigator.gpu.requestAdapter === "function"),
+                adapter: "",
+                backendMode: "",
+                format: "",
+                features: [],
+                shadersCached: 0,
+                renderPipesCached: 0,
+                computePipesCached: 0,
+                opaqueHits: 0,
+                deviceLossDelta: 0
+            };
+            let gpuTelemetryTimer = 0;
+            const pushGpuTelemetry = function(immediate) {
+                const sendNow = function() {
+                    gpuTelemetryTimer = 0;
+                    try {
+                        if (window.FableHybridBridge && typeof window.FableHybridBridge.onWebGpuTelemetry === "function") {
+                            window.FableHybridBridge.onWebGpuTelemetry(JSON.stringify(gpuStats));
+                            gpuStats.deviceLossDelta = 0;
+                        }
+                    } catch (_) {}
+                };
+                if (immediate) {
+                    sendNow();
+                } else if (!gpuTelemetryTimer) {
+                    gpuTelemetryTimer = setTimeout(sendNow, 350);
+                }
+            };
+
             if (CFG.highPerfWebGl !== false || CFG.accel3d2d !== false) try {
                 const warmGlExtensions = function(gl) {
                     if (!gl || gl.__fableExtWarmed || typeof gl.getExtension !== "function") return;
                     gl.__fableExtWarmed = true;
                     const fastExts = [
+                        "KHR_parallel_shader_compile",
                         "OES_vertex_array_object",
                         "ANGLE_instanced_arrays",
                         "OES_texture_float_linear",
                         "OES_texture_half_float_linear",
                         "EXT_color_buffer_float",
+                        "EXT_color_buffer_half_float",
                         "WEBGL_compressed_texture_astc",
-                        "WEBGL_compressed_texture_etc"
+                        "WEBGL_compressed_texture_etc",
+                        "EXT_disjoint_timer_query_webgl2"
                     ];
                     for (let i = 0; i < fastExts.length; i++) {
                         try { gl.getExtension(fastExts[i]); } catch (_) {}
                     }
                 };
+                const isPrimary3dGameCanvas = function(el) {
+                    if (!CFG.isGame || !el) return false;
+                    if (el.id === "noa-canvas" || el.id === "game-canvas" || el.id === "unity-canvas") return true;
+                    const w = el.clientWidth || el.width || 0;
+                    const h = el.clientHeight || el.height || 0;
+                    return w >= (window.innerWidth * 0.65) && h >= (window.innerHeight * 0.65);
+                };
+                const buildOptimalGlAttrs = function(canvasEl, callerAttrs) {
+                    const base = { powerPreference: "high-performance" };
+                    if (CFG.isGame) {
+                        // Keep tile-based Adreno GMEM / Mali Tile-RAM fast resolve unless caller explicitly demands preserveDrawingBuffer
+                        if (!callerAttrs || callerAttrs.preserveDrawingBuffer !== true) {
+                            base.preserveDrawingBuffer = false;
+                        }
+                    }
+                    const merged = Object.assign(base, callerAttrs || {});
+                    // On High-DPI mobile displays (DPR >= 1.75) in Ultra mode, 4x MSAA on full-screen voxel/3D canvases burns 35-50% fragment bandwidth
+                    if (CFG.disableGameMsaa !== false && CFG.webGpuProfile === "ultra" &&
+                        (window.devicePixelRatio || 1) >= 1.75 && isPrimary3dGameCanvas(canvasEl) &&
+                        (!callerAttrs || callerAttrs.antialias === undefined)) {
+                        merged.antialias = false;
+                    }
+                    return merged;
+                };
                 const origGetContext = HTMLCanvasElement.prototype.getContext;
-                HTMLCanvasElement.prototype.getContext = function(type, attrs) {
+                HTMLCanvasElement.prototype.getContext = markNativeFn(function(type, attrs) {
                     if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
-                        const nextAttrs = Object.assign({
-                            powerPreference: "high-performance"
-                        }, attrs || {});
-                        const ctx = origGetContext.call(this, type, nextAttrs);
+                        const nextAttrs = buildOptimalGlAttrs(this, attrs);
+                        const ctx = origGetContext.call(this, type, nextAttrs) || origGetContext.call(this, type, attrs);
                         if (ctx && CFG.isGame) warmGlExtensions(ctx);
                         if (this && !this.__fableCtxLostHooked && typeof this.addEventListener === "function") {
                             this.__fableCtxLostHooked = true;
@@ -536,28 +640,77 @@ object HybridEngineBridge {
                         }
                         return ctx;
                     }
+                    if (type === "webgpu" && CFG.webGpuBoost !== false) {
+                        const gpuCtx = origGetContext.call(this, type, attrs);
+                        if (gpuCtx && !gpuCtx.__fableCanvasHooked && typeof gpuCtx.configure === "function") {
+                            gpuCtx.__fableCanvasHooked = true;
+                            const canvasRef = this;
+                            const origConfigure = gpuCtx.configure.bind(gpuCtx);
+                            gpuCtx.configure = markNativeFn(function(cDesc) {
+                                if (!cDesc || typeof cDesc !== "object") return origConfigure(cDesc);
+                                const nextCfg = Object.assign({}, cDesc);
+                                if (!nextCfg.format && navigator.gpu && typeof navigator.gpu.getPreferredCanvasFormat === "function") {
+                                    nextCfg.format = navigator.gpu.getPreferredCanvasFormat();
+                                }
+                                // Full-screen 3D game canvas opaque scanout avoids per-pixel SurfaceFlinger alpha blending
+                                if (!cDesc.alphaMode && isPrimary3dGameCanvas(canvasRef)) {
+                                    nextCfg.alphaMode = "opaque";
+                                    gpuStats.opaqueHits++;
+                                } else if (cDesc.alphaMode === "opaque") {
+                                    gpuStats.opaqueHits++;
+                                }
+                                if (nextCfg.device && nextCfg.device.limits && nextCfg.device.limits.maxTextureDimension2D) {
+                                    const maxDim = nextCfg.device.limits.maxTextureDimension2D;
+                                    if (canvasRef.width > maxDim) canvasRef.width = maxDim;
+                                    if (canvasRef.height > maxDim) canvasRef.height = maxDim;
+                                }
+                                gpuStats.format = String(nextCfg.format || "rgba8unorm");
+                                try {
+                                    if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                        window.FableHybridBridge.onHeavyBurst();
+                                    }
+                                } catch (_) {}
+                                pushGpuTelemetry(false);
+                                return origConfigure(nextCfg);
+                            }, "configure");
+                        }
+                        return gpuCtx;
+                    }
                     // Never force desynchronized:true on 2D canvases in Android WebView:
                     // it blanks small HUD overlay canvases like Bloxd's 48x16 FpsCanvas and hurts willReadFrequently video frame grabs!
                     return origGetContext.call(this, type, attrs);
-                };
+                }, "getContext");
+
                 if (typeof window.OffscreenCanvas === "function" && OffscreenCanvas.prototype && OffscreenCanvas.prototype.getContext) {
                     const origOffGetContext = OffscreenCanvas.prototype.getContext;
-                    OffscreenCanvas.prototype.getContext = function(type, attrs) {
+                    OffscreenCanvas.prototype.getContext = markNativeFn(function(type, attrs) {
                         if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
-                            const nextAttrs = Object.assign({
-                                powerPreference: "high-performance"
-                            }, attrs || {});
-                            const ctx = origOffGetContext.call(this, type, nextAttrs);
+                            const nextAttrs = Object.assign({ powerPreference: "high-performance" }, attrs || {});
+                            const ctx = origOffGetContext.call(this, type, nextAttrs) || origOffGetContext.call(this, type, attrs);
                             if (ctx && CFG.isGame) warmGlExtensions(ctx);
                             return ctx;
                         }
+                        if (type === "webgpu" && CFG.webGpuBoost !== false) {
+                            const gpuCtx = origOffGetContext.call(this, type, attrs);
+                            if (gpuCtx && !gpuCtx.__fableCanvasHooked && typeof gpuCtx.configure === "function") {
+                                gpuCtx.__fableCanvasHooked = true;
+                                const origConfigure = gpuCtx.configure.bind(gpuCtx);
+                                gpuCtx.configure = markNativeFn(function(cDesc) {
+                                    if (cDesc && typeof cDesc === "object" && !cDesc.format && navigator.gpu && typeof navigator.gpu.getPreferredCanvasFormat === "function") {
+                                        return origConfigure(Object.assign({ format: navigator.gpu.getPreferredCanvasFormat() }, cDesc));
+                                    }
+                                    return origConfigure(cDesc);
+                                }, "configure");
+                            }
+                            return gpuCtx;
+                        }
                         return origOffGetContext.call(this, type, attrs);
-                    };
+                    }, "getContext");
                 }
                 // High-FPS Hardware VideoDecoder (WebCodecs) & <video> Frame Playback Accelerator
                 if (typeof window.VideoDecoder === "function" && VideoDecoder.prototype && typeof VideoDecoder.prototype.configure === "function") {
                     const origVdConfig = VideoDecoder.prototype.configure;
-                    VideoDecoder.prototype.configure = function(cfg) {
+                    VideoDecoder.prototype.configure = markNativeFn(function(cfg) {
                         if (cfg && typeof cfg === "object" && !cfg.hardwareAcceleration) {
                             try {
                                 const hwCfg = Object.assign({ hardwareAcceleration: "prefer-hardware" }, cfg);
@@ -568,11 +721,11 @@ object HybridEngineBridge {
                             } catch (_) {}
                         }
                         return origVdConfig.call(this, cfg);
-                    };
+                    }, "configure");
                 }
                 if (typeof window.HTMLMediaElement === "function" && HTMLMediaElement.prototype && typeof HTMLMediaElement.prototype.play === "function") {
                     const origMediaPlay = HTMLMediaElement.prototype.play;
-                    HTMLMediaElement.prototype.play = function() {
+                    HTMLMediaElement.prototype.play = markNativeFn(function() {
                         try {
                             if (this.tagName === "VIDEO") {
                                 this.playsInline = true;
@@ -582,85 +735,298 @@ object HybridEngineBridge {
                             }
                         } catch (_) {}
                         return origMediaPlay.apply(this, arguments);
-                    };
+                    }, "play");
                 }
             } catch (_) {}
+
             if (CFG.webGpuBoost !== false && navigator.gpu && typeof navigator.gpu.requestAdapter === "function") try {
-                const origReqAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
-                navigator.gpu.requestAdapter = function(opts) {
-                    const nextOpts = Object.assign({ powerPreference: "high-performance" }, opts || {});
-                    return origReqAdapter(nextOpts).then(function(adapter) {
-                        if (adapter && typeof adapter.requestDevice === "function" && !adapter.__fableWrapped) {
-                            const origReqDevice = adapter.requestDevice.bind(adapter);
-                            adapter.requestDevice = function(desc) {
-                                return origReqDevice(desc).then(function(device) {
-                                    if (device && typeof device.createShaderModule === "function" && !device.__fableShaderCached) {
-                                        const shaderCache = new Map();
-                                        const origCreateShader = device.createShaderModule.bind(device);
-                                        device.createShaderModule = function(sDesc) {
-                                            if (sDesc && typeof sDesc.code === "string" && sDesc.code.length > 0 && sDesc.code.length <= 131072) {
-                                                const hit = shaderCache.get(sDesc.code);
-                                                if (hit) return hit;
-                                                const mod = origCreateShader(sDesc);
-                                                if (shaderCache.size > 256) shaderCache.clear();
-                                                shaderCache.set(sDesc.code, mod);
-                                                return mod;
-                                            }
-                                            return origCreateShader(sDesc);
-                                        };
-                                        if (typeof device.createRenderPipelineAsync === "function") {
-                                            const pipeCache = new Map();
-                                            const origRenderAsync = device.createRenderPipelineAsync.bind(device);
-                                            device.createRenderPipelineAsync = function(pDesc) {
-                                                let key = null;
-                                                try { key = pDesc && pDesc.label ? ("L:" + pDesc.label) : JSON.stringify(pDesc); } catch (_) { key = null; }
-                                                if (!key || key.length > 16384) return origRenderAsync(pDesc);
-                                                const hit = pipeCache.get(key);
-                                                if (hit) return hit;
-                                                const p = origRenderAsync(pDesc).catch(function(err) {
-                                                    pipeCache.delete(key);
-                                                    throw err;
-                                                });
-                                                if (pipeCache.size >= 128) pipeCache.delete(pipeCache.keys().next().value);
-                                                pipeCache.set(key, p);
-                                                return p;
-                                            };
-                                        }
-                                        if (typeof device.createComputePipelineAsync === "function") {
-                                            const compCache = new Map();
-                                            const origCompAsync = device.createComputePipelineAsync.bind(device);
-                                            device.createComputePipelineAsync = function(cDesc) {
-                                                let key = null;
-                                                try { key = cDesc && cDesc.label ? ("C:" + cDesc.label) : JSON.stringify(cDesc); } catch (_) { key = null; }
-                                                if (!key || key.length > 16384) return origCompAsync(cDesc);
-                                                const hit = compCache.get(key);
-                                                if (hit) return hit;
-                                                const p = origCompAsync(cDesc).catch(function(err) {
-                                                    compCache.delete(key);
-                                                    throw err;
-                                                });
-                                                if (compCache.size >= 128) compCache.delete(compCache.keys().next().value);
-                                                compCache.set(key, p);
-                                                return p;
-                                            };
-                                        }
-                                        device.__fableShaderCached = true;
-                                    }
-                                    if (device && device.lost && typeof device.lost.then === "function") {
-                                        device.lost.then(function() {
-                                            if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
-                                                window.FableHybridBridge.onHeavyBurst();
-                                            }
-                                        });
-                                    }
-                                    return device;
-                                });
-                            };
-                            adapter.__fableWrapped = true;
-                        }
-                        return adapter;
-                    });
+                let nextGpuObjUid = 1;
+                const stampGpuUid = function(obj) {
+                    if (obj && (typeof obj === "object" || typeof obj === "function") && !obj.__fableGpuUid) {
+                        try {
+                            Object.defineProperty(obj, "__fableGpuUid", {
+                                value: nextGpuObjUid++,
+                                enumerable: false,
+                                configurable: false,
+                                writable: false
+                            });
+                        } catch (_) {}
+                    }
+                    return obj;
                 };
+                // Collision-free serializer that encodes opaque GPUShaderModule / GPUPipelineLayout / GPUBindGroupLayout references by exact UID!
+                const serializePipelineDesc = function(prefix, desc) {
+                    if (!desc || typeof desc !== "object") return null;
+                    try {
+                        const s = JSON.stringify(desc, function(_k, v) {
+                            if (v && typeof v === "object" && v.__fableGpuUid) {
+                                return "$gpu#" + v.__fableGpuUid;
+                            }
+                            return v;
+                        });
+                        if (!s || s.length > 24576) return null;
+                        return prefix + ":" + s;
+                    } catch (_) {
+                        return null;
+                    }
+                };
+                const fnvHashStr = function(str) {
+                    let h = 2166136261 >>> 0;
+                    const len = str.length;
+                    for (let i = 0; i < len; i++) {
+                        h ^= str.charCodeAt(i);
+                        h = Math.imul(h, 16777619) >>> 0;
+                    }
+                    return len + ":" + h.toString(16);
+                };
+
+                const origReqAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
+                const profileMode = CFG.webGpuProfile || "ultra";
+
+                navigator.gpu.requestAdapter = markNativeFn(function(opts) {
+                    const callerOpts = opts && typeof opts === "object" ? opts : {};
+                    const primaryOpts = profileMode === "compat"
+                        ? Object.assign({ featureLevel: "compatibility" }, callerOpts)
+                        : Object.assign({ powerPreference: "high-performance" }, callerOpts);
+
+                    // 3-Stage Hardware Adapter Cascade: High-Performance Core -> Default Core -> Compatibility Mode Fallback
+                    return origReqAdapter(primaryOpts)
+                        .catch(function() { return null; })
+                        .then(function(a1) {
+                            if (a1) return { adapter: a1, tier: profileMode === "compat" ? "Compatibility" : "Vulkan/Core High-Perf" };
+                            return origReqAdapter(callerOpts).catch(function() { return null; }).then(function(a2) {
+                                if (a2) return { adapter: a2, tier: "Core Default" };
+                                const compatOpts = Object.assign({}, callerOpts, { featureLevel: "compatibility" });
+                                return origReqAdapter(compatOpts).catch(function() { return null; }).then(function(a3) {
+                                    return { adapter: a3, tier: a3 ? "Compatibility Fallback" : "Unavailable" };
+                                });
+                            });
+                        })
+                        .then(function(res) {
+                            const adapter = res && res.adapter;
+                            if (!adapter) return null;
+
+                            // Polyfill deprecated/removed adapter.requestAdapterInfo() so 2023-2025 WebGPU engines never crash on modern Blink!
+                            if (typeof adapter.requestAdapterInfo !== "function") {
+                                try {
+                                    Object.defineProperty(adapter, "requestAdapterInfo", {
+                                        configurable: true,
+                                        writable: true,
+                                        value: markNativeFn(function() {
+                                            return Promise.resolve(adapter.info || {});
+                                        }, "requestAdapterInfo")
+                                    });
+                                } catch (_) {}
+                            }
+
+                            if (typeof adapter.requestDevice === "function" && !adapter.__fableWrapped) {
+                                const origReqDevice = adapter.requestDevice.bind(adapter);
+                                adapter.requestDevice = markNativeFn(function(desc) {
+                                    const callerDesc = desc && typeof desc === "object" ? desc : {};
+                                    const enhancedDesc = Object.assign({}, callerDesc);
+
+                                    // 1. Unlock safe hardware features supported by the phone's GPU (FP16, Subgroups, ASTC/ETC2, Float32 Filterable)
+                                    try {
+                                        const supported = adapter.features;
+                                        if (supported && typeof supported.has === "function") {
+                                            const reqSet = new Set(Array.isArray(callerDesc.requiredFeatures) ? callerDesc.requiredFeatures.filter(function(f) { return supported.has(f); }) : []);
+                                            if (profileMode !== "compat") {
+                                                const boostFeatures = [
+                                                    "shader-f16",
+                                                    "subgroups",
+                                                    "texture-compression-astc",
+                                                    "texture-compression-etc2",
+                                                    "float32-filterable",
+                                                    "rg11b10ufloat-renderable",
+                                                    "bgra8unorm-storage",
+                                                    "depth32float-stencil8",
+                                                    "indirect-first-instance"
+                                                ];
+                                                for (let fi = 0; fi < boostFeatures.length; fi++) {
+                                                    if (supported.has(boostFeatures[fi])) reqSet.add(boostFeatures[fi]);
+                                                }
+                                            }
+                                            if (reqSet.size > 0) enhancedDesc.requiredFeatures = Array.from(reqSet);
+                                        }
+                                    } catch (_) {}
+
+                                    // 2. Clamp any out-of-range desktop game requiredLimits to adapter.limits & raise key buffer/compute ceilings safely
+                                    try {
+                                        const aLim = adapter.limits;
+                                        if (aLim) {
+                                            const nextLim = {};
+                                            if (callerDesc.requiredLimits && typeof callerDesc.requiredLimits === "object") {
+                                                const keys = Object.keys(callerDesc.requiredLimits);
+                                                for (let ki = 0; ki < keys.length; ki++) {
+                                                    const k = keys[ki];
+                                                    const reqV = callerDesc.requiredLimits[k];
+                                                    const maxV = aLim[k];
+                                                    if (typeof reqV === "number" && typeof maxV === "number") {
+                                                        nextLim[k] = Math.min(reqV, maxV);
+                                                    }
+                                                }
+                                            }
+                                            if (profileMode === "ultra") {
+                                                if (typeof aLim.maxBufferSize === "number") nextLim.maxBufferSize = Math.max(nextLim.maxBufferSize || 0, Math.min(aLim.maxBufferSize, 536870912));
+                                                if (typeof aLim.maxStorageBufferBindingSize === "number") nextLim.maxStorageBufferBindingSize = Math.max(nextLim.maxStorageBufferBindingSize || 0, Math.min(aLim.maxStorageBufferBindingSize, 268435456));
+                                                if (typeof aLim.maxComputeWorkgroupStorageSize === "number") nextLim.maxComputeWorkgroupStorageSize = Math.max(nextLim.maxComputeWorkgroupStorageSize || 0, aLim.maxComputeWorkgroupStorageSize);
+                                            }
+                                            if (Object.keys(nextLim).length > 0) enhancedDesc.requiredLimits = nextLim;
+                                        }
+                                    } catch (_) {}
+
+                                    return origReqDevice(enhancedDesc)
+                                        .catch(function() { return origReqDevice(desc); })
+                                        .then(function(device) {
+                                            if (!device) return device;
+                                            if (!device.adapterInfo && adapter.info) {
+                                                try {
+                                                    Object.defineProperty(device, "adapterInfo", { configurable: true, get: function() { return adapter.info; } });
+                                                } catch (_) {}
+                                            }
+
+                                            // Record live adapter & feature telemetry
+                                            try {
+                                                const inf = adapter.info || {};
+                                                gpuStats.supported = true;
+                                                gpuStats.adapter = [inf.vendor, inf.architecture, inf.device || inf.description].filter(Boolean).join(" / ") || "Hardware GPU";
+                                                gpuStats.backendMode = res.tier;
+                                                gpuStats.format = navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : "rgba8unorm";
+                                                gpuStats.features = device.features ? Array.from(device.features) : [];
+                                                if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                                    window.FableHybridBridge.onHeavyBurst();
+                                                }
+                                                pushGpuTelemetry(true);
+                                            } catch (_) {}
+
+                                            // 3. Collision-Free UID-Stamped WGSL Shader, Layout & Sync/Async Pipeline Cache
+                                            if (!device.__fableShaderCached) {
+                                                if (typeof device.createBindGroupLayout === "function") {
+                                                    const origBgl = device.createBindGroupLayout.bind(device);
+                                                    device.createBindGroupLayout = markNativeFn(function(d) {
+                                                        return stampGpuUid(origBgl(d));
+                                                    }, "createBindGroupLayout");
+                                                }
+                                                if (typeof device.createPipelineLayout === "function") {
+                                                    const origPl = device.createPipelineLayout.bind(device);
+                                                    device.createPipelineLayout = markNativeFn(function(d) {
+                                                        return stampGpuUid(origPl(d));
+                                                    }, "createPipelineLayout");
+                                                }
+                                                if (typeof device.createShaderModule === "function") {
+                                                    const shaderCache = new Map();
+                                                    const origCreateShader = device.createShaderModule.bind(device);
+                                                    device.createShaderModule = markNativeFn(function(sDesc) {
+                                                        if (sDesc && typeof sDesc.code === "string" && sDesc.code.length > 0 && sDesc.code.length <= 262144) {
+                                                            const skey = fnvHashStr(sDesc.code) + "|" + sDesc.code;
+                                                            const hit = shaderCache.get(skey);
+                                                            if (hit) return hit;
+                                                            const mod = stampGpuUid(origCreateShader(sDesc));
+                                                            if (shaderCache.size >= 384) shaderCache.delete(shaderCache.keys().next().value);
+                                                            shaderCache.set(skey, mod);
+                                                            gpuStats.shadersCached = shaderCache.size;
+                                                            pushGpuTelemetry(false);
+                                                            return mod;
+                                                        }
+                                                        return stampGpuUid(origCreateShader(sDesc));
+                                                    }, "createShaderModule");
+                                                }
+                                                const renderSyncCache = new Map();
+                                                if (typeof device.createRenderPipeline === "function") {
+                                                    const origRenderSync = device.createRenderPipeline.bind(device);
+                                                    device.createRenderPipeline = markNativeFn(function(pDesc) {
+                                                        const key = serializePipelineDesc("RS", pDesc);
+                                                        if (!key) return origRenderSync(pDesc);
+                                                        const hit = renderSyncCache.get(key);
+                                                        if (hit) return hit;
+                                                        const pipe = origRenderSync(pDesc);
+                                                        if (renderSyncCache.size >= 256) renderSyncCache.delete(renderSyncCache.keys().next().value);
+                                                        renderSyncCache.set(key, pipe);
+                                                        gpuStats.renderPipesCached = renderSyncCache.size;
+                                                        pushGpuTelemetry(false);
+                                                        return pipe;
+                                                    }, "createRenderPipeline");
+                                                }
+                                                if (typeof device.createRenderPipelineAsync === "function") {
+                                                    const pipeCache = new Map();
+                                                    const origRenderAsync = device.createRenderPipelineAsync.bind(device);
+                                                    device.createRenderPipelineAsync = markNativeFn(function(pDesc) {
+                                                        const key = serializePipelineDesc("RA", pDesc);
+                                                        if (!key) return origRenderAsync(pDesc);
+                                                        const hit = pipeCache.get(key);
+                                                        if (hit) return hit;
+                                                        const p = origRenderAsync(pDesc).catch(function(err) {
+                                                            pipeCache.delete(key);
+                                                            throw err;
+                                                        });
+                                                        if (pipeCache.size >= 256) pipeCache.delete(pipeCache.keys().next().value);
+                                                        pipeCache.set(key, p);
+                                                        gpuStats.renderPipesCached = Math.max(gpuStats.renderPipesCached, pipeCache.size);
+                                                        pushGpuTelemetry(false);
+                                                        return p;
+                                                    }, "createRenderPipelineAsync");
+                                                }
+                                                const compSyncCache = new Map();
+                                                if (typeof device.createComputePipeline === "function") {
+                                                    const origCompSync = device.createComputePipeline.bind(device);
+                                                    device.createComputePipeline = markNativeFn(function(cDesc) {
+                                                        const key = serializePipelineDesc("CS", cDesc);
+                                                        if (!key) return origCompSync(cDesc);
+                                                        const hit = compSyncCache.get(key);
+                                                        if (hit) return hit;
+                                                        const pipe = origCompSync(cDesc);
+                                                        if (compSyncCache.size >= 192) compSyncCache.delete(compSyncCache.keys().next().value);
+                                                        compSyncCache.set(key, pipe);
+                                                        gpuStats.computePipesCached = compSyncCache.size;
+                                                        pushGpuTelemetry(false);
+                                                        return pipe;
+                                                    }, "createComputePipeline");
+                                                }
+                                                if (typeof device.createComputePipelineAsync === "function") {
+                                                    const compCache = new Map();
+                                                    const origCompAsync = device.createComputePipelineAsync.bind(device);
+                                                    device.createComputePipelineAsync = markNativeFn(function(cDesc) {
+                                                        const key = serializePipelineDesc("CA", cDesc);
+                                                        if (!key) return origCompAsync(cDesc);
+                                                        const hit = compCache.get(key);
+                                                        if (hit) return hit;
+                                                        const p = origCompAsync(cDesc).catch(function(err) {
+                                                            compCache.delete(key);
+                                                            throw err;
+                                                        });
+                                                        if (compCache.size >= 192) compCache.delete(compCache.keys().next().value);
+                                                        compCache.set(key, p);
+                                                        gpuStats.computePipesCached = Math.max(gpuStats.computePipesCached, compCache.size);
+                                                        pushGpuTelemetry(false);
+                                                        return p;
+                                                    }, "createComputePipelineAsync");
+                                                }
+                                                device.__fableShaderCached = true;
+                                            }
+
+                                            if (device.lost && typeof device.lost.then === "function") {
+                                                device.lost.then(function(lossInfo) {
+                                                    const reason = lossInfo && lossInfo.reason ? String(lossInfo.reason) : "unknown";
+                                                    if (reason !== "destroyed") {
+                                                        gpuStats.deviceLossDelta++;
+                                                        pushGpuTelemetry(true);
+                                                        try {
+                                                            if (window.FableHybridBridge && window.FableHybridBridge.onHeavyBurst) {
+                                                                window.FableHybridBridge.onHeavyBurst();
+                                                            }
+                                                            window.dispatchEvent(new CustomEvent("fable-webgpu-device-lost", { detail: { reason: reason } }));
+                                                        } catch (_) {}
+                                                    }
+                                                });
+                                            }
+                                            return device;
+                                        });
+                                }, "requestDevice");
+                                adapter.__fableWrapped = true;
+                            }
+                            return adapter;
+                        });
+                }, "requestAdapter");
             } catch (_) {}
 
             // 3b. WebAssembly Module Cache, Streaming Fallback & C++ 8-Core Burst
@@ -1226,6 +1592,21 @@ object HybridEngineBridge {
                                     this.__scX = x; this.__scY = y; this.__scW = w; this.__scH = h;
                                     return origScissor.call(this, x, y, w, h);
                                 };
+                            }
+                            const origBindVao = Proto.bindVertexArray;
+                            const origDeleteVao = Proto.deleteVertexArray;
+                            if (typeof origBindVao === "function") {
+                                Proto.bindVertexArray = function(vao) {
+                                    if (vao !== null && this.__fableLastVao === vao) return;
+                                    this.__fableLastVao = vao;
+                                    return origBindVao.call(this, vao);
+                                };
+                                if (typeof origDeleteVao === "function") {
+                                    Proto.deleteVertexArray = function(vao) {
+                                        if (this.__fableLastVao === vao) this.__fableLastVao = null;
+                                        return origDeleteVao.call(this, vao);
+                                    };
+                                }
                             }
                             Proto.__fableStateCached = true;
                         };

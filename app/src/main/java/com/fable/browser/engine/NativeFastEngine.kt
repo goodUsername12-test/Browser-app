@@ -51,6 +51,9 @@ object NativeFastEngine {
     @JvmStatic
     private external fun nativeIsFastAsset(url: String, docHost: String?): Boolean
 
+    @JvmStatic
+    private external fun nativeProbeVulkanJson(): String
+
     fun prewarm() {
         if (isNativeAvailable) {
             runCatching { nativePrewarm() }
@@ -158,5 +161,12 @@ object NativeFastEngine {
             runCatching { return nativeIsFastAsset(url, docHost) }
         }
         return false
+    }
+
+    fun probeVulkanHardwareJson(): String {
+        if (isNativeAvailable) {
+            runCatching { return nativeProbeVulkanJson() }
+        }
+        return "{\"available\":false,\"deviceName\":\"System GPU\"}"
     }
 }

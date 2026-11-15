@@ -19,6 +19,7 @@ import com.fable.browser.data.model.SitePermission
 import com.fable.browser.data.model.ThemeMode
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.data.prefs.SettingsStore
+import com.fable.browser.engine.WebGpuPowerProfile
 import com.fable.browser.engine.RecAudioSource
 import com.fable.browser.engine.RecBitrate
 import com.fable.browser.engine.RecFrameRate
@@ -374,6 +375,56 @@ class SettingsViewModel @Inject constructor(
     fun setHybridHideLocalIp(v: Boolean) = edit { store.setHybridHideLocalIp(v) }
     fun setHybridPersistTabMode(v: Boolean) = edit { store.setHybridPersistTabMode(v) }
     fun setHybridWebGpuBoost(v: Boolean) = edit { store.setHybridWebGpuBoost(v) }
+    fun setHybridWebGpuProfile(v: WebGpuPowerProfile) = edit { store.setHybridWebGpuProfile(v) }
+    fun setHybridDisableGameMsaa(v: Boolean) = edit { store.setHybridDisableGameMsaa(v) }
+
+    fun ensureBasicProxiesLoaded(context: android.content.Context) {
+        com.fable.browser.engine.FableProxyProfileManager.ensureLoaded(context)
+        engineManager.pushProxyConfig()
+    }
+
+    fun addOrUpdateBasicProxy(
+        context: android.content.Context,
+        profile: com.fable.browser.engine.FableProxyProfile,
+        activateNow: Boolean
+    ): Result<com.fable.browser.engine.FableProxyProfile> {
+        val res = com.fable.browser.engine.FableProxyProfileManager.addOrUpdateProfile(context, profile, activateNow)
+        engineManager.pushProxyConfig()
+        return res
+    }
+
+    fun toggleBasicProxyActive(context: android.content.Context, profileId: String?) {
+        com.fable.browser.engine.FableProxyProfileManager.setActiveProfile(context, profileId)
+        engineManager.pushProxyConfig()
+    }
+
+    fun deleteBasicProxy(context: android.content.Context, profileId: String) {
+        com.fable.browser.engine.FableProxyProfileManager.deleteProfile(context, profileId)
+        engineManager.pushProxyConfig()
+    }
+
+    fun testBasicProxyLatency(profile: com.fable.browser.engine.FableProxyProfile) {
+        viewModelScope.launch {
+            val res = com.fable.browser.engine.FableProxyProfileManager.testProfileLatencyMs(profile)
+            _message.value = res.fold(
+                onSuccess = { ms -> "✅ ${profile.name} (${profile.protocol.badge}) reachable in ${ms}ms" },
+                onFailure = { e -> "❌ ${profile.name} failed: ${e.message ?: "unreachable"}" }
+            )
+        }
+    }
+
+    fun runWebGpuBenchmarkNow(context: android.content.Context) {
+        viewModelScope.launch {
+            com.fable.browser.engine.FableWebGpuManager.runLiveWebGpuBenchmark(context, settings.value)
+        }
+    }
+
+    fun exportGpuPerformanceReport(context: android.content.Context) {
+        viewModelScope.launch {
+            val saved = com.fable.browser.engine.FableWebGpuManager.exportSanitizedPerformanceReport(context, settings.value)
+            _message.value = if (saved != null) "Saved sanitized GPU report: Downloads/$saved" else "Could not export report"
+        }
+    }
     fun setHybrid3d2dAccel(v: Boolean) = edit { store.setHybrid3d2dAccel(v) }
     fun setHybridTeleportStabilizer(v: Boolean) = edit { store.setHybridTeleportStabilizer(v) }
     fun setHybridHibernateGecko(v: Boolean) = edit { store.setHybridHibernateGecko(v) }

@@ -17,5 +17,9 @@ target_compile_options(fable_fast PRIVATE
     -fvisibility=hidden
 )
 
+target_link_options(fable_fast PRIVATE
+    -Wl,-z,max-page-size=16384
+)
+
 find_library(log-lib log)
-target_link_libraries(fable_fast ${log-lib})
+target_link_libraries(fable_fast ${log-lib} dl)

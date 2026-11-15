@@ -568,7 +568,8 @@ class TabManager @Inject constructor(
             callbacks.onContextMenu(target)
         }
         tab.hybridFileChooserHandler = { mimeTypes, allowMultiple, onResult ->
-            activityBridge.requestFiles(mimeTypes, allowMultiple, onResult)
+            val normalized = com.fable.browser.util.UploadFiles.normalizeMimeTypes(mimeTypes)
+            activityBridge.requestFiles(normalized, allowMultiple, onResult)
         }
         tab.hybridExternalUrlHandler = { externalUrl ->
             activityBridge.openExternal(externalUrl)

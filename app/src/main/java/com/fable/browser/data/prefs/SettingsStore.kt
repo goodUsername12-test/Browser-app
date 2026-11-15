@@ -23,6 +23,7 @@ import com.fable.browser.data.model.SearchEngine
 import com.fable.browser.data.model.SuperDeviceRange
 import com.fable.browser.data.model.SuperProxyType
 import com.fable.browser.data.model.TabUnloadMode
+import com.fable.browser.engine.WebGpuPowerProfile
 import com.fable.browser.data.model.ThemeMode
 import com.fable.browser.engine.RecAudioSource
 import com.fable.browser.engine.RecBitrate
@@ -180,6 +181,8 @@ data class Settings(
     val hybridHideLocalIp: Boolean = true,
     val hybridPersistTabMode: Boolean = true,
     val hybridWebGpuBoost: Boolean = true,
+    val hybridWebGpuProfile: WebGpuPowerProfile = WebGpuPowerProfile.ULTRA_VULKAN_MAX,
+    val hybridDisableGameMsaa: Boolean = true,
     val hybrid3d2dAccel: Boolean = true,
     val hybridTeleportStabilizer: Boolean = true,
     val hybridHibernateGecko: Boolean = true,
@@ -426,6 +429,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val HYBRID_HIDE_LOCAL_IP = booleanPreferencesKey("hybrid_hide_local_ip")
         val HYBRID_PERSIST_TAB_MODE = booleanPreferencesKey("hybrid_persist_tab_mode")
         val HYBRID_WEBGPU_BOOST = booleanPreferencesKey("hybrid_webgpu_boost")
+        val HYBRID_WEBGPU_PROFILE = stringPreferencesKey("hybrid_webgpu_profile")
+        val HYBRID_DISABLE_GAME_MSAA = booleanPreferencesKey("hybrid_disable_game_msaa")
         val HYBRID_3D_2D_ACCEL = booleanPreferencesKey("hybrid_3d_2d_accel")
         val HYBRID_TELEPORT_STABILIZER = booleanPreferencesKey("hybrid_teleport_stabilizer")
         val HYBRID_HIBERNATE_GECKO = booleanPreferencesKey("hybrid_hibernate_gecko")
@@ -594,6 +599,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             hybridHideLocalIp = p[Keys.HYBRID_HIDE_LOCAL_IP] ?: true,
             hybridPersistTabMode = p[Keys.HYBRID_PERSIST_TAB_MODE] ?: true,
             hybridWebGpuBoost = p[Keys.HYBRID_WEBGPU_BOOST] ?: true,
+            hybridWebGpuProfile = enum(p[Keys.HYBRID_WEBGPU_PROFILE], WebGpuPowerProfile.ULTRA_VULKAN_MAX),
+            hybridDisableGameMsaa = p[Keys.HYBRID_DISABLE_GAME_MSAA] ?: true,
             hybrid3d2dAccel = p[Keys.HYBRID_3D_2D_ACCEL] ?: true,
             hybridTeleportStabilizer = p[Keys.HYBRID_TELEPORT_STABILIZER] ?: true,
             hybridHibernateGecko = p[Keys.HYBRID_HIBERNATE_GECKO] ?: true,
@@ -888,6 +895,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setHybridHideLocalIp(v: Boolean) = set(Keys.HYBRID_HIDE_LOCAL_IP, v)
     suspend fun setHybridPersistTabMode(v: Boolean) = set(Keys.HYBRID_PERSIST_TAB_MODE, v)
     suspend fun setHybridWebGpuBoost(v: Boolean) = set(Keys.HYBRID_WEBGPU_BOOST, v)
+    suspend fun setHybridWebGpuProfile(v: WebGpuPowerProfile) = set(Keys.HYBRID_WEBGPU_PROFILE, v.name)
+    suspend fun setHybridDisableGameMsaa(v: Boolean) = set(Keys.HYBRID_DISABLE_GAME_MSAA, v)
     suspend fun setHybrid3d2dAccel(v: Boolean) = set(Keys.HYBRID_3D_2D_ACCEL, v)
     suspend fun setHybridTeleportStabilizer(v: Boolean) = set(Keys.HYBRID_TELEPORT_STABILIZER, v)
     suspend fun setHybridHibernateGecko(v: Boolean) = set(Keys.HYBRID_HIBERNATE_GECKO, v)

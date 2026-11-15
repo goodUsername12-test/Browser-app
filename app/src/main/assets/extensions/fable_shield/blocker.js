@@ -5,6 +5,12 @@ let config = {
   proxyHost: "",
   proxyPort: 9050,
   proxyType: "socks5",
+  basicProxyEnabled: false,
+  basicProxyType: "socks5",
+  basicProxyHost: "",
+  basicProxyPort: 1080,
+  basicProxyUser: "",
+  basicProxyPass: "",
   adBlockEnabled: true,
   adBlockIncognito: true,
   gameTouchFix: true,
@@ -760,9 +766,14 @@ function isSameSite(a, b) {
   return a === b || a.endsWith("." + b) || b.endsWith("." + a);
 }
 
+function isChallengeOrTurnstileHost(h) {
+  return !!h && /(?:^|\.)(challenges\.cloudflare\.com|cloudflare\.com|recaptcha\.net|hcaptcha\.com|arkoselabs\.com|funcaptcha\.com|workos\.com|auth0\.com)$/i.test(h);
+}
+
 function shouldBlock(url, documentUrl) {
   const host = hostOf(url);
   if (!host) return false;
+  if (isChallengeOrTurnstileHost(host)) return false;
   const docHost = documentUrl ? hostOf(documentUrl) : null;
   if (docHost && isSameSite(host, docHost)) return false;
 
@@ -829,6 +840,7 @@ function onBeforeSendHeaders(details) {
   const headers = [];
   const docHost = hostOf(details.documentUrl || details.originUrl || details.url);
   const target = hostOf(details.url);
+  if (isChallengeOrTurnstileHost(target) || isChallengeOrTurnstileHost(docHost)) return {};
   let sawDnt = false;
   let sawSaver = false;
 
@@ -892,7 +904,34 @@ function incognitoProxyInfo() {
   return proxy;
 }
 
+function basicProxyOn() {
+  return config.basicProxyEnabled === true && !!config.basicProxyHost;
+}
+
+function basicProxyInfo() {
+  const port = Number(config.basicProxyPort) || 1080;
+  const user = config.basicProxyUser || "";
+  const pass = config.basicProxyPass || "";
+  if (config.basicProxyType === "http" || config.basicProxyType === "https") {
+    const p = { type: config.basicProxyType, host: config.basicProxyHost, port };
+    if (user || pass) {
+      try {
+        p.proxyAuthorizationHeader = "Basic " + btoa(unescape(encodeURIComponent(user + ":" + pass)));
+      } catch (e) {}
+    }
+    return p;
+  }
+  const p = { type: "socks", host: config.basicProxyHost, port, proxyDNS: true };
+  if (user) p.username = user;
+  if (pass) p.password = pass;
+  return p;
+}
+
 function onProxyRequest(details) {
+  const reqHost = hostOf(details && details.url);
+  if (reqHost === "local.fable.app" || reqHost === "localhost" || reqHost === "127.0.0.1") {
+    return { type: "direct" };
+  }
   if (details.incognito) {
     if (superProxyOn()) {
       if (!details.requestHeaders) return superProxyInfo();
@@ -900,15 +939,19 @@ function onProxyRequest(details) {
     }
     if (config.proxyEnabled && config.proxyHost) return incognitoProxyInfo();
   }
+  if (basicProxyOn()) {
+    return basicProxyInfo();
+  }
   return { type: "direct" };
 }
 
 const authTried = new Map();
 
 function onAuthRequired(details) {
-  if (!details.isProxy || !superProxyOn()) return {};
-  const user = config.superProxyUser || "";
-  const pass = config.superProxyPass || "";
+  if (!details.isProxy || (!superProxyOn() && !basicProxyOn())) return {};
+  const useSuper = details.incognito && superProxyOn();
+  const user = useSuper ? (config.superProxyUser || "") : (config.basicProxyUser || "");
+  const pass = useSuper ? (config.superProxyPass || "") : (config.basicProxyPass || "");
   if (!user && !pass) return {};
   const tries = authTried.get(details.requestId) || 0;
   if (tries >= 1) return { cancel: true };
@@ -952,8 +995,9 @@ function registerListeners() {
   const blockAll = blockNormal;
   const headersAll = config.normalTabShield === true || config.dataSaver === true;
   const incognitoProxyOn = config.proxyEnabled === true && !!config.proxyHost;
-  const proxyOn = incognitoProxyOn || superProxyOn();
-  const state = [blockNormal, blockPrivate, headersAll, proxyOn, superProxyOn()].join(",");
+  const normalProxyOn = basicProxyOn();
+  const proxyOn = incognitoProxyOn || superProxyOn() || normalProxyOn;
+  const state = [blockNormal, blockPrivate, headersAll, proxyOn, superProxyOn(), normalProxyOn, config.basicProxyHost, config.basicProxyPort].join(",");
   if (state === listenerState) return;
   listenerState = state;
 
@@ -974,7 +1018,7 @@ function registerListeners() {
   if (wr.onAuthRequired) {
     try {
       if (wr.onAuthRequired.hasListener(onAuthRequired)) wr.onAuthRequired.removeListener(onAuthRequired);
-      if (superProxyOn()) wr.onAuthRequired.addListener(onAuthRequired, { urls: ["<all_urls>"] }, ["blocking"]);
+      if (superProxyOn() || normalProxyOn) wr.onAuthRequired.addListener(onAuthRequired, { urls: ["<all_urls>"] }, ["blocking"]);
     } catch (e) {
     }
   }
@@ -983,11 +1027,16 @@ function registerListeners() {
     const proxyEvent = browser.proxy.onRequest;
     if (proxyEvent.hasListener(onProxyRequest)) proxyEvent.removeListener(onProxyRequest);
     if (proxyOn) {
-      const attempts = [
-        [{ urls: ["<all_urls>"], incognito: true }, ["requestHeaders"]],
-        [{ urls: ["<all_urls>"] }, ["requestHeaders"]],
-        [{ urls: ["<all_urls>"] }, null],
-      ];
+      const attempts = normalProxyOn
+        ? [
+            [{ urls: ["<all_urls>"] }, ["requestHeaders"]],
+            [{ urls: ["<all_urls>"] }, null],
+          ]
+        : [
+            [{ urls: ["<all_urls>"], incognito: true }, ["requestHeaders"]],
+            [{ urls: ["<all_urls>"] }, ["requestHeaders"]],
+            [{ urls: ["<all_urls>"] }, null],
+          ];
       for (const [filter, extra] of attempts) {
         try {
           if (proxyEvent.hasListener(onProxyRequest)) proxyEvent.removeListener(onProxyRequest);

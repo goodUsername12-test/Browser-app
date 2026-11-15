@@ -323,8 +323,8 @@ class EngineManager @Inject constructor(
     }
 
     private fun trustedSitesJson(d: Settings): String {
-        val hosts = d.fpTrustedSites.split(',').map { it.trim() }.filter { it.isNotEmpty() }
-        if (hosts.isEmpty()) return "[]"
+        val builtInAuthDomains = listOf("challenges.cloudflare.com", "cloudflare.com", "dust.tt", "recaptcha.net", "hcaptcha.com")
+        val hosts = (d.fpTrustedSites.split(',').map { it.trim() }.filter { it.isNotEmpty() } + builtInAuthDomains).distinct()
         return hosts.joinToString(prefix = "[", postfix = "]", separator = ",") { host ->
             "{\"firstPartyDomain\":\"$host\",\"overrides\":\"-AllTargets\"}"
         }
@@ -533,6 +533,7 @@ class EngineManager @Inject constructor(
     }
 
     fun refreshFilterRules() = proxyConfig.pushRules()
+    fun pushProxyConfig() = proxyConfig.push()
 
     fun clearContainer(contextId: String) {
         _runtime?.storageController?.clearDataForSessionContext(contextId)

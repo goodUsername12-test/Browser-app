@@ -1,5 +1,6 @@
 package com.fable.browser.ui.settings
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,6 +15,10 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,10 +29,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fable.browser.data.model.DefaultBrowserEngine
+import com.fable.browser.engine.FableWebGpuManager
+import com.fable.browser.engine.WebGpuPowerProfile
 import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.RadioGroup
 import com.fable.browser.ui.components.SectionHeader
@@ -42,13 +50,79 @@ fun HybridBetaSettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val s by viewModel.settings.collectAsStateWithLifecycle()
+    val gpuTelemetry by FableWebGpuManager.telemetry.collectAsStateWithLifecycle()
+    val vkInfo = remember { FableWebGpuManager.vulkanHardware }
     val context = LocalContext.current
     var domainsText by remember { mutableStateOf(s.hybridCustomDomains) }
     LaunchedEffect(s.hybridCustomDomains) {
         domainsText = s.hybridCustomDomains
     }
 
-    SettingsPage(title = "Beta: Gecko + Blink Engine", onBack = onBack, viewModel = viewModel) {
+    SettingsPage(title = "Beta: Blink × Gecko & WebGPU Core", onBack = onBack, viewModel = viewModel) {
+        // --- Live Hardware Vulkan & WebGPU Diagnostics + Benchmark Card ---
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(
+                    text = "WebGPU & Vulkan Hardware Hyper-Core v46",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = buildString {
+                        append("GPU: ${vkInfo.deviceName}")
+                        if (vkInfo.available) append(" (Vulkan ${vkInfo.apiVersion})")
+                        append("\nCPU Big/Total Cores: ${vkInfo.bigCores}/${vkInfo.totalCores} · Max 2D Tex: ${vkInfo.maxImageDimension2D}px")
+                        if (vkInfo.available) {
+                            val vkExts = listOfNotNull(
+                                if (vkInfo.extFp16Int8) "FP16/Int8" else null,
+                                if (vkInfo.extDescriptorIndexing) "DescIndexing" else null,
+                                if (vkInfo.extRobustness2) "Robustness2(FastIndirect)" else null,
+                                if (vkInfo.extBufferDeviceAddress) "BufferAddr" else null
+                            )
+                            if (vkExts.isNotEmpty()) append("\nVulkan Hardware Features: ${vkExts.joinToString(", ")}")
+                        }
+                        append("\nWebGPU Adapter: ${gpuTelemetry.adapterSummary}")
+                        append("\nBackend Tier: ${gpuTelemetry.backendMode} · Format: ${gpuTelemetry.preferredCanvasFormat}")
+                        if (gpuTelemetry.unlockedFeatures.isNotEmpty()) {
+                            append("\nUnlocked WebGPU Features (${gpuTelemetry.unlockedFeatures.size}): ${gpuTelemetry.unlockedFeatures.take(6).joinToString(", ")}")
+                        }
+                        append("\nUID Cache Hits: ${gpuTelemetry.shadersCached} WGSL · ${gpuTelemetry.renderPipelinesCached} Render · ${gpuTelemetry.computePipelinesCached} Compute · ${gpuTelemetry.opaqueSwapchainHits} Opaque")
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (gpuTelemetry.lastBenchmarkSummary.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = gpuTelemetry.lastBenchmarkSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { viewModel.runWebGpuBenchmarkNow(context) },
+                        enabled = !gpuTelemetry.benchmarkRunning,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(if (gpuTelemetry.benchmarkRunning) "Benchmarking..." else "⚡ Benchmark WebGPU")
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.exportGpuPerformanceReport(context) }
+                    ) {
+                        Text("Export GPU Report")
+                    }
+                }
+            }
+        }
+
         SectionHeader("Default Browser Engine")
         RadioGroup(
             options = DefaultBrowserEngine.entries.toList(),
@@ -56,6 +130,28 @@ fun HybridBetaSettingsScreen(
             label = { it.label },
             description = { it.summary },
             onSelect = viewModel::setDefaultEngine
+        )
+        ListDivider()
+
+        SectionHeader("WebGPU & Bloxd Graphics Power Profile")
+        RadioGroup(
+            options = WebGpuPowerProfile.entries.toList(),
+            selected = s.hybridWebGpuProfile,
+            label = { it.label },
+            description = { it.summary },
+            onSelect = viewModel::setHybridWebGpuProfile
+        )
+        SwitchRow(
+            title = "WebGPU Vulkan Hyper-Core & UID Pipeline Cache",
+            subtitle = "Synchronous DOCUMENT_START hook, 3-tier adapter cascade (High-Perf -> Core -> Compatibility), unlocks shader-f16/subgroups/ASTC/ETC2, polyfills requestAdapterInfo(), and collision-free UID pipeline cache",
+            checked = s.hybridWebGpuBoost,
+            onCheckedChange = viewModel::setHybridWebGpuBoost
+        )
+        SwitchRow(
+            title = "Bypass expensive 4x MSAA on High-DPI 3D game canvases",
+            subtitle = "Saves 35-50% fragment GPU bandwidth in Bloxd & 3D WebGL2 games on sharp High-DPI mobile screens (DPR >= 1.75) while keeping Adreno GMEM / Mali Tile-RAM fast resolve",
+            checked = s.hybridDisableGameMsaa,
+            onCheckedChange = viewModel::setHybridDisableGameMsaa
         )
         ListDivider()
 
@@ -123,17 +219,17 @@ fun HybridBetaSettingsScreen(
         }
         ListDivider()
 
-        SectionHeader("CPU, Big-Core Affinity & Teleport Heavy-Load Stabilizer")
+        SectionHeader("CPU, Big-Core Affinity & Dawn/Vulkan Thread Stabilizer")
         SwitchRow(
-            title = "Native C++ Big-Core (Cortex-A75) Affinity & Priority -18",
-            subtitle = "Pins CrRendererMain, CrGpuMain, VizCompositor, RenderThread, and GeckoMain to 2.0 GHz Cortex-A75 big cores via sched_setaffinity and priority -18 in C++",
+            title = "Native C++ Big-Core Affinity & Dawn/Vulkan GPU Priority -20",
+            subtitle = "Pins CrRendererMain, CrGpuMain, VizCompositor, Dawn, Vulkan, RenderThread, and GeckoMain to high-clock big cores via sched_setaffinity and priority -20 in C++",
             checked = s.hybridNativeCpuBoost,
             icon = Icons.Outlined.Memory,
             onCheckedChange = viewModel::setHybridNativeCpuBoost
         )
         SwitchRow(
             title = "Teleport & heavy-load lag-spike eliminator",
-            subtitle = "Eliminates lag spikes during teleports, chunk bursts, and crowded multiplayer scenes using async texture decoding, frame-budget idle scheduling, and C++ worker thread boosting",
+            subtitle = "Eliminates lag spikes during teleports, chunk bursts, and crowded multiplayer scenes using async texture decoding, KHR_parallel_shader_compile, and C++ worker boosting",
             checked = s.hybridTeleportStabilizer,
             onCheckedChange = viewModel::setHybridTeleportStabilizer
         )
@@ -165,22 +261,16 @@ fun HybridBetaSettingsScreen(
         )
         ListDivider()
 
-        SectionHeader("WebGPU, 3D WebGL, 2D Canvas, Camera & Zero-Cost Clicks")
+        SectionHeader("3D WebGL2, 2D Canvas, Camera & Zero-Cost Clicks")
         SwitchRow(
-            title = "WebGPU high-performance adapter & WGSL shader cache",
-            subtitle = "Forces high-performance WebGPU adapters, unlocks hardware buffer/texture limits, caches compiled WGSL shader modules, and auto-recovers on device loss",
-            checked = s.hybridWebGpuBoost,
-            onCheckedChange = viewModel::setHybridWebGpuBoost
-        )
-        SwitchRow(
-            title = "Force High-Performance 3D WebGL / WebGL2 context",
-            subtitle = "Promotes canvas.getContext('webgl' / 'webgl2') to powerPreference: 'high-performance' and disables forced MSAA on heavy 3D games",
+            title = "Force High-Performance 3D WebGL / WebGL2 Tile-Memory Context",
+            subtitle = "Promotes canvas.getContext('webgl' / 'webgl2') to powerPreference: 'high-performance', preserveDrawingBuffer: false, and pre-warms KHR_parallel_shader_compile + ASTC/ETC2",
             checked = s.hybridHighPerfWebGl,
             onCheckedChange = viewModel::setHybridHighPerfWebGl
         )
         SwitchRow(
-            title = "3D WebGL state deduplication & 2D Canvas GPU/text cache",
-            subtitle = "Caches WebGL getParameter/getExtension calls, deduplicates redundant GL state/program binds, GPU-accelerates 2D canvases, and caches 2D measureText",
+            title = "3D WebGL2 VAO/state deduplication & 2D Canvas GPU/text cache",
+            subtitle = "Deduplicates redundant VAO, program, texture, viewport, scissor, depth, and blend calls while keeping 2D HUD canvases (Bloxd FPS) crisp",
             checked = s.hybrid3d2dAccel,
             onCheckedChange = viewModel::setHybrid3d2dAccel
         )

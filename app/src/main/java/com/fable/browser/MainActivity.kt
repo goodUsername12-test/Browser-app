@@ -79,6 +79,7 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
 
         FableBatteryGovernor.init(this)
+        com.fable.browser.engine.FableProxyProfileManager.ensureLoaded(this)
         activityBridge.bind(this)
 
         if (tabManager.tabs.value.isEmpty()) tabManager.restoreOrCreate()

@@ -19,6 +19,7 @@ splashscreen = "1.0.1"
 accompanistPermissions = "0.36.0"
 coil = "2.7.0"
 mlkitTextRecognition = "16.0.1"
+webkit = "1.13.0"
 junit = "4.13.2"
 androidxJunit = "1.2.1"
 espresso = "3.6.1"
@@ -63,6 +64,7 @@ androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscree
 accompanist-permissions = { group = "com.google.accompanist", name = "accompanist-permissions", version.ref = "accompanistPermissions" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
+androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }

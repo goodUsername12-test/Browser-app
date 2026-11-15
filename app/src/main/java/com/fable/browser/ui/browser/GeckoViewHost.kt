@@ -246,6 +246,11 @@ private class FableHybridJsBridge(
     }
 
     @JavascriptInterface
+    fun onWebGpuTelemetry(json: String?) {
+        com.fable.browser.engine.FableWebGpuManager.onWebGpuTelemetryJson(json)
+    }
+
+    @JavascriptInterface
     fun logDiagnostic(msg: String) {
         Log.i("FableShield", "[hybrid] $msg")
     }
@@ -424,6 +429,10 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 cm.setAcceptThirdPartyCookies(this, !tab.isIncognito)
             }
             addJavascriptInterface(FableHybridJsBridge(context.applicationContext, tab), "FableHybridBridge")
+            val initBoot = tab.hybridBootstrapProvider?.invoke(tab.url.value).orEmpty()
+            if (initBoot.isNotEmpty()) {
+                com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(this, initBoot)
+            }
             setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
                 val cur = if (numberOfMatches > 0) activeMatchOrdinal + 1 else 0
                 tab.updateFindMatch(FindMatch(cur, numberOfMatches))
@@ -572,6 +581,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     tab.updateCanGoForward(view.canGoForward())
                     val boot = tab.hybridBootstrapProvider?.invoke(url.orEmpty()).orEmpty()
                     if (boot.isNotEmpty()) {
+                        com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(view, boot)
                         runCatching { view.evaluateJavascript(boot, null) }
                     }
                 }

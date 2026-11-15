@@ -9,6 +9,15 @@
 #include <cstring>
 #include <vector>
 #include <dirent.h>
+#include <dlfcn.h>
+#include <mutex>
+#if __has_include(<vulkan/vulkan.h>)
+#define VK_NO_PROTOTYPES 1
+#include <vulkan/vulkan.h>
+#define FABLE_HAS_VK_HEADER 1
+#else
+#define FABLE_HAS_VK_HEADER 0
+#endif
 #include <pthread.h>
 #include <sched.h>
 #include <sys/prctl.h>
@@ -339,13 +348,18 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         "WRRender"
     };
 
-    constexpr std::array<std::string_view, 10> COMPOSITOR_GPU_PREFIXES = {
+    constexpr std::array<std::string_view, 15> COMPOSITOR_GPU_PREFIXES = {
         "CrGpuMain",
         "Chrome_InProcGp",
         "VizCompositor",
         "Compositor",
         "RenderThread",
         "Renderer",
+        "Dawn",
+        "Vulkan",
+        "ANGLE",
+        "SharedImage",
+        "WebGPU",
         "WRSceneBuilder",
         "Swappy",
         "Chrome_ChildIO",
@@ -426,10 +440,19 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
         if (matched_main) continue;
 
         bool matched_compositor = false;
+        const int big_count = __builtin_popcount(big_mask);
+        const std::uint32_t gpu_fast_mask = (!rec && big_count >= 2) ? big_mask : (rec ? (all_mask & ~rec_core_mask) : all_mask);
         for (const auto& prefix : COMPOSITOR_GPU_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), heavy_burst ? -20 : -19);
-                pin_tid_to_mask(static_cast<pid_t>(tid), rec ? (all_mask & ~rec_core_mask) : all_mask);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -20);
+                const bool is_primary_gpu_thread =
+                    starts_with_ci(comm, "CrGpuMain") ||
+                    starts_with_ci(comm, "Chrome_InProcGp") ||
+                    starts_with_ci(comm, "VizCompositor") ||
+                    starts_with_ci(comm, "RenderThread") ||
+                    contains_ci(comm, "Dawn") ||
+                    contains_ci(comm, "Vulkan");
+                pin_tid_to_mask(static_cast<pid_t>(tid), is_primary_gpu_thread ? gpu_fast_mask : (rec ? (all_mask & ~rec_core_mask) : all_mask));
                 matched_compositor = true;
                 break;
             }
@@ -534,6 +557,142 @@ std::uint64_t compute_fnv1a_64(const unsigned char* data, std::size_t len) noexc
     h ^= (h >> 29u);
     h *= 0xff51afd7ed558ccdULL;
     return h ^ (h >> 32u);
+}
+
+
+std::mutex g_vk_mutex;
+std::string g_cached_vk_json;
+
+std::string json_escape_fast(std::string_view s) noexcept {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (static_cast<unsigned char>(c) >= 0x20) out += c;
+    }
+    return out;
+}
+
+const std::string& probe_vulkan_hardware_json() noexcept {
+    std::lock_guard<std::mutex> lock(g_vk_mutex);
+    if (!g_cached_vk_json.empty()) return g_cached_vk_json;
+
+    detect_cpu_topology();
+    const int big_cores = __builtin_popcount(g_big_core_mask.load(std::memory_order_relaxed));
+    const int total_cores = __builtin_popcount(g_all_core_mask.load(std::memory_order_relaxed));
+
+#if FABLE_HAS_VK_HEADER
+    void* lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (lib) {
+        auto fpGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr"));
+        if (fpGetInstanceProcAddr) {
+            auto fpCreateInstance = reinterpret_cast<PFN_vkCreateInstance>(fpGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance"));
+            if (fpCreateInstance) {
+                VkApplicationInfo appInfo{};
+                appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+                appInfo.pApplicationName = "FableWebGpuProbe";
+                appInfo.applicationVersion = 1;
+                appInfo.pEngineName = "FableHyperCore";
+                appInfo.engineVersion = 46;
+                appInfo.apiVersion = VK_MAKE_VERSION(1, 1, 0);
+
+                VkInstanceCreateInfo createInfo{};
+                createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+                createInfo.pApplicationInfo = &appInfo;
+
+                VkInstance instance = VK_NULL_HANDLE;
+                if (fpCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
+                    appInfo.apiVersion = VK_MAKE_VERSION(1, 0, 0);
+                    fpCreateInstance(&createInfo, nullptr, &instance);
+                }
+
+                if (instance != VK_NULL_HANDLE) {
+                    auto fpEnumDevs = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(fpGetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices"));
+                    auto fpGetProps = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(fpGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties"));
+                    auto fpEnumExts = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(fpGetInstanceProcAddr(instance, "vkEnumerateDeviceExtensionProperties"));
+                    auto fpDestroy = reinterpret_cast<PFN_vkDestroyInstance>(fpGetInstanceProcAddr(instance, "vkDestroyInstance"));
+
+                    std::uint32_t devCount = 0;
+                    if (fpEnumDevs && fpGetProps && fpEnumDevs(instance, &devCount, nullptr) == VK_SUCCESS && devCount > 0) {
+                        std::vector<VkPhysicalDevice> devs(devCount);
+                        if (fpEnumDevs(instance, &devCount, devs.data()) == VK_SUCCESS && !devs.empty()) {
+                            VkPhysicalDeviceProperties props{};
+                            fpGetProps(devs[0], &props);
+
+                            bool extFp16Int8 = false;
+                            bool extDescIdx = false;
+                            bool extBufAddr = false;
+                            bool extRobust2 = false;
+                            std::uint32_t extCount = 0;
+                            if (fpEnumExts && fpEnumExts(devs[0], nullptr, &extCount, nullptr) == VK_SUCCESS && extCount > 0 && extCount < 2048) {
+                                std::vector<VkExtensionProperties> exts(extCount);
+                                if (fpEnumExts(devs[0], nullptr, &extCount, exts.data()) == VK_SUCCESS) {
+                                    for (const auto& ex : exts) {
+                                        std::string_view en(ex.extensionName);
+                                        if (en == "VK_KHR_shader_float16_int8") extFp16Int8 = true;
+                                        else if (en == "VK_EXT_descriptor_indexing") extDescIdx = true;
+                                        else if (en == "VK_KHR_buffer_device_address") extBufAddr = true;
+                                        else if (en == "VK_EXT_robustness2") extRobust2 = true;
+                                    }
+                                }
+                            }
+
+                            const std::uint32_t vMaj = VK_VERSION_MAJOR(props.apiVersion);
+                            const std::uint32_t vMin = VK_VERSION_MINOR(props.apiVersion);
+                            const std::uint32_t vPat = VK_VERSION_PATCH(props.apiVersion);
+                            const std::uint64_t maxStorageMb = static_cast<std::uint64_t>(props.limits.maxStorageBufferRange) / (1024ULL * 1024ULL);
+                            const std::uint32_t maxSharedKb = props.limits.maxComputeSharedMemorySize / 1024U;
+                            const std::uint32_t maxTex2d = props.limits.maxImageDimension2D;
+                            const std::uint32_t maxDescSets = props.limits.maxBoundDescriptorSets;
+
+                            char buf[768];
+                            std::snprintf(
+                                buf,
+                                sizeof(buf),
+                                "{\"available\":true,\"deviceName\":\"%s\",\"vendorId\":%u,\"apiVersion\":\"%u.%u.%u\","
+                                "\"maxImageDimension2D\":%u,\"maxStorageBufferMb\":%llu,\"maxComputeSharedKb\":%u,\"maxDescriptorSets\":%u,"
+                                "\"extFp16Int8\":%s,\"extDescriptorIndexing\":%s,\"extBufferDeviceAddress\":%s,\"extRobustness2\":%s,"
+                                "\"bigCores\":%d,\"totalCores\":%d}",
+                                json_escape_fast(props.deviceName).c_str(),
+                                props.vendorID,
+                                vMaj, vMin, vPat,
+                                maxTex2d,
+                                static_cast<unsigned long long>(maxStorageMb),
+                                maxSharedKb,
+                                maxDescSets,
+                                extFp16Int8 ? "true" : "false",
+                                extDescIdx ? "true" : "false",
+                                extBufAddr ? "true" : "false",
+                                extRobust2 ? "true" : "false",
+                                big_cores,
+                                total_cores
+                            );
+                            g_cached_vk_json = buf;
+                        }
+                    }
+                    if (fpDestroy) fpDestroy(instance, nullptr);
+                }
+            }
+        }
+        dlclose(lib);
+    }
+#endif
+
+    if (g_cached_vk_json.empty()) {
+        char fallback[256];
+        std::snprintf(
+            fallback,
+            sizeof(fallback),
+            "{\"available\":false,\"deviceName\":\"OpenGL ES / System GPU\",\"apiVersion\":\"0.0.0\","
+            "\"bigCores\":%d,\"totalCores\":%d}",
+            big_cores,
+            total_cores
+        );
+        g_cached_vk_json = fallback;
+    }
+    return g_cached_vk_json;
 }
 
 } // namespace
@@ -807,6 +966,16 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeIsFastAsset(
     }
     env->ReleaseStringUTFChars(j_url, url_chars);
     return fast ? JNI_TRUE : JNI_FALSE;
+}
+
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeFastEngine_nativeProbeVulkanJson(
+    JNIEnv* env,
+    jclass
+) {
+    const std::string& json = probe_vulkan_hardware_json();
+    return env->NewStringUTF(json.c_str());
 }
 
 }

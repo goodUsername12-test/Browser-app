@@ -132,6 +132,13 @@ class ProxyConfig @Inject constructor(
             put("proxyHost", s?.incognitoProxyHost ?: "")
             put("proxyPort", s?.incognitoProxyPort ?: 9050)
             put("proxyType", (s?.incognitoProxyType ?: "SOCKS5").lowercase())
+            val basicActive = FableProxyProfileManager.state.value.activeProfile
+            put("basicProxyEnabled", basicActive != null)
+            put("basicProxyType", basicActive?.protocol?.wire ?: "socks5")
+            put("basicProxyHost", basicActive?.host ?: "")
+            put("basicProxyPort", basicActive?.port ?: 1080)
+            put("basicProxyUser", basicActive?.username ?: "")
+            put("basicProxyPass", basicActive?.password ?: "")
             put("adBlockEnabled", s?.adBlockEnabled ?: true)
             put("adBlockIncognito", s?.incognitoAdBlock ?: true)
             put("gameTouchFix", s?.gameTouchFix ?: true)

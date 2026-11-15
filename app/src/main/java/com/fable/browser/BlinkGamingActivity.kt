@@ -263,6 +263,11 @@ class BlinkGamingActivity : ComponentActivity() {
                     }
 
                     @JavascriptInterface
+                    fun onWebGpuTelemetry(json: String?) {
+                        com.fable.browser.engine.FableWebGpuManager.onWebGpuTelemetryJson(json)
+                    }
+
+                    @JavascriptInterface
                     fun logDiagnostic(msg: String) {
                         Log.i("FableShield", "[blink-game] $msg")
                     }
@@ -291,6 +296,7 @@ class BlinkGamingActivity : ComponentActivity() {
                 superIdentity = null,
                 pageUrl = intent.getStringExtra(EXTRA_URL).orEmpty()
             )
+            com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(this, bootScript)
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = false
 

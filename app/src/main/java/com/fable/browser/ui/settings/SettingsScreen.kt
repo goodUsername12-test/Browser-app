@@ -114,7 +114,7 @@ fun SettingsScreen(
         ListDivider()
         SettingRow(
             title = "General",
-            subtitle = "Engine: ${settings.defaultEngine.label}  ·  Search, homepage, startup",
+            subtitle = "Engine: ${settings.defaultEngine.label}  ·  Fable Proxy (SOCKS5/HTTP), search, startup",
             icon = Icons.Outlined.Tune,
             onClick = { onNavigate(Routes.SETTINGS_GENERAL) }
         )
@@ -136,7 +136,7 @@ fun SettingsScreen(
         ListDivider()
         SettingRow(
             title = "Beta: Gecko + Blink Engine",
-            subtitle = "${settings.defaultEngine.label} · 120Hz, CPU, WebGL, video & click settings",
+            subtitle = "${settings.hybridWebGpuProfile.label} · WebGPU/Vulkan benchmark, 120Hz & Bloxd boost",
             icon = Icons.Outlined.Speed,
             onClick = { onNavigate(Routes.SETTINGS_HYBRID_BETA) }
         )

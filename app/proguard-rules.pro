@@ -47,3 +47,5 @@
 -keep class com.fable.browser.agent.FableLocalLlmRuntime { *; }
 -keep class com.fable.browser.engine.RustFastCore { *; }
 -keep class com.fable.browser.engine.NativeFastEngine { *; }
+-keep class com.fable.browser.engine.FableWebGpuManager { *; }
+-keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }

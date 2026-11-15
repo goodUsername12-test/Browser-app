@@ -54,6 +54,7 @@
     /(?:^|\.)(challenges\.cloudflare\.com|recaptcha\.net|hcaptcha\.com|arkoselabs\.com|funcaptcha\.com)$/i.test(HOST) ||
     (HOST.endsWith(".google.com") && /^\/recaptcha\//i.test(location.pathname || "")) ||
     (HOST.endsWith(".gstatic.com") && /^\/recaptcha\//i.test(location.pathname || ""));
+  if (IS_CHALLENGE_HOST) return;
 
   const BASE_SEED = SUPER ? Number(SUPER.seed) >>> 0 : Number(CFG.sessionSeed || 1) >>> 0;
   const SEED = hash32(HOST, BASE_SEED) || 1;

@@ -170,8 +170,8 @@ object FableWebGpuManager {
                 try {
                     suspendCancellableCoroutine<String> { cont ->
                         val wv = WebView(context).apply {
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
+                            this.settings.javaScriptEnabled = true
+                            this.settings.domStorageEnabled = true
                         }
                         benchWv = wv
                         val boot = HybridEngineBridge.buildCombinedBootstrapScript(

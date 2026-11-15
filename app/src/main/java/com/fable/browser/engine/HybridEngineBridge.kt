@@ -760,7 +760,7 @@ object HybridEngineBridge {
                     try {
                         const s = JSON.stringify(desc, function(_k, v) {
                             if (v && typeof v === "object" && v.__fableGpuUid) {
-                                return "$gpu#" + v.__fableGpuUid;
+                                return "${"$"}gpu#" + v.__fableGpuUid;
                             }
                             return v;
                         });

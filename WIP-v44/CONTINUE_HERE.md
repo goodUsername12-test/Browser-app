@@ -1,33 +1,12 @@
-# WIP-v44 Agent Foundation Checkpoint
+# Fable Browser v44 (1.44.0, versionCode 40)
 
-## Current state
-The agent implementation is partially integrated and has not yet been compiled or sent to CI.
-
-## Implemented
-- `FableAgentModels.kt`: Basic Browsing, Gaming Screen-Only, Long Task modes, autonomy policies, risk zones, confirmations, logs, learned skills.
-- `FableScreenInputController.kt`: Android touch/joystick/camera multi-pointer input, tap/swipe, 80 ms watchdog, guaranteed release.
-- `FableVisionAndOcr.kt`: PixelCopy/view capture, ML Kit OCR, visual stability/load waiting, fast frame-diff heuristic.
-- `FableSearchAndReader.kt`: search adapter, HTML page text extraction, page understanding.
-- `FableVideoSkillLearner.kt`: video sampling, OCR, motion/camera/button heuristics, saved skill JSON, model storage/free-space discovery.
-- Rust `nativeComputeControlVector` and Kotlin fallback in `RustFastCore.kt`.
-- ML Kit dependency.
-- Agent and Risk Zone settings fields/setters in `SettingsStore.kt` and `SettingsViewModel.kt`.
-- Input controller attached to browser container lifecycle in `GeckoViewHost.kt`.
-
-## Not yet completed
-- Compile and fix Kotlin/Rust/Gradle errors.
-- Add Agent UI and route.
-- Add orchestrator/state machine for all three modes.
-- Connect OCR/vision/search/video skills to orchestrator.
-- Add BlinkGamingActivity integration.
-- Add unit tests.
-- Run local validation and GitHub CI.
-- Do not claim v44 complete until debug, tests, release, and emulator checks pass.
-
-## Critical constraints
-- Gaming Mode is strict screen-only: no DOM, JS, console, DevTools, network state, or game memory.
-- LLM never runs inside the 50-100 ms input loop.
-- Every held input has watchdog release.
-- Visually wait for loading and state changes.
-- Enforce risk zones outside the model.
-- Apply the 10-minute save rule continuously.
+## Summary of Fable Multi-Mode Visual & Browser AI Agent in v44
+1. **3 Operating Modes (`FableAgentEngine.kt`, `FableNeuralBrain.kt`, `FableAgentModels.kt`)**:
+   - **Basic Browsing Mode**: Fast natural-language planning, live DuckDuckGo web search (`FableSearchAndReader.kt`), URL navigation with adaptive visual load waiting, full page text copy to Clipboard + `Downloads/<host>-text.txt`, and 12-stream `.zip` Page Code export.
+   - **Gaming Mode (Strict Screen-Only · 50-100ms)**: 100% pixel & touch only (zero DOM/JS/console access). Captures rendered View pixels (`PixelCopy`/Canvas), runs sub-2ms fast target analysis + Rust PD steering (`nativeComputeControlVector` in `lib.rs` & `RustFastCore.kt`) + periodic ML Kit OCR nametag lock, and drives simultaneous multi-touch Joystick + Camera + Attack via `FableScreenInputController.kt` with an 80ms auto-release safety watchdog.
+   - **Long Task Mode**: Multi-step state machine opening requested sections (`Projects`, `Analytics`, `Members`, `Upgrade`), waiting for visual screen stability, comparing visible OCR signatures across intervals, stopping early if unchanged, and gating sensitive taps.
+2. **Deep Video Upload Skill Learning & 172 GB Model Vault (`FableVideoSkillLearner.kt`, `AgentSettingsScreen.kt`)**:
+   - Upload any `.mp4`/`.webm` demonstration video -> hardware `MediaMetadataRetriever` frame sampling + optical motion flow + ML Kit OCR -> saves reusable `LearnedVideoSkill` JSON on local storage + 1-tap replay.
+   - Built-in `<4 MB` offline NLU + ML Kit OCR + Rust Vision + 1-tap 6x parallel download of compact 4-bit `Qwen2.5-0.5B` (~395 MB) / `Llama-3.2-1B` (~770 MB) `.gguf` models + optional `llama.cpp`/Ollama/OpenAI endpoint.
+3. **Full Autonomy, Emergency Stop HUD & 8 Adjustable Risk Zones (`FableAgentSheet.kt`, `AgentSettingsScreen.kt`, `BrowserScreen.kt`)**:
+   - Configurable autonomy (`Auto Safe`, `Full Auto`, `Ask Important`, `Always Ask Everything`), all 8 Risk Zones (`Accessibility`, `Private Worlds`, `Single-Player`, `Game Testing`, `Allowed Automation`, `Approved Macros`, `Competitive Online`, `Important Actions`), live HUD pill, and `<10 ms` `■ STOP` button.

@@ -22,6 +22,7 @@ import com.fable.browser.ui.browser.BrowserViewModel
 import com.fable.browser.ui.downloads.DownloadsScreen
 import com.fable.browser.ui.history.HistoryScreen
 import com.fable.browser.ui.settings.AboutScreen
+import com.fable.browser.ui.settings.AgentSettingsScreen
 import com.fable.browser.ui.settings.BackupScreen
 import com.fable.browser.ui.settings.PasswordsScreen
 import com.fable.browser.ui.settings.AppearanceSettingsScreen
@@ -62,6 +63,7 @@ object Routes {
     const val SETTINGS_BOOSTER = "settings/booster"
     const val SETTINGS_PASSWORDS = "settings/passwords"
     const val SETTINGS_BACKUP = "settings/backup"
+    const val SETTINGS_AGENT = "settings/agent"
 }
 
 @Composable
@@ -109,7 +111,8 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
                 onOpenHistory = { navController.navigate(Routes.HISTORY) { launchSingleTop = true } },
                 onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) { launchSingleTop = true } },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
-                onOpenRecorderSettings = { navController.navigate(Routes.SETTINGS_RECORDER) { launchSingleTop = true } }
+                onOpenRecorderSettings = { navController.navigate(Routes.SETTINGS_RECORDER) { launchSingleTop = true } },
+                onOpenAgentSettings = { navController.navigate(Routes.SETTINGS_AGENT) { launchSingleTop = true } }
             )
         }
         composable(Routes.TABS) {
@@ -147,6 +150,15 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
             SettingsScreen(
                 onBack = { navController.popIfNotRoot() },
                 onNavigate = { route -> navController.navigate(route) { launchSingleTop = true } }
+            )
+        }
+        composable(Routes.SETTINGS_AGENT) {
+            val agentState by viewModel.agentState.collectAsStateWithLifecycle()
+            AgentSettingsScreen(
+                onBack = { navController.popIfNotRoot() },
+                agentState = agentState,
+                onDownloadCompactModel = viewModel.agentEngine::downloadCompactModelPreset,
+                onImportModelUri = viewModel.agentEngine::importLocalModelUri
             )
         }
         composable(Routes.SETTINGS_GENERAL) {

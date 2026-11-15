@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.FiberManualRecord
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -81,7 +82,8 @@ fun MenuSheet(
     onOpenBlinkGaming: () -> Unit = {},
     isScreenRecording: Boolean = false,
     onToggleScreenRecording: () -> Unit = {},
-    onOpenRecorderSettings: () -> Unit = {}
+    onOpenRecorderSettings: () -> Unit = {},
+    onOpenAiAgent: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -91,6 +93,12 @@ fun MenuSheet(
                 .navigationBarsPadding()
                 .padding(bottom = 12.dp)
         ) {
+            MenuItem(
+                icon = Icons.Outlined.SmartToy,
+                label = "Fable AI Agent (Web · Gaming · Long Task)",
+                onClick = { onOpenAiAgent(); onDismiss() }
+            )
+            ListDivider()
             MenuItem(
                 icon = if (isBookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                 label = if (isBookmarked) "Remove bookmark" else "Add bookmark",

@@ -17,6 +17,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Videocam
@@ -104,6 +105,13 @@ fun SettingsScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
 
     SettingsPage(title = "Settings", onBack = onBack, viewModel = viewModel) {
+        SettingRow(
+            title = "Fable AI Agent & Risk Zones",
+            subtitle = "Mode: ${settings.agentDefaultMode.shortLabel}  ·  ${settings.agentReactionIntervalMs}ms Gaming  ·  Autonomy & Models",
+            icon = Icons.Outlined.SmartToy,
+            onClick = { onNavigate(Routes.SETTINGS_AGENT) }
+        )
+        ListDivider()
         SettingRow(
             title = "General",
             subtitle = "Engine: ${settings.defaultEngine.label}  ·  Search, homepage, startup",

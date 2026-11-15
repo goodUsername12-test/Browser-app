@@ -2,6 +2,7 @@ import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.Properties
+import java.util.concurrent.TimeUnit
 
 plugins {
     alias(libs.plugins.android.application)
@@ -276,7 +277,7 @@ abstract class BuildLlamaJniTask : DefaultTask() {
         }
         pb.environment().putAll(extraEnv)
         val proc = pb.start()
-        val finished = proc.waitFor(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+        val finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS)
         if (!finished) {
             proc.destroyForcibly()
             return false

@@ -154,7 +154,7 @@ object FableNeuralBrain {
 
         if (learnedSkills.isNotEmpty()) {
             val skArr = JSONArray()
-            learnedSkills.take(6).forEach { skArr.put(sk.name) }
+            learnedSkills.take(6).forEach { sk -> skArr.put(sk.name) }
             ctx.put("savedSkills", skArr)
         }
 

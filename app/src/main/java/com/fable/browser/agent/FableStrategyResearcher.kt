@@ -135,7 +135,7 @@ object FableStrategyResearcher {
         runCatching {
             val q = URLEncoder.encode("$topic best method tutorial", "UTF-8")
             val html = httpGetFast("https://www.youtube.com/results?search_query=$q&hl=en", ua, 5_500)
-            val idTitleRe = Regex("\"videoRenderer\":\{\"videoId\":\"([A-Za-z0-9_-]{11})\".*?\"title\":\{\"runs\":\[\{\"text\":\"([^\"]+)\"\}")
+            val idTitleRe = Regex("\"videoRenderer\":\\{\"videoId\":\"([A-Za-z0-9_-]{11})\".*?\"title\":\\{\"runs\":\\[\\{\"text\":\"([^\"]+)\"\\}")
             val seen = HashSet<String>()
             for (m in idTitleRe.findAll(html)) {
                 val vid = m.groupValues[1]
@@ -179,7 +179,7 @@ object FableStrategyResearcher {
             val out = ArrayList<String>()
 
             // 1. Try captionTracks timedtext XML URL for ultra-fast spoken tutorial steps
-            val capMatch = Regex("\"captionTracks\":\[\{\"baseUrl\":\"([^\"]+)\"").find(watchHtml)
+            val capMatch = Regex("\"captionTracks\":\\[\\{\"baseUrl\":\"([^\"]+)\"").find(watchHtml)
             if (capMatch != null) {
                 val capUrl = unescapeJsonString(capMatch.groupValues[1])
                 if (capUrl.startsWith("https://")) {

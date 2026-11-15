@@ -260,6 +260,30 @@ abstract class BuildLlamaJniTask : DefaultTask() {
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
 
+    private fun runBoundedCommand(
+        cmd: List<String>,
+        logFile: File,
+        timeoutSec: Long,
+        extraEnv: Map<String, String> = emptyMap()
+    ): Boolean {
+        logFile.parentFile?.mkdirs()
+        val devNull = File("/dev/null")
+        val pb = ProcessBuilder(cmd)
+            .redirectErrorStream(true)
+            .redirectOutput(logFile)
+        if (devNull.exists()) {
+            pb.redirectInput(devNull)
+        }
+        pb.environment().putAll(extraEnv)
+        val proc = pb.start()
+        val finished = proc.waitFor(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+        if (!finished) {
+            proc.destroyForcibly()
+            return false
+        }
+        return proc.exitValue() == 0
+    }
+
     @TaskAction
     fun buildLlama() {
         val outRoot = outputDir.get().asFile.apply { mkdirs() }
@@ -270,36 +294,37 @@ abstract class BuildLlamaJniTask : DefaultTask() {
             val toolchainFile = File(ndkDir, "build/cmake/android.toolchain.cmake")
             if (!toolchainFile.isFile) return
 
-            val sysCmake = File("/usr/bin/cmake")
-            val sdkCmake = File(sdk, "cmake").listFiles()
+            val sdkCmakeBin = File(sdk, "cmake").listFiles()
                 ?.filter { it.isDirectory }
                 ?.maxByOrNull { it.name }
-                ?.let { File(it, "bin/cmake") }
+                ?.let { File(it, "bin") }
+            val sysCmake = File("/usr/bin/cmake")
             val cmakeExe = when {
                 sysCmake.canExecute() -> sysCmake.absolutePath
-                sdkCmake != null && sdkCmake.canExecute() -> sdkCmake.absolutePath
+                sdkCmakeBin != null && File(sdkCmakeBin, "cmake").canExecute() -> File(sdkCmakeBin, "cmake").absolutePath
                 else -> return
             }
 
-            val sysNinja = File("/usr/bin/ninja")
-            val sdkNinja = sdkCmake?.parentFile?.let { File(it, "ninja") }
-            val ninjaExe = when {
-                sysNinja.canExecute() -> sysNinja.absolutePath
-                sdkNinja != null && sdkNinja.canExecute() -> sdkNinja.absolutePath
-                else -> null
-            }
+            val ninjaCandidates = listOfNotNull(
+                File("/usr/bin/ninja"),
+                File("/usr/local/bin/ninja"),
+                sdkCmakeBin?.let { File(it, "ninja") }
+            )
+            val ninjaExe = ninjaCandidates.firstOrNull { it.canExecute() }?.absolutePath
 
             val cacheBase = sharedCacheRoot.get().asFile.apply { mkdirs() }
             val llamaSrcDir = File(cacheBase, "llama_cpp_src")
             if (!File(llamaSrcDir, "include/llama.h").isFile) {
                 llamaSrcDir.deleteRecursively()
-                val clonePb = ProcessBuilder(
-                    "git", "clone", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git", llamaSrcDir.absolutePath
-                ).redirectErrorStream(true)
-                val cloneProc = clonePb.start()
-                val cloneLog = cloneProc.inputStream.bufferedReader().readText()
-                if (cloneProc.waitFor() != 0) {
-                    logger.warn("llama.cpp clone skipped: $cloneLog")
+                val cloneLog = File(cacheBase, "clone.log")
+                val cloned = runBoundedCommand(
+                    cmd = listOf("git", "clone", "--depth", "1", "--single-branch", "https://github.com/ggml-org/llama.cpp.git", llamaSrcDir.absolutePath),
+                    logFile = cloneLog,
+                    timeoutSec = 90L,
+                    extraEnv = mapOf("GIT_TERMINAL_PROMPT" to "0")
+                )
+                if (!cloned) {
+                    logger.warn("llama.cpp clone failed/timed out: ${cloneLog.takeIf { it.exists() }?.readText()?.takeLast(600)}")
                     return
                 }
             }
@@ -325,19 +350,20 @@ abstract class BuildLlamaJniTask : DefaultTask() {
                         cfgCmd.add("-GNinja")
                         cfgCmd.add("-DCMAKE_MAKE_PROGRAM=$ninjaExe")
                     }
-                    val cfgProc = ProcessBuilder(cfgCmd).redirectErrorStream(true).start()
-                    val cfgLog = cfgProc.inputStream.bufferedReader().readText()
-                    if (cfgProc.waitFor() != 0) {
-                        logger.warn("CMake configure for fable_llama ($abi) failed: $cfgLog")
+                    val cfgLog = File(cacheBase, "configure_$abi.log")
+                    if (!runBoundedCommand(cfgCmd, cfgLog, timeoutSec = 90L)) {
+                        logger.warn("CMake configure for fable_llama ($abi) failed: ${cfgLog.takeIf { it.exists() }?.readText()?.takeLast(900)}")
                         continue
                     }
 
-                    val bldProc = ProcessBuilder(
-                        cmakeExe, "--build", buildDir.absolutePath, "--config", "Release", "--target", "fable_llama", "-j", cores.toString()
-                    ).redirectErrorStream(true).start()
-                    val bldLog = bldProc.inputStream.bufferedReader().readText()
-                    if (bldProc.waitFor() != 0) {
-                        logger.warn("CMake build for fable_llama ($abi) failed: $bldLog")
+                    val bldLog = File(cacheBase, "build_$abi.log")
+                    val bldOk = runBoundedCommand(
+                        cmd = listOf(cmakeExe, "--build", buildDir.absolutePath, "--config", "Release", "--target", "fable_llama", "-j", cores.toString()),
+                        logFile = bldLog,
+                        timeoutSec = 240L
+                    )
+                    if (!bldOk) {
+                        logger.warn("CMake build for fable_llama ($abi) failed/timed out: ${bldLog.takeIf { it.exists() }?.readText()?.takeLast(1200)}")
                         continue
                     }
 

@@ -211,3 +211,72 @@ pub extern "C" fn Java_com_fable_browser_engine_RustFastCore_nativeRecommendNetw
         | (((buf_kb as i64) & 0xFFFF) << 16)
         | (((upload_chunk_kb as i64) & 0xFFFF) << 32)
 }
+
+#[repr(C)]
+pub struct JniEnvStub {
+    pub functions: *const *const c_void,
+}
+
+#[no_mangle]
+pub extern "C" fn Java_com_fable_browser_engine_RustFastCore_nativeComputeControlVector(
+    _env: *mut c_void,
+    _cls: *mut c_void,
+    target_x_permille: i32,
+    target_y_permille: i32,
+    coverage_permille: i32,
+    confidence: i32,
+    combat_mode: u8,
+) -> i64 {
+    if confidence < 15 {
+        return 0;
+    }
+    let tx = target_x_permille.clamp(0, 1000);
+    let ty = target_y_permille.clamp(0, 1000);
+    let cov = coverage_permille.clamp(0, 1000);
+    let combat = combat_mode != 0;
+
+    // Horizontal & vertical error from crosshair (500, 480)
+    let err_x = tx - 500;
+    let err_y = ty - 480;
+
+    // Smooth PD-style camera turn (-100..100)
+    let cam_dx = ((err_x * 22) / 100).clamp(-100, 100);
+    let cam_dy = ((err_y * 14) / 100).clamp(-65, 65);
+
+    // Desired stop distance: closer in combat (cov ~85), comfortable stop when following/approaching (cov ~110)
+    let stop_cov = if combat { 85 } else { 110 };
+    let joy_y: i32 = if cov < stop_cov {
+        // Push joystick forward (negative Y on screen is UP/forward: -100..100)
+        let dist_factor = (stop_cov - cov).clamp(20, 100);
+        -dist_factor
+    } else if combat && cov > 190 {
+        // Backstep slightly if too close in combat
+        45
+    } else {
+        0
+    };
+
+    // Slight strafe in combat or alignment assist
+    let joy_x: i32 = if combat && err_x.abs() < 160 {
+        if (tx & 1) == 0 { 38 } else { -38 }
+    } else {
+        (err_x / 8).clamp(-45, 45)
+    };
+
+    let should_attack: i64 = if combat && err_x.abs() <= 115 && err_y.abs() <= 125 && cov >= 18 {
+        1
+    } else {
+        0
+    };
+
+    let jx_u = (joy_x + 128).clamp(28, 228) as i64;
+    let jy_u = (joy_y + 128).clamp(28, 228) as i64;
+    let cx_u = (cam_dx + 128).clamp(28, 228) as i64;
+    let cy_u = (cam_dy + 128).clamp(28, 228) as i64;
+
+    (jx_u & 0xFF)
+        | ((jy_u & 0xFF) << 8)
+        | ((cx_u & 0xFF) << 16)
+        | ((cy_u & 0xFF) << 24)
+        | (should_attack << 32)
+}

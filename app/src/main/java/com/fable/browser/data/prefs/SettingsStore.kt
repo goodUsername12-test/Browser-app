@@ -10,6 +10,10 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.fable.browser.data.model.DataSaverMode
+import com.fable.browser.agent.AgentAutonomyPolicy
+import com.fable.browser.agent.AgentMode
+import com.fable.browser.agent.AgentRiskZone
+import com.fable.browser.agent.RiskZonePolicy
 import com.fable.browser.data.model.DefaultBrowserEngine
 import com.fable.browser.data.model.DohProvider
 import com.fable.browser.data.model.IncognitoAutoWipe
@@ -200,7 +204,22 @@ data class Settings(
     val batteryIdleTimeoutSec: Int = 8,
     val batteryFreezeBgTabs: Boolean = true,
     val batteryReduceMotion: Boolean = false,
-    val batteryOledDimPct: Int = 0
+    val batteryOledDimPct: Int = 0,
+    val agentDefaultMode: AgentMode = AgentMode.BASIC_BROWSING,
+    val agentAutonomyPolicy: AgentAutonomyPolicy = AgentAutonomyPolicy.AUTO_SAFE,
+    val agentReactionIntervalMs: Int = 60,
+    val agentJoystickCenterX: Int = 18,
+    val agentJoystickCenterY: Int = 74,
+    val agentShowHudOverlay: Boolean = true,
+    val agentLocalLlmEndpoint: String = "",
+    val riskAccessibility: RiskZonePolicy = RiskZonePolicy.ALLOWED,
+    val riskPrivateWorlds: RiskZonePolicy = RiskZonePolicy.ALLOWED,
+    val riskSinglePlayer: RiskZonePolicy = RiskZonePolicy.ALLOWED,
+    val riskGameTesting: RiskZonePolicy = RiskZonePolicy.ALLOWED,
+    val riskAllowedAutomation: RiskZonePolicy = RiskZonePolicy.ALLOWED,
+    val riskApprovedMacros: RiskZonePolicy = RiskZonePolicy.ALLOWED,
+    val riskCompetitiveOnline: RiskZonePolicy = RiskZonePolicy.ASK_ONCE,
+    val riskImportantSensitive: RiskZonePolicy = RiskZonePolicy.ASK_EVERY_TIME
 ) {
     fun toRecorderConfig(): RecorderConfig = RecorderConfig(
         resolution = recResolution,
@@ -220,6 +239,16 @@ data class Settings(
             !normalTabShield && !strictTrackingProtection && !adBlockEnabled -> PerformanceProfile.MAX_SPEED
             else -> PerformanceProfile.CUSTOM
         }
+    fun policyForZone(zone: AgentRiskZone): RiskZonePolicy = when (zone) {
+        AgentRiskZone.ACCESSIBILITY -> riskAccessibility
+        AgentRiskZone.PRIVATE_WORLDS -> riskPrivateWorlds
+        AgentRiskZone.SINGLE_PLAYER -> riskSinglePlayer
+        AgentRiskZone.GAME_TESTING -> riskGameTesting
+        AgentRiskZone.ALLOWED_AUTOMATION_GAMES -> riskAllowedAutomation
+        AgentRiskZone.USER_APPROVED_MACROS -> riskApprovedMacros
+        AgentRiskZone.COMPETITIVE_ONLINE -> riskCompetitiveOnline
+        AgentRiskZone.IMPORTANT_SENSITIVE -> riskImportantSensitive
+    }
     val defaultEngine: DefaultBrowserEngine
         get() = when {
             !hybridGeckoBlinkBeta -> DefaultBrowserEngine.GECKO_ONLY
@@ -353,6 +382,21 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val ARCHIVE_MAX_FILE_MB = intPreferencesKey("archive_max_file_mb")
         val ARCHIVE_STREAM_BUF_MB = intPreferencesKey("archive_stream_buf_mb")
         val ARCHIVE_SPLIT_PART_MB = intPreferencesKey("archive_split_part_mb")
+        val AGENT_MODE = stringPreferencesKey("agent_default_mode")
+        val AGENT_AUTONOMY = stringPreferencesKey("agent_autonomy_policy")
+        val AGENT_REACTION_MS = intPreferencesKey("agent_reaction_interval_ms")
+        val AGENT_JOY_X = intPreferencesKey("agent_joy_center_x")
+        val AGENT_JOY_Y = intPreferencesKey("agent_joy_center_y")
+        val AGENT_SHOW_HUD = booleanPreferencesKey("agent_show_hud")
+        val AGENT_LLM_ENDPOINT = stringPreferencesKey("agent_local_llm_endpoint")
+        val RISK_ACCESSIBILITY = stringPreferencesKey("risk_accessibility")
+        val RISK_PRIVATE_WORLDS = stringPreferencesKey("risk_private_worlds")
+        val RISK_SINGLE_PLAYER = stringPreferencesKey("risk_single_player")
+        val RISK_GAME_TESTING = stringPreferencesKey("risk_game_testing")
+        val RISK_ALLOWED_AUTO = stringPreferencesKey("risk_allowed_auto")
+        val RISK_APPROVED_MACROS = stringPreferencesKey("risk_approved_macros")
+        val RISK_COMPETITIVE = stringPreferencesKey("risk_competitive_online")
+        val RISK_IMPORTANT = stringPreferencesKey("risk_important_sensitive")
         val HYBRID_GECKO_BLINK_BETA = booleanPreferencesKey("hybrid_gecko_blink_beta_v2")
         val HYBRID_AUTO_FOR_GAMES = booleanPreferencesKey("hybrid_auto_for_games")
         val HYBRID_NATIVE_CPU_BOOST = booleanPreferencesKey("hybrid_native_cpu_boost")
@@ -562,7 +606,22 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             batteryIdleTimeoutSec = (p[Keys.BAT_IDLE_TIMEOUT_SEC] ?: 8).coerceIn(3, 60),
             batteryFreezeBgTabs = p[Keys.BAT_FREEZE_BG_TABS] ?: true,
             batteryReduceMotion = p[Keys.BAT_REDUCE_MOTION] ?: false,
-            batteryOledDimPct = (p[Keys.BAT_OLED_DIM_PCT] ?: 0).coerceIn(0, 50)
+            batteryOledDimPct = (p[Keys.BAT_OLED_DIM_PCT] ?: 0).coerceIn(0, 50),
+            agentDefaultMode = enum(p[Keys.AGENT_MODE], AgentMode.BASIC_BROWSING),
+            agentAutonomyPolicy = enum(p[Keys.AGENT_AUTONOMY], AgentAutonomyPolicy.AUTO_SAFE),
+            agentReactionIntervalMs = (p[Keys.AGENT_REACTION_MS] ?: 60).coerceIn(40, 200),
+            agentJoystickCenterX = (p[Keys.AGENT_JOY_X] ?: 18).coerceIn(8, 40),
+            agentJoystickCenterY = (p[Keys.AGENT_JOY_Y] ?: 74).coerceIn(50, 90),
+            agentShowHudOverlay = p[Keys.AGENT_SHOW_HUD] ?: true,
+            agentLocalLlmEndpoint = p[Keys.AGENT_LLM_ENDPOINT] ?: "",
+            riskAccessibility = enum(p[Keys.RISK_ACCESSIBILITY], RiskZonePolicy.ALLOWED),
+            riskPrivateWorlds = enum(p[Keys.RISK_PRIVATE_WORLDS], RiskZonePolicy.ALLOWED),
+            riskSinglePlayer = enum(p[Keys.RISK_SINGLE_PLAYER], RiskZonePolicy.ALLOWED),
+            riskGameTesting = enum(p[Keys.RISK_GAME_TESTING], RiskZonePolicy.ALLOWED),
+            riskAllowedAutomation = enum(p[Keys.RISK_ALLOWED_AUTO], RiskZonePolicy.ALLOWED),
+            riskApprovedMacros = enum(p[Keys.RISK_APPROVED_MACROS], RiskZonePolicy.ALLOWED),
+            riskCompetitiveOnline = enum(p[Keys.RISK_COMPETITIVE], RiskZonePolicy.ASK_ONCE),
+            riskImportantSensitive = enum(p[Keys.RISK_IMPORTANT], RiskZonePolicy.ASK_EVERY_TIME)
         )
     }.distinctUntilChanged()
 
@@ -751,6 +810,26 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setArchiveMaxFileMb(v: Int) = set(Keys.ARCHIVE_MAX_FILE_MB, v.coerceIn(20, 500))
     suspend fun setArchiveStreamBufferMb(v: Int) = set(Keys.ARCHIVE_STREAM_BUF_MB, v.coerceIn(32, 512))
     suspend fun setArchiveSplitPartMb(v: Int) = set(Keys.ARCHIVE_SPLIT_PART_MB, v.coerceIn(0, 200))
+    suspend fun setAgentDefaultMode(v: AgentMode) = set(Keys.AGENT_MODE, v.name)
+    suspend fun setAgentAutonomyPolicy(v: AgentAutonomyPolicy) = set(Keys.AGENT_AUTONOMY, v.name)
+    suspend fun setAgentReactionIntervalMs(v: Int) = set(Keys.AGENT_REACTION_MS, v.coerceIn(40, 200))
+    suspend fun setAgentJoystickCenterX(v: Int) = set(Keys.AGENT_JOY_X, v.coerceIn(8, 40))
+    suspend fun setAgentJoystickCenterY(v: Int) = set(Keys.AGENT_JOY_Y, v.coerceIn(50, 90))
+    suspend fun setAgentShowHudOverlay(v: Boolean) = set(Keys.AGENT_SHOW_HUD, v)
+    suspend fun setAgentLocalLlmEndpoint(v: String) = set(Keys.AGENT_LLM_ENDPOINT, v.trim())
+    suspend fun setRiskZonePolicy(zone: AgentRiskZone, policy: RiskZonePolicy) {
+        val key = when (zone) {
+            AgentRiskZone.ACCESSIBILITY -> Keys.RISK_ACCESSIBILITY
+            AgentRiskZone.PRIVATE_WORLDS -> Keys.RISK_PRIVATE_WORLDS
+            AgentRiskZone.SINGLE_PLAYER -> Keys.RISK_SINGLE_PLAYER
+            AgentRiskZone.GAME_TESTING -> Keys.RISK_GAME_TESTING
+            AgentRiskZone.ALLOWED_AUTOMATION_GAMES -> Keys.RISK_ALLOWED_AUTO
+            AgentRiskZone.USER_APPROVED_MACROS -> Keys.RISK_APPROVED_MACROS
+            AgentRiskZone.COMPETITIVE_ONLINE -> Keys.RISK_COMPETITIVE
+            AgentRiskZone.IMPORTANT_SENSITIVE -> Keys.RISK_IMPORTANT
+        }
+        set(key, policy.name)
+    }
     suspend fun setDefaultEngine(engine: DefaultBrowserEngine) {
         context.dataStore.edit { p ->
             when (engine) {

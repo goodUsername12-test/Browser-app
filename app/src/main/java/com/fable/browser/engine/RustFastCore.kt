@@ -2,6 +2,14 @@ package com.fable.browser.engine
 
 import com.fable.browser.data.prefs.Settings
 
+data class AgentControlVector(
+    val joyXPercent: Int,
+    val joyYPercent: Int,
+    val camDxPercent: Int,
+    val camDyPercent: Int,
+    val shouldAttack: Boolean
+)
+
 data class NetworkPlan(
     val qualityScore: Int,
     val parallelStreams: Int,
@@ -91,6 +99,58 @@ object RustFastCore {
             else -> 256
         }
         return NetworkPlan(baseScore, streams, bufKb, upChunk)
+    }
+
+    @JvmStatic
+    private external fun nativeComputeControlVector(
+        targetXPermille: Int,
+        targetYPermille: Int,
+        coveragePermille: Int,
+        confidence: Int,
+        combatMode: Boolean
+    ): Long
+
+    fun computeAgentControlVector(
+        targetXPermille: Int,
+        targetYPermille: Int,
+        coveragePermille: Int,
+        confidence: Int,
+        combatMode: Boolean
+    ): AgentControlVector {
+        if (confidence < 15) return AgentControlVector(0, 0, 0, 0, false)
+        val packed = if (isRustAvailable) {
+            runCatching {
+                nativeComputeControlVector(targetXPermille, targetYPermille, coveragePermille, confidence, combatMode)
+            }.getOrNull()
+        } else null
+        if (packed != null && packed != 0L) {
+            val jx = ((packed and 0xFFL).toInt() - 128).coerceIn(-100, 100)
+            val jy = (((packed ushr 8) and 0xFFL).toInt() - 128).coerceIn(-100, 100)
+            val cx = (((packed ushr 16) and 0xFFL).toInt() - 128).coerceIn(-100, 100)
+            val cy = (((packed ushr 24) and 0xFFL).toInt() - 128).coerceIn(-100, 100)
+            val atk = ((packed ushr 32) and 0x01L) == 1L
+            return AgentControlVector(jx, jy, cx, cy, atk)
+        }
+        val tx = targetXPermille.coerceIn(0, 1000)
+        val ty = targetYPermille.coerceIn(0, 1000)
+        val cov = coveragePermille.coerceIn(0, 1000)
+        val errX = tx - 500
+        val errY = ty - 480
+        val camDx = ((errX * 22) / 100).coerceIn(-100, 100)
+        val camDy = ((errY * 14) / 100).coerceIn(-65, 65)
+        val stopCov = if (combatMode) 85 else 110
+        val joyY = when {
+            cov < stopCov -> -(stopCov - cov).coerceIn(20, 100)
+            combatMode && cov > 190 -> 45
+            else -> 0
+        }
+        val joyX = if (combatMode && kotlin.math.abs(errX) < 160) {
+            if ((tx and 1) == 0) 38 else -38
+        } else {
+            (errX / 8).coerceIn(-45, 45)
+        }
+        val atk = combatMode && kotlin.math.abs(errX) <= 115 && kotlin.math.abs(errY) <= 125 && cov >= 18
+        return AgentControlVector(joyX, joyY, camDx, camDy, atk)
     }
 
     @JvmStatic

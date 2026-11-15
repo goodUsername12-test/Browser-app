@@ -298,6 +298,7 @@ dependencies {
     implementation(libs.androidx.fragment.ktx)
     implementation(libs.accompanist.permissions)
     implementation(libs.coil.compose)
+    implementation(libs.mlkit.text.recognition)
 
     testImplementation(libs.junit)
     testImplementation(libs.mockk)

@@ -32,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fable.browser.agent.FableScreenInputController
 import com.fable.browser.engine.BrowserTab
 import com.fable.browser.engine.FableBatteryGovernor
 import com.fable.browser.engine.FableUnifiedEngine
@@ -936,11 +937,13 @@ fun GeckoViewHost(
             CombinedEngineContainer(ctx).also { container ->
                 captureHandle.view = container.geckoView
                 ScreenRecorderManager.attachActiveGameView(container)
+            FableScreenInputController.attachSurfaceView(container)
             }
         },
         update = { container ->
             container.showRecorderTouches = showRecorderTouches
             ScreenRecorderManager.attachActiveGameView(container)
+            FableScreenInputController.attachSurfaceView(container)
             val gv = container.geckoView
             captureHandle.view = gv
             captureHandle.hybridActive = hybridBlink
@@ -997,6 +1000,7 @@ fun GeckoViewHost(
         },
         onRelease = { container ->
             FableUnifiedEngine.setFrameMonitorActive(false)
+            FableScreenInputController.attachSurfaceView(null)
             if (captureHandle.view === container.geckoView) captureHandle.view = null
             captureHandle.blinkView = null
             captureHandle.hybridActive = false

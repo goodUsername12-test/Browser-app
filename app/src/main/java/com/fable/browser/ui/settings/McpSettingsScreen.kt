@@ -67,6 +67,14 @@ fun McpSettingsScreen(onBack: () -> Unit) {
                 }
             }
             item { Text("Status: ${state.status}") }
+            item { Text("Available MCP tools: ${state.tools.size}") }
+            items(state.tools) { tool ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Text(tool.name)
+                    if (tool.description.isNotBlank()) Text(tool.description.take(180))
+                    TextButton(enabled = state.connected, onClick = { McpSessionManager.callTool(tool.name) }) { Text("Test tool") }
+                }
+            }
             item { HorizontalDivider() }
             item { Text("Live activity") }
             items(state.activity.asReversed()) { line -> Text(line, Modifier.padding(vertical = 2.dp)) }

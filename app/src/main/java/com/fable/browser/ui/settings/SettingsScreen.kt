@@ -106,13 +106,6 @@ fun SettingsScreen(
 
     SettingsPage(title = "Settings", onBack = onBack, viewModel = viewModel) {
         SettingRow(
-            title = "Fable AI Agent & Risk Zones",
-            subtitle = "Mode: ${settings.agentDefaultMode.shortLabel}  ·  ${settings.agentReactionIntervalMs}ms Gaming  ·  Autonomy & Models",
-            icon = Icons.Outlined.SmartToy,
-            onClick = { onNavigate(Routes.SETTINGS_AGENT) }
-        )
-        ListDivider()
-        SettingRow(
             title = "General",
             subtitle = "Engine: ${settings.defaultEngine.label}  ·  Fable Proxy (SOCKS5/HTTP), search, startup",
             icon = Icons.Outlined.Tune,

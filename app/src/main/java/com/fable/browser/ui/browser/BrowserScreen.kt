@@ -68,8 +68,7 @@ fun BrowserScreen(
     onOpenHistory: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenRecorderSettings: () -> Unit = {},
-    onOpenAgentSettings: () -> Unit = {}
+    onOpenRecorderSettings: () -> Unit = {}
 ) {
     val tabs by viewModel.tabs.collectAsStateWithLifecycle()
     val activeTabId by viewModel.activeTabId.collectAsStateWithLifecycle()
@@ -92,8 +91,6 @@ fun BrowserScreen(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var menuOpen by rememberSaveable { mutableStateOf(false) }
-    var agentSheetOpen by rememberSaveable { mutableStateOf(false) }
-    val agentState by viewModel.agentState.collectAsStateWithLifecycle()
     val isScreenRecording by ScreenRecorderManager.isRecording.collectAsStateWithLifecycle()
     val recElapsedSec by ScreenRecorderManager.elapsedSeconds.collectAsStateWithLifecycle()
     val lastButtonPress by ScreenRecorderManager.lastButtonPress.collectAsStateWithLifecycle()
@@ -429,40 +426,6 @@ fun BrowserScreen(
             }
         }
 
-        if (settings.agentShowHudOverlay && (agentState.running || agentState.pendingConfirmation != null || agentState.activeInputsLabel != "None" || agentState.ownerResearchUnlocked)) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = if (agentState.pendingConfirmation != null) Color(0xE67F1D1D) else Color(0xCC0F172A),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .statusBarsPadding()
-                    .padding(top = if (toolbarAtTop && showToolbar) 68.dp else 8.dp, start = 10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = when {
-                            agentState.pendingConfirmation != null -> "⚠️ AI Confirm Needed (Tap)"
-                            agentState.ownerResearchUnlocked && !agentState.running -> "🔓 OWNER BETA · ${agentState.statusLine.take(22)}"
-                            agentState.ownerResearchUnlocked -> "🔓🤖 ${agentState.statusLine.take(28)}"
-                            else -> "🤖 ${agentState.statusLine.take(32)}"
-                        },
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.clickable { agentSheetOpen = true }
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "■ STOP",
-                        color = Color(0xFFFCA5A5),
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.clickable { viewModel.stopAgentImmediately() }
-                    )
-                }
-            }
-        }
 
         if (isScreenRecording) {
             Surface(
@@ -556,26 +519,7 @@ fun BrowserScreen(
             },
             isScreenRecording = isScreenRecording,
             onToggleScreenRecording = toggleScreenRecording,
-            onOpenRecorderSettings = onOpenRecorderSettings,
-            onOpenAiAgent = { agentSheetOpen = true }
-        )
-    }
-
-    if (agentSheetOpen) {
-        FableAgentSheet(
-            state = agentState,
-            onDismiss = { agentSheetOpen = false },
-            onSelectMode = viewModel::selectAgentMode,
-            onSendInstruction = viewModel::submitAgentInstruction,
-            onStopAll = viewModel::stopAgentImmediately,
-            onReadScreenNow = viewModel::readScreenWithAgent,
-            onUploadVideo = viewModel::learnAgentSkillFromVideo,
-            onResolveConfirmation = viewModel::resolveAgentConfirmation,
-            onOpenAgentSettings = {
-                agentSheetOpen = false
-                onOpenAgentSettings()
-            },
-            onLockOwnerMode = viewModel.agentEngine::lockOwnerModeNow
+            onOpenRecorderSettings = onOpenRecorderSettings
         )
     }
 

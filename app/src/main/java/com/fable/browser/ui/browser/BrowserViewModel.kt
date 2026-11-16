@@ -2,10 +2,6 @@ package com.fable.browser.ui.browser
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.fable.browser.agent.AgentLiveState
-import com.fable.browser.agent.AgentMode
-import com.fable.browser.agent.ConfirmationDecision
-import com.fable.browser.agent.FableAgentEngine
 import com.fable.browser.data.model.SearchEngine
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.data.prefs.SettingsStore
@@ -48,10 +44,8 @@ class BrowserViewModel @Inject constructor(
     private val downloader: Downloader,
     private val engineManager: EngineManager,
     private val activityBridge: ActivityBridge,
-    private val biometricGate: BiometricGate,
-    val agentEngine: FableAgentEngine
+    private val biometricGate: BiometricGate
 ) : ViewModel() {
-    val agentState: StateFlow<AgentLiveState> = agentEngine.state
     val tabs: StateFlow<List<BrowserTab>> = tabManager.tabs
     val activeTabId: StateFlow<String?> = tabManager.activeTabId
     val isIncognito: StateFlow<Boolean> = tabManager.isIncognitoMode
@@ -280,12 +274,6 @@ class BrowserViewModel @Inject constructor(
         if (!tabManager.savePageCode("memory")) activityBridge.toast("This page cannot be saved")
     }
 
-    fun selectAgentMode(mode: AgentMode) = agentEngine.selectMode(mode)
-    fun submitAgentInstruction(text: String) = agentEngine.submitInstruction(text)
-    fun stopAgentImmediately() = agentEngine.stopEverythingImmediately()
-    fun readScreenWithAgent() = agentEngine.inspectCurrentScreenNow()
-    fun learnAgentSkillFromVideo(uri: android.net.Uri) = agentEngine.learnFromUploadedVideo(uri)
-    fun resolveAgentConfirmation(decision: ConfirmationDecision) = agentEngine.resolveConfirmation(decision)
 
     fun saveAsPdf() {
         val tab = activeTab ?: return

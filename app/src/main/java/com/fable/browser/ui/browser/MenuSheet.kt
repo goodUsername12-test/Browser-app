@@ -82,8 +82,7 @@ fun MenuSheet(
     onOpenBlinkGaming: () -> Unit = {},
     isScreenRecording: Boolean = false,
     onToggleScreenRecording: () -> Unit = {},
-    onOpenRecorderSettings: () -> Unit = {},
-    onOpenAiAgent: () -> Unit = {}
+    onOpenRecorderSettings: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -93,12 +92,6 @@ fun MenuSheet(
                 .navigationBarsPadding()
                 .padding(bottom = 12.dp)
         ) {
-            MenuItem(
-                icon = Icons.Outlined.SmartToy,
-                label = "Fable AI Agent (Web · Gaming · Long Task)",
-                onClick = { onOpenAiAgent(); onDismiss() }
-            )
-            ListDivider()
             MenuItem(
                 icon = if (isBookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                 label = if (isBookmarked) "Remove bookmark" else "Add bookmark",

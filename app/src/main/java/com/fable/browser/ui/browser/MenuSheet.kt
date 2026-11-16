@@ -31,7 +31,6 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.FiberManualRecord
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Stop
-import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.ExperimentalMaterial3Api

@@ -54,10 +54,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.unit.IntOffset
 import com.fable.browser.engine.BrowserTab
 import com.fable.browser.engine.RecAudioSource
 import com.fable.browser.engine.ScreenRecorderManager
+import com.fable.browser.mcp.McpSessionManager
 import com.fable.browser.util.UrlUtils
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,6 +96,28 @@ fun BrowserScreen(
     captureHandle.thumbnailWidth = if (settings.memoryMode == com.fable.browser.data.model.MemoryMode.LOW) 240 else 360
 
     val tab: BrowserTab? = remember(tabs, activeTabId) { tabs.firstOrNull { it.id == activeTabId } }
+    DisposableEffect(viewModel, tab, captureHandle) {
+        val controller = object : McpSessionManager.BrowserController {
+            override fun currentUrl(): String = tab?.url?.value ?: "about:blank"
+            override fun currentTitle(): String = tab?.title?.value.orEmpty()
+            override fun navigate(url: String) = viewModel.load(url)
+            override fun reload() = viewModel.reload()
+            override fun goBack() { viewModel.goBack() }
+            override fun goForward() = viewModel.goForward()
+            override fun openNewTab(url: String?, incognito: Boolean) = viewModel.openTab(url, incognito)
+            override fun closeActiveTab() { tab?.id?.let { viewModel.closeTab(it) } }
+            override fun listTabsSummary(): String =
+                viewModel.tabs.value.joinToString(" | ") { "${it.id.take(4)}:${it.url.value.take(45)}" }
+            override fun activeBlinkWebView(): android.webkit.WebView? =
+                captureHandle.blinkView ?: tab?.retainedBlinkView
+            override fun activeRootView(): android.view.View? =
+                captureHandle.blinkView ?: captureHandle.view
+        }
+        McpSessionManager.bindBrowserController(controller)
+        onDispose {
+            McpSessionManager.bindBrowserController(null)
+        }
+    }
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var menuOpen by rememberSaveable { mutableStateOf(false) }
@@ -470,6 +500,13 @@ fun BrowserScreen(
             }
         }
 
+        McpLiveBrowserHud(
+            toolbarAtTop = toolbarAtTop,
+            showToolbar = showToolbar,
+            onOpenMcpSettings = onOpenSettings,
+            modifier = Modifier.fillMaxSize()
+        )
+
         com.fable.browser.ui.components.UndoCloseBar(
             closed = recentlyClosed,
             onUndo = { viewModel.undoClose() },
@@ -547,4 +584,107 @@ fun BrowserScreen(
 private fun TabProgress(tab: BrowserTab?, loading: Boolean) {
     val progress = tab?.progress?.collectAsStateWithLifecycle()?.value ?: 0
     PageProgress(progress = progress, loading = loading)
+}
+
+
+@Composable
+private fun McpLiveBrowserHud(
+    toolbarAtTop: Boolean,
+    showToolbar: Boolean,
+    onOpenMcpSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val mcpState by McpSessionManager.state.collectAsStateWithLifecycle()
+    if ((!mcpState.connected && !mcpState.connecting) || !mcpState.showLiveHud) return
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
+    Box(modifier = modifier) {
+        val click = mcpState.lastClick
+        if (click != null && SystemClock.uptimeMillis() - click.timestampMs < 4_000L) {
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset((click.x - 18f).roundToInt(), (click.y - 18f).roundToInt()) }
+                    .size(36.dp)
+                    .background(Color(0x5522C55E), CircleShape)
+                    .border(2.dp, Color(0xFF4ADE80), CircleShape)
+            )
+        }
+
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = Color(0xDD0F172A),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(
+                    top = if (toolbarAtTop && showToolbar) 68.dp else 8.dp,
+                    start = 10.dp,
+                    end = 10.dp
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 12.dp, vertical = 7.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (mcpState.paused) {
+                            "⏸ MCP PAUSED (${mcpState.remainingMinutes}m)"
+                        } else if (mcpState.connecting) {
+                            "◌ MCP Connecting..."
+                        } else {
+                            "● MCP LIVE (${mcpState.remainingMinutes}m) · ${mcpState.currentAction.take(36)}"
+                        },
+                        color = Color(0xFF4ADE80),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (expanded) "Hide" else "Logs",
+                        color = Color(0xFF93C5FD),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                if (expanded) {
+                    Column(Modifier.padding(top = 6.dp)) {
+                        mcpState.activity.takeLast(5).asReversed().forEach { entry ->
+                            Text(
+                                text = entry,
+                                color = Color.White.copy(alpha = 0.9f),
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(vertical = 1.dp)
+                            )
+                        }
+                        Row(Modifier.padding(top = 6.dp)) {
+                            Text(
+                                text = if (mcpState.paused) "▶ Resume AI" else "⏸ Pause AI",
+                                color = Color(0xFFFDE047),
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .clickable { McpSessionManager.togglePause() }
+                                    .padding(end = 12.dp, top = 2.dp, bottom = 2.dp)
+                            )
+                            Text(
+                                text = "⏹ Stop MCP",
+                                color = Color(0xFFF87171),
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .clickable { McpSessionManager.disconnect("Stopped from Live HUD") }
+                                    .padding(end = 12.dp, top = 2.dp, bottom = 2.dp)
+                            )
+                            Text(
+                                text = "⚙ MCP Panel",
+                                color = Color(0xFF93C5FD),
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .clickable { onOpenMcpSettings() }
+                                    .padding(top = 2.dp, bottom = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

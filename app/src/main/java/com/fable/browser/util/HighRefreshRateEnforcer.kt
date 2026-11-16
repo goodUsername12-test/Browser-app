@@ -80,9 +80,9 @@ object HighRefreshRateEnforcer {
                 null
             }
             val desiredRate = if (highRefresh) {
-                (chosen?.refreshRate ?: 120f).coerceAtLeast(120f)
+                (chosen?.refreshRate ?: 120f).coerceIn(60f, 144f)
             } else {
-                0f
+                60f
             }
             targetRefreshRate = if (highRefresh) desiredRate else 60f
 

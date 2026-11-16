@@ -342,11 +342,11 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
     DIR* dir = opendir("/proc/self/task");
     if (!dir) return;
 
-    constexpr std::array<std::string_view, 3> BIG_CORE_MAIN_PREFIXES = {
+    constexpr std::array<std::string_view, 2> BIG_CORE_MAIN_PREFIXES = {
         "CrRendererMain",
-        "GeckoMain",
-        "WRRender"
+        "CrGpuMain"
     };
+    const pid_t main_pid = getpid();
 
     constexpr std::array<std::string_view, 15> COMPOSITOR_GPU_PREFIXES = {
         "CrGpuMain",
@@ -423,15 +423,30 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
             comm.remove_suffix(1);
         }
 
-        if (!enabled) {
+        if (static_cast<pid_t>(tid) == main_pid || starts_with_ci(comm, "RenderThread")) {
+            setpriority(PRIO_PROCESS, static_cast<id_t>(tid), enabled ? -10 : -4);
             pin_tid_to_mask(static_cast<pid_t>(tid), all_mask);
+            continue;
+        }
+
+        if (!enabled) {
+            if (starts_with_ci(comm, "Gecko") || starts_with_ci(comm, "WR")) {
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), 2);
+            }
+            pin_tid_to_mask(static_cast<pid_t>(tid), all_mask);
+            continue;
+        }
+
+        if (starts_with_ci(comm, "Gecko") || starts_with_ci(comm, "WRRender") || starts_with_ci(comm, "WRScene")) {
+            setpriority(PRIO_PROCESS, static_cast<id_t>(tid), 2);
+            pin_tid_to_mask(static_cast<pid_t>(tid), little_mask);
             continue;
         }
 
         bool matched_main = false;
         for (const auto& prefix : BIG_CORE_MAIN_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -20);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -12);
                 pin_tid_to_mask(static_cast<pid_t>(tid), big_mask);
                 matched_main = true;
                 break;
@@ -441,15 +456,14 @@ void boost_critical_engine_threads(bool enabled, bool heavy_burst = false) noexc
 
         bool matched_compositor = false;
         const int big_count = __builtin_popcount(big_mask);
-        const std::uint32_t gpu_fast_mask = (!rec && big_count >= 2) ? big_mask : (rec ? (all_mask & ~rec_core_mask) : all_mask);
+        const std::uint32_t gpu_fast_mask = (!rec && big_count >= 2) ? all_mask : (rec ? (all_mask & ~rec_core_mask) : all_mask);
         for (const auto& prefix : COMPOSITOR_GPU_PREFIXES) {
             if (starts_with_ci(comm, prefix) || contains_ci(comm, prefix)) {
-                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -20);
+                setpriority(PRIO_PROCESS, static_cast<id_t>(tid), -10);
                 const bool is_primary_gpu_thread =
                     starts_with_ci(comm, "CrGpuMain") ||
                     starts_with_ci(comm, "Chrome_InProcGp") ||
                     starts_with_ci(comm, "VizCompositor") ||
-                    starts_with_ci(comm, "RenderThread") ||
                     contains_ci(comm, "Dawn") ||
                     contains_ci(comm, "Vulkan");
                 pin_tid_to_mask(static_cast<pid_t>(tid), is_primary_gpu_thread ? gpu_fast_mask : (rec ? (all_mask & ~rec_core_mask) : all_mask));
@@ -877,12 +891,9 @@ Java_com_fable_browser_engine_NativeFastEngine_nativeRecordFrameDeltaNs(
     const std::int64_t next_ema = (prev_ema * 7 + j_delta_ns) / 8;
     g_ema_frame_ns.store(next_ema, std::memory_order_relaxed);
 
-    if (j_delta_ns > 14500000LL && g_game_boost_enabled.load(std::memory_order_relaxed)) {
-        const std::int64_t last_b = g_last_burst_ns.load(std::memory_order_relaxed);
-        if (j_now_ns - last_b > 350000000LL) {
-            g_last_burst_ns.store(j_now_ns, std::memory_order_relaxed);
-            boost_critical_engine_threads(true, true);
-        }
+    // Never scan /proc/self/task on the UI Choreographer thread; only update atomic timestamp.
+    if (j_delta_ns > 28000000LL && g_game_boost_enabled.load(std::memory_order_relaxed)) {
+        g_last_burst_ns.store(j_now_ns, std::memory_order_relaxed);
     }
     const std::int64_t safe_ema = next_ema > 1000000LL ? next_ema : 8333333LL;
     const int est_fps = static_cast<int>(1000000000LL / safe_ema);

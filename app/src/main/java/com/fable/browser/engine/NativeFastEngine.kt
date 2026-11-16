@@ -1,6 +1,10 @@
 package com.fable.browser.engine
 
+import android.os.SystemClock
 import android.util.Base64
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.CRC32
 
 object NativeFastEngine {
@@ -118,14 +122,34 @@ object NativeFastEngine {
         return false
     }
 
+    private val boostExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "FableBoostWorker").apply {
+            isDaemon = true
+            priority = Thread.NORM_PRIORITY - 1
+        }
+    }
+    private val lastBoostEnabled = AtomicBoolean(false)
+    private val lastBoostChangeMs = AtomicLong(0L)
+    private val lastBurstMs = AtomicLong(0L)
+
     fun setGameBoost(enable: Boolean) {
-        if (isNativeAvailable) {
+        if (!isNativeAvailable) return
+        val now = SystemClock.uptimeMillis()
+        val prev = lastBoostEnabled.getAndSet(enable)
+        if (prev == enable && now - lastBoostChangeMs.get() < 4_000L) return
+        lastBoostChangeMs.set(now)
+        boostExecutor.execute {
             runCatching { nativeSetGameBoost(enable) }
         }
     }
 
     fun notifyHeavyLoadBurst() {
-        if (isNativeAvailable) {
+        if (!isNativeAvailable) return
+        val now = SystemClock.uptimeMillis()
+        val prev = lastBurstMs.get()
+        if (now - prev < 2_500L) return
+        if (!lastBurstMs.compareAndSet(prev, now)) return
+        boostExecutor.execute {
             runCatching { nativeNotifyHeavyLoadBurst() }
         }
     }
@@ -137,8 +161,12 @@ object NativeFastEngine {
         return if (deltaNs > 0) (1_000_000_000L / deltaNs).toInt().coerceIn(1, 120) else 120
     }
 
+    private val lastRecordingState = AtomicBoolean(false)
+
     fun setScreenRecording(recording: Boolean) {
-        if (isNativeAvailable) {
+        if (!isNativeAvailable) return
+        if (lastRecordingState.getAndSet(recording) == recording) return
+        boostExecutor.execute {
             runCatching { nativeSetScreenRecording(recording) }
         }
     }

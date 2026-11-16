@@ -145,21 +145,36 @@ class MainActivity : FragmentActivity() {
     private data class RefreshConfig(
         val highRefresh: Boolean,
         val saverMaster: Boolean,
+        val ecoCpu: Boolean,
         val gameMaxFps: Int,
-        val showButtons: Boolean
+        val showButtons: Boolean,
+        val hybridActive: Boolean
     )
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private fun observeRefreshRate() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
+                val hybridFlow = tabManager.activeTabId
+                    .flatMapLatest { id -> tabManager.tab(id)?.isHybridBlink ?: flowOf(false) }
+                    .distinctUntilChanged()
                 settingsStore.settings
-                    .map { RefreshConfig(it.highRefreshRate, it.batterySaverMaster, it.batteryGameMaxFps, it.recShowButtonPresses) }
+                    .combine(hybridFlow) { s, hybrid ->
+                        RefreshConfig(
+                            highRefresh = s.highRefreshRate,
+                            saverMaster = s.batterySaverMaster,
+                            ecoCpu = s.batteryEcoCpu,
+                            gameMaxFps = s.batteryGameMaxFps,
+                            showButtons = s.recShowButtonPresses,
+                            hybridActive = hybrid
+                        )
+                    }
                     .distinctUntilChanged()
                     .collect { cfg ->
-                        currentHighRefresh = cfg.highRefresh && !cfg.saverMaster
+                        currentHighRefresh = cfg.highRefresh && !cfg.saverMaster && (cfg.hybridActive || !cfg.ecoCpu)
                         currentShowButtonPresses = cfg.showButtons
                         runCatching {
-                            if (!cfg.highRefresh) {
+                            if (!cfg.highRefresh || (!cfg.hybridActive && (cfg.saverMaster || cfg.ecoCpu))) {
                                 applyRefreshRate(false)
                             } else if (!cfg.saverMaster && cfg.gameMaxFps >= 115) {
                                 applyRefreshRate(true)

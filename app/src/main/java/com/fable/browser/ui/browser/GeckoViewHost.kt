@@ -262,7 +262,13 @@ private class FableHybridJsBridge(
 }
 
 private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
-    val frameVoter: SurfaceView = HighRefreshRateEnforcer.createFrameRateVoterSurfaceView(context)
+    val frameVoter: SurfaceView? = if (Build.VERSION.SDK_INT < 34) {
+        HighRefreshRateEnforcer.createFrameRateVoterSurfaceView(context)
+    } else {
+        null
+    }
+    var lastAppliedRate: Float = -1f
+    var lastAppliedBoost: Boolean? = null
     val geckoView: GeckoView = GeckoView(context).apply {
         setAutofillEnabled(false)
         importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -304,9 +310,12 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
         isMotionEventSplittingEnabled = true
         isSoundEffectsEnabled = false
         isHapticFeedbackEnabled = false
-        addView(frameVoter, LayoutParams(1, 1))
+        if (frameVoter != null) {
+            addView(frameVoter, LayoutParams(1, 1))
+        }
         addView(geckoView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         HighRefreshRateEnforcer.applyToViewTree(this)
+        lastAppliedRate = HighRefreshRateEnforcer.targetRefreshRate
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
@@ -370,6 +379,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
         return tab.isHybridBlink.value &&
             tab.mirrorInputToGecko.value &&
             geckoView.visibility == View.VISIBLE &&
+            geckoView.alpha > 0f &&
             geckoView.session?.isOpen == true &&
             blinkView != null &&
             authPopupOverlay == null &&
@@ -1094,12 +1104,19 @@ fun GeckoViewHost(
             val gv = container.geckoView
             captureHandle.view = gv
             captureHandle.hybridActive = hybridBlink
-            HighRefreshRateEnforcer.applyToViewTree(container)
+            val desiredRate = HighRefreshRateEnforcer.targetRefreshRate
+            if (container.lastAppliedRate != desiredRate) {
+                container.lastAppliedRate = desiredRate
+                HighRefreshRateEnforcer.applyToViewTree(container, desiredRate)
+            }
             val target = session
             val boostOn = hybridBlink && !tab.ecoBoostDisabled && !HybridEngineBridge.isBenchmarkUrl(currentUrl)
             FableUnifiedEngine.setFrameMonitorActive(boostOn)
-            if (hybridBlink) {
+            if (container.lastAppliedBoost != boostOn) {
+                container.lastAppliedBoost = boostOn
                 NativeFastEngine.setGameBoost(boostOn)
+            }
+            if (hybridBlink) {
                 if (mirrorInput) {
                     if (attachTick >= 0 && gv.session !== target && target.isOpen) {
                         if (gv.session != null) gv.releaseSession()
@@ -1110,22 +1127,28 @@ fun GeckoViewHost(
                     }
                     gv.isFocusable = false
                     gv.isFocusableInTouchMode = false
+                    gv.alpha = 1f
                     gv.visibility = View.VISIBLE
                 } else {
-                    gv.isFocusable = true
-                    gv.isFocusableInTouchMode = true
+                    gv.isFocusable = false
+                    gv.isFocusableInTouchMode = false
                     if (tab.hibernateGeckoWhenHybrid) {
-                        if (gv.session != null) {
-                            runCatching { gv.releaseSession() }
-                        }
                         if (target.isOpen) {
                             runCatching { target.setActive(false) }
+                        }
+                        if (gv.session != null) {
+                            runCatching { gv.releaseSession() }
                         }
                     } else if (attachTick >= 0 && gv.session !== target && target.isOpen) {
                         if (gv.session != null) gv.releaseSession()
                         gv.setSession(target)
                     }
-                    gv.visibility = View.GONE
+                    // Keep INVISIBLE + alpha 0f instead of GONE during traversal so ViewRootImpl.relayoutWindow
+                    // never blocks in BLASTBufferQueue.nativeDestroy while GeckoThread is active.
+                    gv.alpha = 0f
+                    if (gv.visibility != View.INVISIBLE) {
+                        gv.visibility = View.INVISIBLE
+                    }
                 }
                 val wv = container.ensureBlinkView(tab)
                 wv.tag = if (tab.isIncognito) "incognito" else "normal"
@@ -1163,16 +1186,21 @@ fun GeckoViewHost(
                 if (target.isOpen) {
                     runCatching { target.setActive(true) }
                 }
+                gv.alpha = 1f
                 gv.visibility = View.VISIBLE
             }
         },
         onRelease = { container ->
             FableUnifiedEngine.setFrameMonitorActive(false)
+            NativeFastEngine.setGameBoost(false)
             if (captureHandle.view === container.geckoView) captureHandle.view = null
             captureHandle.blinkView = null
             captureHandle.hybridActive = false
             container.detachBlinkView()
-            if (container.geckoView.session != null) container.geckoView.releaseSession()
+            runCatching {
+                container.geckoView.session?.setActive(false)
+                if (container.geckoView.session != null) container.geckoView.releaseSession()
+            }
         }
     )
 }

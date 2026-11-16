@@ -349,6 +349,152 @@ function connectNative() {
   port.postMessage({ type: "hello" });
 }
 
+
+const syncingFromBlink = new Map();
+
+function markSyncFromBlink(host, name, value) {
+  const now = Date.now();
+  const cleanHost = String(host || "").toLowerCase().replace(/^\.+/, "");
+  syncingFromBlink.set(cleanHost + "|" + name, { value: String(value || ""), expiresAt: now + 4000 });
+  if (syncingFromBlink.size > 512) {
+    for (const [k, v] of syncingFromBlink.entries()) {
+      if (!v || v.expiresAt < now) syncingFromBlink.delete(k);
+    }
+  }
+}
+
+function isEchoFromBlink(cookie) {
+  if (!cookie) return false;
+  const now = Date.now();
+  const name = String(cookie.name || "");
+  const cleanHost = String(cookie.domain || "").toLowerCase().replace(/^\.+/, "");
+  const direct = syncingFromBlink.get(cleanHost + "|" + name);
+  if (direct && direct.expiresAt >= now && direct.value === String(cookie.value || "")) return true;
+  const parts = cleanHost.split(".");
+  for (let i = 1; i < parts.length - 1; i++) {
+    const parent = parts.slice(i).join(".");
+    const hit = syncingFromBlink.get(parent + "|" + name);
+    if (hit && hit.expiresAt >= now && hit.value === String(cookie.value || "")) return true;
+  }
+  return false;
+}
+
+function cookieToBlinkPayload(c, removed) {
+  if (!c || !c.name) return null;
+  const rawDomain = String(c.domain || "");
+  const cleanHost = rawDomain.replace(/^\.+/, "");
+  if (!cleanHost) return null;
+  const scheme = c.secure ? "https://" : "http://";
+  const path = c.path || "/";
+  const url = scheme + cleanHost + path;
+  let sc = c.name + "=" + (removed ? "" : String(c.value || "")) + "; Path=" + path;
+  if (!c.hostOnly && rawDomain) {
+    sc += "; Domain=" + rawDomain;
+  }
+  if (removed) {
+    sc += "; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  } else if (typeof c.expirationDate === "number" && c.expirationDate > 0) {
+    const maxAge = Math.max(1, Math.floor(c.expirationDate - Date.now() / 1000));
+    sc += "; Max-Age=" + maxAge;
+  }
+  if (c.secure) sc += "; Secure";
+  if (c.httpOnly) sc += "; HttpOnly";
+  if (!removed) {
+    if (c.sameSite === "strict") sc += "; SameSite=Strict";
+    else if (c.sameSite === "lax") sc += "; SameSite=Lax";
+    else if (c.sameSite === "no_restriction" && c.secure) sc += "; SameSite=None";
+  }
+  return { url, setCookie: sc };
+}
+
+async function syncCookiesToGecko(url, cookieHeader) {
+  if (typeof browser === "undefined" || !browser.cookies || !url || !cookieHeader) return;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    return;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+  const pairs = String(cookieHeader).split(";").map((s) => s.trim()).filter(Boolean);
+  if (!pairs.length) return;
+  let existing = [];
+  try {
+    existing = await browser.cookies.getAll({ url: parsed.href, storeId: "firefox-default" });
+  } catch (e) {
+    existing = [];
+  }
+  const byName = new Map();
+  for (const c of existing) {
+    if (c && c.name && !byName.has(c.name)) byName.set(c.name, c);
+  }
+  for (const pair of pairs) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const name = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1);
+    if (!name) continue;
+    const cur = byName.get(name);
+    if (cur && cur.value === value) continue;
+    markSyncFromBlink(cur && cur.domain ? cur.domain : parsed.hostname, name, value);
+    try {
+      const details = {
+        url: parsed.href,
+        name,
+        value,
+        path: (cur && cur.path) ? cur.path : "/",
+        secure: cur ? !!cur.secure : (parsed.protocol === "https:"),
+        httpOnly: cur ? !!cur.httpOnly : false,
+        storeId: "firefox-default",
+      };
+      if (cur && !cur.hostOnly && cur.domain) {
+        details.domain = cur.domain;
+      }
+      if (cur && typeof cur.expirationDate === "number" && cur.expirationDate > 0) {
+        details.expirationDate = cur.expirationDate;
+      }
+      await browser.cookies.set(details);
+    } catch (e) {
+    }
+  }
+}
+
+async function pullGeckoCookies(url) {
+  if (typeof browser === "undefined" || !browser.cookies || !url) return;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    return;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+  try {
+    const list = await browser.cookies.getAll({ url: parsed.href, storeId: "firefox-default" });
+    const out = [];
+    for (const c of list) {
+      const item = cookieToBlinkPayload(c, false);
+      if (item) out.push(item);
+    }
+    if (out.length > 0) {
+      postNative({ type: "gecko-cookies-batch", url: parsed.href, cookies: out });
+    }
+  } catch (e) {
+  }
+}
+
+if (typeof browser !== "undefined" && browser.cookies && browser.cookies.onChanged) {
+  browser.cookies.onChanged.addListener((info) => {
+    if (!info || !info.cookie) return;
+    if (info.cookie.storeId !== "firefox-default") return;
+    if (info.removed && info.cause === "overwrite") return;
+    if (!info.removed && isEchoFromBlink(info.cookie)) return;
+    const payload = cookieToBlinkPayload(info.cookie, !!info.removed);
+    if (payload) {
+      postNative({ type: "gecko-cookie-changed", url: payload.url, setCookie: payload.setCookie });
+    }
+  });
+}
+
 function onNativeMessage(msg) {
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "config") {
@@ -357,6 +503,10 @@ function onNativeMessage(msg) {
     rebuildSupers();
     registerListeners();
     applyContentScripts(false);
+  } else if (msg.type === "sync-cookies-to-gecko") {
+    syncCookiesToGecko(msg.url, msg.cookieHeader);
+  } else if (msg.type === "pull-gecko-cookies") {
+    pullGeckoCookies(msg.url);
   } else if (msg.type === "rules") {
     rules = {
       blockedDomains: new Set(msg.blockedDomains || []),

@@ -186,6 +186,7 @@ data class Settings(
     val hybrid3d2dAccel: Boolean = true,
     val hybridTeleportStabilizer: Boolean = true,
     val hybridHibernateGecko: Boolean = true,
+    val hybridMirrorInputToGecko: Boolean = false,
     val hybridCustomDomains: String = "bloxd.io, staging.bloxd.io, testufo.com, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io",
     val recResolution: RecResolution = RecResolution.RES_1640_720,
     val recBitrate: RecBitrate = RecBitrate.MBPS_50,
@@ -434,6 +435,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val HYBRID_3D_2D_ACCEL = booleanPreferencesKey("hybrid_3d_2d_accel")
         val HYBRID_TELEPORT_STABILIZER = booleanPreferencesKey("hybrid_teleport_stabilizer")
         val HYBRID_HIBERNATE_GECKO = booleanPreferencesKey("hybrid_hibernate_gecko")
+        val HYBRID_MIRROR_INPUT_TO_GECKO = booleanPreferencesKey("hybrid_mirror_input_to_gecko")
         val HYBRID_CUSTOM_DOMAINS = stringPreferencesKey("hybrid_custom_domains")
         val REC_RESOLUTION = stringPreferencesKey("rec_resolution")
         val REC_BITRATE = stringPreferencesKey("rec_bitrate")
@@ -604,6 +606,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             hybrid3d2dAccel = p[Keys.HYBRID_3D_2D_ACCEL] ?: true,
             hybridTeleportStabilizer = p[Keys.HYBRID_TELEPORT_STABILIZER] ?: true,
             hybridHibernateGecko = p[Keys.HYBRID_HIBERNATE_GECKO] ?: true,
+            hybridMirrorInputToGecko = p[Keys.HYBRID_MIRROR_INPUT_TO_GECKO] ?: false,
             hybridCustomDomains = p[Keys.HYBRID_CUSTOM_DOMAINS] ?: "bloxd.io, staging.bloxd.io, testufo.com, browserbench.org, poki.com, crazygames.com, krunker.io, 1v1.lol, voxiom.io, kirka.io, kour.io, miniblox.io",
             recResolution = enum(p[Keys.REC_RESOLUTION], RecResolution.RES_1640_720),
             recBitrate = enum(p[Keys.REC_BITRATE], RecBitrate.MBPS_50),
@@ -900,6 +903,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setHybrid3d2dAccel(v: Boolean) = set(Keys.HYBRID_3D_2D_ACCEL, v)
     suspend fun setHybridTeleportStabilizer(v: Boolean) = set(Keys.HYBRID_TELEPORT_STABILIZER, v)
     suspend fun setHybridHibernateGecko(v: Boolean) = set(Keys.HYBRID_HIBERNATE_GECKO, v)
+    suspend fun setHybridMirrorInputToGecko(v: Boolean) = set(Keys.HYBRID_MIRROR_INPUT_TO_GECKO, v)
     suspend fun setHybridCustomDomains(v: String) = set(Keys.HYBRID_CUSTOM_DOMAINS, v)
     suspend fun setRecResolution(v: RecResolution) = set(Keys.REC_RESOLUTION, v.name)
     suspend fun setRecBitrate(v: RecBitrate) = set(Keys.REC_BITRATE, v.name)

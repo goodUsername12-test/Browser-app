@@ -1,6 +1,7 @@
 package com.fable.browser.engine
 
 import android.util.Log
+import android.webkit.CookieManager
 import com.fable.browser.BuildConfig
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.data.repo.FaviconStore
@@ -18,6 +19,7 @@ import org.json.JSONObject
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.WebExtension
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -37,6 +39,9 @@ class ProxyConfig @Inject constructor(
     @Volatile private var dataSaverActive = false
     @Volatile private var current: Settings? = null
     @Volatile private var port: WebExtension.Port? = null
+    private val cookieIoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lastBlinkCookieDigest = ConcurrentHashMap<String, String>()
+    private var cookieFlushJob: kotlinx.coroutines.Job? = null
 
     init {
         superIncognito.addListener { push() }
@@ -86,6 +91,48 @@ class ProxyConfig @Inject constructor(
             put("mode", mode)
         })
         return true
+    }
+
+
+    fun syncBlinkCookiesToGecko(url: String) {
+        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) return
+        val p = port ?: return
+        cookieIoScope.launch {
+            val cookieHeader = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() } ?: return@launch
+            val hostKey = com.fable.browser.util.UrlUtils.host(url) ?: url
+            val prev = lastBlinkCookieDigest[hostKey]
+            if (prev == cookieHeader) return@launch
+            lastBlinkCookieDigest[hostKey] = cookieHeader
+            if (lastBlinkCookieDigest.size > 128) lastBlinkCookieDigest.clear()
+            scope.launch {
+                p.postMessage(JSONObject().apply {
+                    put("type", "sync-cookies-to-gecko")
+                    put("url", url)
+                    put("cookieHeader", cookieHeader)
+                })
+            }
+        }
+    }
+
+    fun pullGeckoCookiesToBlink(url: String) {
+        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) return
+        val p = port ?: return
+        scope.launch {
+            p.postMessage(JSONObject().apply {
+                put("type", "pull-gecko-cookies")
+                put("url", url)
+            })
+        }
+    }
+
+    private fun scheduleCookieFlush() {
+        cookieFlushJob?.cancel()
+        cookieFlushJob = cookieIoScope.launch {
+            delay(150L)
+            runCatching { CookieManager.getInstance().flush() }
+        }
     }
 
     fun pushRules() {
@@ -195,6 +242,36 @@ class ProxyConfig @Inject constructor(
             }
             "diag" -> Log.i(TAG, json.optString("text").take(600))
             "save-page-data" -> pageArchiver.onMessage(json)
+            "gecko-cookie-changed" -> {
+                val u = json.optString("url")
+                val sc = json.optString("setCookie")
+                if (u.isNotBlank() && sc.isNotBlank()) {
+                    runCatching {
+                        val cm = CookieManager.getInstance()
+                        cm.setAcceptCookie(true)
+                        cm.setCookie(u, sc)
+                    }
+                    scheduleCookieFlush()
+                }
+            }
+            "gecko-cookies-batch" -> {
+                val arr = json.optJSONArray("cookies")
+                if (arr != null && arr.length() > 0) {
+                    runCatching {
+                        val cm = CookieManager.getInstance()
+                        cm.setAcceptCookie(true)
+                        for (i in 0 until arr.length()) {
+                            val item = arr.optJSONObject(i) ?: continue
+                            val u = item.optString("url")
+                            val sc = item.optString("setCookie")
+                            if (u.isNotBlank() && sc.isNotBlank()) {
+                                cm.setCookie(u, sc)
+                            }
+                        }
+                    }
+                    scheduleCookieFlush()
+                }
+            }
             else -> {
                 p.postMessage(configJson())
                 scope.launch { sendRules() }

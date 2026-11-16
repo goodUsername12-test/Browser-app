@@ -9,7 +9,13 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.util.Log
+import android.os.SystemClock
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
@@ -287,6 +293,10 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
         }
         authPopupWebView = null
         FableUnifiedEngine.flushBlinkCookies()
+        boundTab?.let { t ->
+            val u = t.url.value
+            if (u.startsWith("http", ignoreCase = true)) t.hybridCookieSyncHandler?.invoke(u)
+        }
     }
     @Volatile var showRecorderTouches: Boolean = false
 
@@ -344,7 +354,60 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 }
             }
         }
-        return super.dispatchTouchEvent(ev)
+        val mirrorEv = if (ev != null && shouldMirrorToGecko()) MotionEvent.obtain(ev) else null
+        val handled = super.dispatchTouchEvent(ev)
+        if (mirrorEv != null) {
+            try {
+                geckoView.dispatchTouchEvent(mirrorEv)
+            } finally {
+                mirrorEv.recycle()
+            }
+        }
+        return handled
+    }
+
+    private fun shouldMirrorToGecko(): Boolean {
+        val tab = boundTab ?: return false
+        return tab.isHybridBlink.value &&
+            tab.mirrorInputToGecko.value &&
+            geckoView.visibility == View.VISIBLE &&
+            geckoView.session?.isOpen == true &&
+            blinkView != null &&
+            authPopupOverlay == null &&
+            customFullScreenView == null
+    }
+
+    override fun dispatchGenericMotionEvent(ev: MotionEvent?): Boolean {
+        val mirrorEv = if (ev != null && shouldMirrorToGecko()) MotionEvent.obtain(ev) else null
+        val handled = super.dispatchGenericMotionEvent(ev)
+        if (mirrorEv != null) {
+            try {
+                geckoView.dispatchGenericMotionEvent(mirrorEv)
+            } finally {
+                mirrorEv.recycle()
+            }
+        }
+        return handled
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+        val mirrorKey = if (
+            event != null &&
+            event.keyCode != KeyEvent.KEYCODE_BACK &&
+            event.keyCode != KeyEvent.KEYCODE_VOLUME_UP &&
+            event.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN &&
+            event.keyCode != KeyEvent.KEYCODE_VOLUME_MUTE &&
+            shouldMirrorToGecko()
+        ) {
+            KeyEvent(event)
+        } else {
+            null
+        }
+        val handled = super.dispatchKeyEvent(event)
+        if (mirrorKey != null) {
+            runCatching { geckoView.dispatchKeyEvent(mirrorKey) }
+        }
+        return handled
     }
 
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
@@ -385,6 +448,79 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 super.onScrollChanged(l, t, oldl, oldt)
                 if (t != oldt) {
                     tab.hybridScrollHandler?.invoke(t)
+                }
+            }
+
+            private fun currentGeckoIc(): InputConnection? {
+                if (!shouldMirrorToGecko()) return null
+                return runCatching {
+                    geckoView.session?.textInput?.onCreateInputConnection(EditorInfo())
+                }.getOrNull()
+            }
+
+            override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+                val base = super.onCreateInputConnection(outAttrs) ?: return null
+                return object : InputConnectionWrapper(base, true) {
+                    override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                        if (shouldMirrorToGecko() && !text.isNullOrEmpty()) {
+                            runCatching {
+                                val ic = currentGeckoIc()
+                                if (ic != null) {
+                                    ic.commitText(text, newCursorPosition)
+                                } else {
+                                    val now = SystemClock.uptimeMillis()
+                                    geckoView.dispatchKeyEvent(KeyEvent(now, text.toString(), KeyCharacterMap.VIRTUAL_KEYBOARD, 0))
+                                }
+                            }
+                        }
+                        return super.commitText(text, newCursorPosition)
+                    }
+
+                    override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                        if (shouldMirrorToGecko()) {
+                            runCatching { currentGeckoIc()?.setComposingText(text, newCursorPosition) }
+                        }
+                        return super.setComposingText(text, newCursorPosition)
+                    }
+
+                    override fun finishComposingText(): Boolean {
+                        if (shouldMirrorToGecko()) {
+                            runCatching { currentGeckoIc()?.finishComposingText() }
+                        }
+                        return super.finishComposingText()
+                    }
+
+                    override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                        if (shouldMirrorToGecko()) {
+                            runCatching {
+                                val ic = currentGeckoIc()
+                                if (ic != null) {
+                                    ic.deleteSurroundingText(beforeLength, afterLength)
+                                } else if (beforeLength > 0) {
+                                    val now = SystemClock.uptimeMillis()
+                                    repeat(beforeLength.coerceAtMost(8)) {
+                                        geckoView.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL, 0))
+                                        geckoView.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL, 0))
+                                    }
+                                }
+                            }
+                        }
+                        return super.deleteSurroundingText(beforeLength, afterLength)
+                    }
+
+                    override fun sendKeyEvent(event: KeyEvent?): Boolean {
+                        if (event != null && event.keyCode != KeyEvent.KEYCODE_BACK && shouldMirrorToGecko()) {
+                            runCatching { geckoView.dispatchKeyEvent(KeyEvent(event)) }
+                        }
+                        return super.sendKeyEvent(event)
+                    }
+
+                    override fun performEditorAction(editorAction: Int): Boolean {
+                        if (shouldMirrorToGecko()) {
+                            runCatching { currentGeckoIc()?.performEditorAction(editorAction) }
+                        }
+                        return super.performEditorAction(editorAction)
+                    }
                 }
             }
         }.apply {
@@ -573,6 +709,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                         tab.updateUrl(url)
                         tab.updateSecure(!UrlUtils.isInsecure(url))
                         tab.resetBlocked()
+                        tab.hybridCookieSyncHandler?.invoke(url)
                     }
                     NativeFastEngine.setGameBoost(true)
                     HighRefreshRateEnforcer.applyToViewTree(view)
@@ -626,6 +763,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                         }
                     }
                     FableUnifiedEngine.flushBlinkCookies()
+                    if (!url.isNullOrBlank()) tab.hybridCookieSyncHandler?.invoke(url)
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -708,6 +846,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                             override fun onPageFinished(v: WebView?, u: String?) {
                                 super.onPageFinished(v, u)
                                 FableUnifiedEngine.flushBlinkCookies()
+                                if (!u.isNullOrBlank()) tab.hybridCookieSyncHandler?.invoke(u)
                             }
                         }
                         webChromeClient = object : WebChromeClient() {
@@ -929,6 +1068,7 @@ fun GeckoViewHost(
 ) {
     val session by tab.sessionFlow.collectAsStateWithLifecycle()
     val hybridBlink by tab.isHybridBlink.collectAsStateWithLifecycle()
+    val mirrorInput by tab.mirrorInputToGecko.collectAsStateWithLifecycle()
     val currentUrl by tab.url.collectAsStateWithLifecycle()
     var attachTick by remember { mutableIntStateOf(0) }
 
@@ -963,21 +1103,39 @@ fun GeckoViewHost(
             FableUnifiedEngine.setFrameMonitorActive(boostOn)
             if (hybridBlink) {
                 NativeFastEngine.setGameBoost(boostOn)
-                if (tab.hibernateGeckoWhenHybrid) {
-                    if (gv.session != null) {
-                        runCatching { gv.releaseSession() }
+                if (mirrorInput) {
+                    if (attachTick >= 0 && gv.session !== target && target.isOpen) {
+                        if (gv.session != null) gv.releaseSession()
+                        gv.setSession(target)
                     }
                     if (target.isOpen) {
-                        runCatching { target.setActive(false) }
+                        runCatching { target.setActive(true) }
                     }
-                } else if (attachTick >= 0 && gv.session !== target && target.isOpen) {
-                    if (gv.session != null) gv.releaseSession()
-                    gv.setSession(target)
+                    gv.isFocusable = false
+                    gv.isFocusableInTouchMode = false
+                    gv.visibility = View.VISIBLE
+                } else {
+                    gv.isFocusable = true
+                    gv.isFocusableInTouchMode = true
+                    if (tab.hibernateGeckoWhenHybrid) {
+                        if (gv.session != null) {
+                            runCatching { gv.releaseSession() }
+                        }
+                        if (target.isOpen) {
+                            runCatching { target.setActive(false) }
+                        }
+                    } else if (attachTick >= 0 && gv.session !== target && target.isOpen) {
+                        if (gv.session != null) gv.releaseSession()
+                        gv.setSession(target)
+                    }
+                    gv.visibility = View.GONE
                 }
-                gv.visibility = View.GONE
                 val wv = container.ensureBlinkView(tab)
                 wv.tag = if (tab.isIncognito) "incognito" else "normal"
                 wv.visibility = View.VISIBLE
+                if (mirrorInput && container.indexOfChild(wv) < container.indexOfChild(gv)) {
+                    wv.bringToFront()
+                }
                 captureHandle.blinkView = wv
                 if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://") || currentUrl.startsWith("file://")) {
                     val mappedUrl = if (currentUrl.startsWith("file://", ignoreCase = true) && currentUrl.contains("/cache/opened_html/")) {
@@ -987,12 +1145,15 @@ fun GeckoViewHost(
                     }
                     val currentWvUrl = wv.url
                     if (tab.lastLoadedBlinkUrl.isBlank() && currentWvUrl.isNullOrBlank()) {
+                        tab.hybridCookiePullHandler?.invoke(mappedUrl)
                         tab.lastLoadedBlinkUrl = mappedUrl
                         val headers = tab.hybridExtraHeadersProvider?.invoke(mappedUrl).orEmpty()
                         if (headers.isNotEmpty()) wv.loadUrl(mappedUrl, headers) else wv.loadUrl(mappedUrl)
                     }
                 }
             } else {
+                gv.isFocusable = true
+                gv.isFocusableInTouchMode = true
                 captureHandle.blinkView = null
                 if (container.blinkView != null) {
                     container.detachBlinkView()

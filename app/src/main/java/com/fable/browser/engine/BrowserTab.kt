@@ -92,6 +92,8 @@ class BrowserTab(
 
     private val _isHybridBlink = MutableStateFlow(false)
     val isHybridBlink: StateFlow<Boolean> = _isHybridBlink.asStateFlow()
+    private val _mirrorInputToGecko = MutableStateFlow(false)
+    val mirrorInputToGecko: StateFlow<Boolean> = _mirrorInputToGecko.asStateFlow()
     @Volatile var manualHybridOverride: Boolean? = null
     @Volatile var hibernateGeckoWhenHybrid: Boolean = true
     @Volatile var fastAssetBypassEnabled: Boolean = true
@@ -115,6 +117,8 @@ class BrowserTab(
     @Volatile var hybridExternalUrlHandler: ((String) -> Boolean)? = null
     @Volatile var hybridStorageVaultRead: ((String) -> String)? = null
     @Volatile var hybridStorageVaultWrite: ((String, String) -> Unit)? = null
+    @Volatile var hybridCookieSyncHandler: ((String) -> Unit)? = null
+    @Volatile var hybridCookiePullHandler: ((String) -> Unit)? = null
 
     private val httpExceptions = mutableSetOf<String>()
 
@@ -139,6 +143,7 @@ class BrowserTab(
     internal fun updateReaderMode(v: Boolean) { _isReaderMode.value = v }
     internal fun updateFindMatch(v: FindMatch?) { _findMatch.value = v }
     internal fun updateHybridBlink(v: Boolean) { _isHybridBlink.value = v }
+    internal fun updateMirrorInputToGecko(v: Boolean) { _mirrorInputToGecko.value = v }
 
     internal fun allowHttp(host: String) { httpExceptions.add(host) }
     internal fun isHttpAllowed(host: String?): Boolean = host != null && host in httpExceptions

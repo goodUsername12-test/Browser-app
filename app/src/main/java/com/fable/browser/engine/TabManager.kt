@@ -129,6 +129,8 @@ class TabManager @Inject constructor(
                     updated.batteryEcoCpu != settings.batteryEcoCpu
                 val engineModeChanged = updated.hybridGeckoBlinkBeta != settings.hybridGeckoBlinkBeta ||
                     updated.hybridAutoForGames != settings.hybridAutoForGames
+                val mirrorChanged = updated.hybridMirrorInputToGecko != settings.hybridMirrorInputToGecko ||
+                    updated.hybridHibernateGecko != settings.hybridHibernateGecko
                 settings = updated
                 if (engineModeChanged) {
                     _tabs.value.forEach { t ->
@@ -147,6 +149,23 @@ class TabManager @Inject constructor(
                                         ensureLive(t)
                                         t.session.load(GeckoSession.Loader().uri(curUrl))
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (mirrorChanged) {
+                    _tabs.value.forEach { t ->
+                        t.hibernateGeckoWhenHybrid = updated.hybridHibernateGecko && !updated.hybridMirrorInputToGecko
+                        t.updateMirrorInputToGecko(updated.hybridMirrorInputToGecko)
+                        if (updated.hybridMirrorInputToGecko && t.isHybridBlink.value && !t.isEvicted) {
+                            val curUrl = t.url.value
+                            if (curUrl.startsWith("http://", ignoreCase = true) || curUrl.startsWith("https://", ignoreCase = true)) {
+                                if (!t.isIncognito && !t.isSuper) proxyConfig.syncBlinkCookiesToGecko(curUrl)
+                                ensureLive(t)
+                                runCatching {
+                                    t.session.setActive(true)
+                                    t.session.load(GeckoSession.Loader().uri(curUrl))
                                 }
                             }
                         }
@@ -358,6 +377,7 @@ class TabManager @Inject constructor(
 
     fun onAppResumed() {
         val tab = activeTab ?: return
+        if (!tab.isIncognito && !tab.isSuper) proxyConfig.syncBlinkCookiesToGecko(tab.url.value)
         if (tab.isEvicted || isGated(tab)) return
         FableUnifiedEngine.setFrameMonitorActive(tab.isHybridBlink.value)
         runCatching { tab.session.takeIf { it.isOpen }?.setActive(true) }
@@ -474,7 +494,8 @@ class TabManager @Inject constructor(
     }
 
     private fun wireHybridCallbacks(tab: BrowserTab) {
-        tab.hibernateGeckoWhenHybrid = settings.hybridHibernateGecko
+        tab.hibernateGeckoWhenHybrid = settings.hybridHibernateGecko && !settings.hybridMirrorInputToGecko
+        tab.updateMirrorInputToGecko(settings.hybridMirrorInputToGecko)
         tab.fastAssetBypassEnabled = settings.hybridCppFastAssetBypass
         tab.currentTextZoomPercent = settings.textZoomPercent
         tab.ecoBoostDisabled = settings.batterySaverMaster || settings.batteryEcoCpu
@@ -583,6 +604,16 @@ class TabManager @Inject constructor(
                 gameAccountVaultPrefs.getString("ls_$key", "").orEmpty()
             }
         }
+        tab.hybridCookieSyncHandler = { pageUrl ->
+            if (!tab.isIncognito && !tab.isSuper && pageUrl.startsWith("http", ignoreCase = true)) {
+                proxyConfig.syncBlinkCookiesToGecko(pageUrl)
+            }
+        }
+        tab.hybridCookiePullHandler = { pageUrl ->
+            if (!tab.isIncognito && !tab.isSuper && pageUrl.startsWith("http", ignoreCase = true)) {
+                proxyConfig.pullGeckoCookiesToBlink(pageUrl)
+            }
+        }
         tab.hybridStorageVaultWrite = { originHost, jsonPayload ->
             if (!tab.isIncognito && !tab.isSuper && originHost.isNotBlank() && jsonPayload.length in 3..524288) {
                 val canonical = UrlUtils.registrableDomain(originHost) ?: originHost.lowercase().removePrefix("www.")
@@ -608,7 +639,20 @@ class TabManager @Inject constructor(
         tab.updateHybridBlink(enabled)
         if (enabled) {
             onGameModeStarted()
-            if (tab.session.isOpen) {
+            val curUrl = tab.url.value
+            if (!tab.isIncognito && !tab.isSuper && curUrl.startsWith("http", ignoreCase = true)) {
+                proxyConfig.pullGeckoCookiesToBlink(curUrl)
+            }
+            if (settings.hybridMirrorInputToGecko) {
+                if (curUrl.startsWith("http://", ignoreCase = true) || curUrl.startsWith("https://", ignoreCase = true)) {
+                    ensureLive(tab)
+                    runCatching {
+                        tab.session.setActive(true)
+                        setPriority(tab, high = true)
+                        tab.session.load(GeckoSession.Loader().uri(curUrl))
+                    }
+                }
+            } else if (tab.session.isOpen) {
                 runCatching {
                     tab.session.stop()
                     if (settings.hybridHibernateGecko) {
@@ -618,6 +662,10 @@ class TabManager @Inject constructor(
                 }
             }
         } else {
+            val curUrl = tab.url.value
+            if (!tab.isIncognito && !tab.isSuper && curUrl.startsWith("http", ignoreCase = true)) {
+                proxyConfig.syncBlinkCookiesToGecko(curUrl)
+            }
             tab.destroyRetainedBlinkView()
             val rawUrl = tab.url.value
             val currentUrl = if (rawUrl.startsWith("https://local.fable.app/opened_html/", ignoreCase = true)) {
@@ -862,7 +910,19 @@ class TabManager @Inject constructor(
         if (tab.isHybridBlink.value) {
             tab.lastLoadedBlinkUrl = ""
             tab.updateUrl(url)
-            if (tab.session.isOpen && settings.hybridHibernateGecko) {
+            if (!tab.isIncognito && !tab.isSuper && url.startsWith("http", ignoreCase = true)) {
+                proxyConfig.pullGeckoCookiesToBlink(url)
+            }
+            if (settings.hybridMirrorInputToGecko) {
+                ensureLive(tab)
+                whenSuperReady(tab, url) {
+                    runCatching {
+                        tab.session.setActive(true)
+                        setPriority(tab, high = true)
+                        tab.session.load(GeckoSession.Loader().uri(url))
+                    }
+                }
+            } else if (tab.session.isOpen && settings.hybridHibernateGecko) {
                 runCatching {
                     tab.session.stop()
                     tab.session.setActive(false)
@@ -930,6 +990,7 @@ class TabManager @Inject constructor(
         tab.updateInterstitial(null)
         if (tab.isHybridBlink.value) {
             tab.hybridController?.reload()
+            if (settings.hybridMirrorInputToGecko && tab.session.isOpen) runCatching { tab.session.reload() }
             return@let
         }
         if (tab.isEvicted || !tab.session.isOpen) {
@@ -977,6 +1038,7 @@ class TabManager @Inject constructor(
         if (!tab.canGoBack.value) return false
         if (tab.isHybridBlink.value) {
             tab.hybridController?.goBack()
+            if (settings.hybridMirrorInputToGecko && tab.session.isOpen) runCatching { tab.session.goBack() }
             return true
         }
         tab.session.goBack()
@@ -985,7 +1047,10 @@ class TabManager @Inject constructor(
 
     fun goForward() {
         val tab = activeTab?.takeIf { it.canGoForward.value } ?: return
-        if (tab.isHybridBlink.value) tab.hybridController?.goForward()
+        if (tab.isHybridBlink.value) {
+            tab.hybridController?.goForward()
+            if (settings.hybridMirrorInputToGecko && tab.session.isOpen) runCatching { tab.session.goForward() }
+        }
         else tab.session.goForward()
     }
 

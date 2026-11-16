@@ -181,6 +181,13 @@ fun HybridBetaSettingsScreen(
             onCheckedChange = viewModel::setHybridHibernateGecko
         )
         SwitchRow(
+            title = "Mirror Blink inputs to background GeckoView (Experimental)",
+            subtitle = "Optional: keeps background GeckoView active alongside Blink, shares the same cookies both ways, and mirrors touch, camera, scroll, mouse, and keyboard inputs to both engines simultaneously",
+            checked = s.hybridMirrorInputToGecko,
+            enabled = s.hybridGeckoBlinkBeta,
+            onCheckedChange = viewModel::setHybridMirrorInputToGecko
+        )
+        SwitchRow(
             title = "Save per-tab & per-site Beta state across app updates",
             subtitle = "Remembers which sites/tabs you toggled into or out of Combined Blink + Gecko mode even after updating or restarting the app",
             checked = s.hybridPersistTabMode,

@@ -97,6 +97,10 @@ class SessionDelegateFactory @Inject constructor(
                 if (com.fable.browser.BuildConfig.DEBUG) {
                     android.util.Log.i("FableNav", (if (tab.isSuper) "super " else if (tab.isIncognito) "incognito " else "normal ") + it)
                 }
+                if (tab.isHybridBlink.value) {
+                    if (!tab.isIncognito && !tab.isSuper) tab.hybridCookiePullHandler?.invoke(it)
+                    return@let
+                }
                 tab.updateUrl(it)
                 tab.updateSecure(!UrlUtils.isInsecure(it))
                 tab.updateReaderMode(false)
@@ -106,11 +110,11 @@ class SessionDelegateFactory @Inject constructor(
         }
 
         override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
-            tab.updateCanGoBack(canGoBack)
+            if (!tab.isHybridBlink.value) tab.updateCanGoBack(canGoBack)
         }
 
         override fun onCanGoForward(session: GeckoSession, canGoForward: Boolean) {
-            tab.updateCanGoForward(canGoForward)
+            if (!tab.isHybridBlink.value) tab.updateCanGoForward(canGoForward)
         }
 
         override fun onLoadRequest(
@@ -164,6 +168,7 @@ class SessionDelegateFactory @Inject constructor(
             uri: String?,
             error: WebRequestError
         ): GeckoResult<String>? {
+            if (tab.isHybridBlink.value) return GeckoResult.fromValue("about:blank")
             val target = uri ?: tab.url.value
             val reason = describe(error)
             tab.updateLoading(false)
@@ -195,6 +200,7 @@ class SessionDelegateFactory @Inject constructor(
 
     private fun progressDelegate(tab: BrowserTab) = object : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
+            if (tab.isHybridBlink.value) return
             tab.updateLoading(true)
             tab.updateProgress(5)
             tab.resetBlocked()
@@ -202,19 +208,23 @@ class SessionDelegateFactory @Inject constructor(
         }
 
         override fun onPageStop(session: GeckoSession, success: Boolean) {
+            if (!tab.isIncognito && !tab.isSuper) {
+                tab.hybridCookiePullHandler?.invoke(tab.url.value)
+            }
+            if (tab.isHybridBlink.value) return
             tab.updateLoading(false)
             tab.updateProgress(if (success) 100 else 0)
         }
 
         override fun onProgressChange(session: GeckoSession, progress: Int) {
-            tab.updateProgress(progress)
+            if (!tab.isHybridBlink.value) tab.updateProgress(progress)
         }
 
         override fun onSecurityChange(
             session: GeckoSession,
             securityInfo: GeckoSession.ProgressDelegate.SecurityInformation
         ) {
-            tab.updateSecure(securityInfo.isSecure)
+            if (!tab.isHybridBlink.value) tab.updateSecure(securityInfo.isSecure)
         }
 
         override fun onSessionStateChange(session: GeckoSession, sessionState: GeckoSession.SessionState) {
@@ -247,10 +257,11 @@ class SessionDelegateFactory @Inject constructor(
         callbacks: TabCallbacks
     ) = object : GeckoSession.ContentDelegate {
         override fun onTitleChange(session: GeckoSession, title: String?) {
-            tab.updateTitle(title.orEmpty())
+            if (!tab.isHybridBlink.value) tab.updateTitle(title.orEmpty())
         }
 
         override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+            if (tab.isHybridBlink.value) return
             tab.updateFullScreen(fullScreen)
             callbacks.onFullScreenChanged(tab, fullScreen)
         }

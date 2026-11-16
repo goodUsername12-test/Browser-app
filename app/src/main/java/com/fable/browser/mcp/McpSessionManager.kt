@@ -30,7 +30,7 @@ object McpSessionManager {
         runCatching { URI(url) }.onFailure { return update("Invalid MCP URL", false) }
         expiryJob?.cancel()
         val expires = System.currentTimeMillis() + durationMinutes.coerceIn(1, 1440) * 60_000L
-        _state.value = State(url, false, true, automaticAuth, customHeaders, expires, "Connecting", listOf("Starting MCP session for $url"))
+        _state.value = State(url, false, true, automaticAuth, customHeaders, expires, "Connecting", emptyList(), listOf("Starting MCP session for $url"))
         scope.launch {
             try {
                 val init = rpc(url, "initialize", JSONObject().apply {

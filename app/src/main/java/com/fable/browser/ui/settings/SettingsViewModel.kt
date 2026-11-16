@@ -340,17 +340,6 @@ class SettingsViewModel @Inject constructor(
     fun setArchiveStreamBufferMb(v: Int) = edit { store.setArchiveStreamBufferMb(v) }
     fun setArchiveSplitPartMb(v: Int) = edit { store.setArchiveSplitPartMb(v) }
     fun setDefaultEngine(v: DefaultBrowserEngine) = edit { store.setDefaultEngine(v) }
-    fun setAgentReactionIntervalMs(v: Int) = edit { store.setAgentReactionIntervalMs(v) }
-    fun setAgentJoystickCenterX(v: Int) = edit { store.setAgentJoystickCenterX(v) }
-    fun setAgentJoystickCenterY(v: Int) = edit { store.setAgentJoystickCenterY(v) }
-    fun setAgentAttackBtnX(v: Int) = edit { store.setAgentAttackBtnX(v) }
-    fun setAgentAttackBtnY(v: Int) = edit { store.setAgentAttackBtnY(v) }
-    fun setAgentJumpBtnX(v: Int) = edit { store.setAgentJumpBtnX(v) }
-    fun setAgentJumpBtnY(v: Int) = edit { store.setAgentJumpBtnY(v) }
-    fun setAgentCameraSensitivityPct(v: Int) = edit { store.setAgentCameraSensitivityPct(v) }
-    fun setOwnerAutoLockMinutes(v: Int) = edit { store.setOwnerAutoLockMinutes(v) }
-    fun setAgentShowHudOverlay(v: Boolean) = edit { store.setAgentShowHudOverlay(v) }
-    fun setAgentLocalLlmEndpoint(v: String) = edit { store.setAgentLocalLlmEndpoint(v); _message.value = "Saved AI model endpoint" }
     fun setHybridGeckoBlinkBeta(v: Boolean) = edit { store.setHybridGeckoBlinkBeta(v) }
     fun setHybridAutoForGames(v: Boolean) = edit { store.setHybridAutoForGames(v) }
     fun setHybridNativeCpuBoost(v: Boolean) = edit { store.setHybridNativeCpuBoost(v) }

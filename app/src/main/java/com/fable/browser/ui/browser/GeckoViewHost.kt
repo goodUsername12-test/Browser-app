@@ -262,7 +262,7 @@ private class FableHybridJsBridge(
 }
 
 private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
-    val frameVoter: SurfaceView? = if (Build.VERSION.SDK_INT < 34) {
+    val frameVoter: SurfaceView? = if (android.os.Build.VERSION.SDK_INT < 34) {
         HighRefreshRateEnforcer.createFrameRateVoterSurfaceView(context)
     } else {
         null

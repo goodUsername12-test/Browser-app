@@ -100,11 +100,11 @@ fun BrowserScreen(
         val controller = object : McpSessionManager.BrowserController {
             override fun currentUrl(): String = tab?.url?.value ?: "about:blank"
             override fun currentTitle(): String = tab?.title?.value.orEmpty()
-            override fun navigate(url: String) = viewModel.load(url)
-            override fun reload() = viewModel.reload()
+            override fun navigate(url: String) { viewModel.load(url) }
+            override fun reload() { viewModel.reload() }
             override fun goBack() { viewModel.goBack() }
-            override fun goForward() = viewModel.goForward()
-            override fun openNewTab(url: String?, incognito: Boolean) = viewModel.openTab(url, incognito)
+            override fun goForward() { viewModel.goForward() }
+            override fun openNewTab(url: String?, incognito: Boolean) { viewModel.openTab(url, incognito) }
             override fun closeActiveTab() { tab?.id?.let { viewModel.closeTab(it) } }
             override fun listTabsSummary(): String =
                 viewModel.tabs.value.joinToString(" | ") { "${it.id.take(4)}:${it.url.value.take(45)}" }

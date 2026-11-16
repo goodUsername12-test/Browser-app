@@ -106,6 +106,13 @@ fun SettingsScreen(
 
     SettingsPage(title = "Settings", onBack = onBack, viewModel = viewModel) {
         SettingRow(
+            title = "MCP server & live control",
+            subtitle = "Connect an MCP endpoint, view live activity, and set a 1 minute to 24 hour session",
+            icon = Icons.Outlined.Public,
+            onClick = { onNavigate(Routes.SETTINGS_MCP) }
+        )
+        ListDivider()
+        SettingRow(
             title = "General",
             subtitle = "Engine: ${settings.defaultEngine.label}  ·  Fable Proxy (SOCKS5/HTTP), search, startup",
             icon = Icons.Outlined.Tune,

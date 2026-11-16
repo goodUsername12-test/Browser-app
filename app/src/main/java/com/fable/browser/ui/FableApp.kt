@@ -35,6 +35,7 @@ import com.fable.browser.ui.settings.BatterySaverSettingsScreen
 import com.fable.browser.ui.settings.PerformanceSettingsScreen
 import com.fable.browser.ui.settings.PrivacySettingsScreen
 import com.fable.browser.ui.settings.SettingsScreen
+import com.fable.browser.ui.settings.McpSettingsScreen
 import com.fable.browser.ui.settings.SiteSettingsScreen
 import com.fable.browser.ui.tabs.TabsScreen
 import com.fable.browser.ui.theme.FableTheme
@@ -61,6 +62,7 @@ object Routes {
     const val SETTINGS_BOOSTER = "settings/booster"
     const val SETTINGS_PASSWORDS = "settings/passwords"
     const val SETTINGS_BACKUP = "settings/backup"
+    const val SETTINGS_MCP = "settings/mcp"
 }
 
 @Composable
@@ -141,6 +143,9 @@ private fun FableNavHost(navController: NavHostController, viewModel: BrowserVie
         }
         composable(Routes.DOWNLOADS) {
             DownloadsScreen(onBack = { navController.popIfNotRoot() })
+        }
+        composable(Routes.SETTINGS_MCP) {
+            McpSettingsScreen(onBack = { navController.popIfNotRoot() })
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(

@@ -3,10 +3,6 @@ package com.fable.browser.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fable.browser.data.model.DataSaverMode
-import com.fable.browser.agent.AgentAutonomyPolicy
-import com.fable.browser.agent.AgentMode
-import com.fable.browser.agent.AgentRiskZone
-import com.fable.browser.agent.RiskZonePolicy
 import com.fable.browser.data.model.DefaultBrowserEngine
 import com.fable.browser.data.model.DohProvider
 import com.fable.browser.data.model.SuperDeviceRange
@@ -344,8 +340,6 @@ class SettingsViewModel @Inject constructor(
     fun setArchiveStreamBufferMb(v: Int) = edit { store.setArchiveStreamBufferMb(v) }
     fun setArchiveSplitPartMb(v: Int) = edit { store.setArchiveSplitPartMb(v) }
     fun setDefaultEngine(v: DefaultBrowserEngine) = edit { store.setDefaultEngine(v) }
-    fun setAgentDefaultMode(v: AgentMode) = edit { store.setAgentDefaultMode(v) }
-    fun setAgentAutonomyPolicy(v: AgentAutonomyPolicy) = edit { store.setAgentAutonomyPolicy(v) }
     fun setAgentReactionIntervalMs(v: Int) = edit { store.setAgentReactionIntervalMs(v) }
     fun setAgentJoystickCenterX(v: Int) = edit { store.setAgentJoystickCenterX(v) }
     fun setAgentJoystickCenterY(v: Int) = edit { store.setAgentJoystickCenterY(v) }
@@ -357,7 +351,6 @@ class SettingsViewModel @Inject constructor(
     fun setOwnerAutoLockMinutes(v: Int) = edit { store.setOwnerAutoLockMinutes(v) }
     fun setAgentShowHudOverlay(v: Boolean) = edit { store.setAgentShowHudOverlay(v) }
     fun setAgentLocalLlmEndpoint(v: String) = edit { store.setAgentLocalLlmEndpoint(v); _message.value = "Saved AI model endpoint" }
-    fun setRiskZonePolicy(zone: AgentRiskZone, policy: RiskZonePolicy) = edit { store.setRiskZonePolicy(zone, policy) }
     fun setHybridGeckoBlinkBeta(v: Boolean) = edit { store.setHybridGeckoBlinkBeta(v) }
     fun setHybridAutoForGames(v: Boolean) = edit { store.setHybridAutoForGames(v) }
     fun setHybridNativeCpuBoost(v: Boolean) = edit { store.setHybridNativeCpuBoost(v) }

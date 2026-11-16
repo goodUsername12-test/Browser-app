@@ -182,7 +182,7 @@ fun HybridBetaSettingsScreen(
         )
         SwitchRow(
             title = "Mirror Blink inputs to background GeckoView (Experimental)",
-            subtitle = "Optional: keeps background GeckoView active alongside Blink, shares the same cookies both ways, and mirrors touch, camera, scroll, mouse, and keyboard inputs to both engines simultaneously",
+            subtitle = "Optional two-account mode: keeps GeckoView active alongside Blink with separate cookies and logins, while mirroring touch, camera, scroll, mouse, and keyboard inputs to both engines simultaneously",
             checked = s.hybridMirrorInputToGecko,
             enabled = s.hybridGeckoBlinkBeta,
             onCheckedChange = viewModel::setHybridMirrorInputToGecko

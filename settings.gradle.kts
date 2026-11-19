@@ -23,4 +23,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Fable Browser"
 
-include(":app")
+include(":app", ":local-bloxd")

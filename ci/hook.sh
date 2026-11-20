@@ -49,7 +49,10 @@ if ! ./gradlew :local-bloxd:testDebugUnitTest --stacktrace > "$ART/unit-tests.lo
   post "$REPORT"; exit 1
 fi
 
-# 4. Build x86_64 debug & release APKs for emulator testing
+# 4. Snapshot arm64 APKs BEFORE switching ABI split to x86_64
+APK_ARM_DBG="$(ls app/build/outputs/apk/debug/z-local-bloxd-*arm64-v8a*.apk local-bloxd/build/outputs/apk/debug/*arm64-v8a*.apk 2>/dev/null | head -n 1)"
+APK_ARM_REL="$(ls app/build/outputs/apk/release/z-local-bloxd-*arm64-v8a*.apk local-bloxd/build/outputs/apk/release/*arm64-v8a*.apk 2>/dev/null | head -n 1)"
+
 log "Building :local-bloxd x86_64 debug and release APKs"
 if ! ./gradlew :local-bloxd:assembleDebug :local-bloxd:assembleRelease -Pfable.abis=x86_64 -q > "$ART/x86-build.log" 2>&1; then
   { echo "HOOK-RESULT $VERSION FAILED: :local-bloxd x86_64 build"; echo '```'; tail -n 80 "$ART/x86-build.log"; echo '```'; } > "$REPORT"
@@ -58,8 +61,6 @@ fi
 
 APK_X86_DBG="$(ls local-bloxd/build/outputs/apk/debug/*x86_64*.apk 2>/dev/null | head -n 1)"
 APK_X86_REL="$(ls local-bloxd/build/outputs/apk/release/*x86_64*.apk 2>/dev/null | head -n 1)"
-APK_ARM_DBG="$(ls app/build/outputs/apk/debug/z-local-bloxd-*arm64-v8a*.apk local-bloxd/build/outputs/apk/debug/*arm64-v8a*.apk 2>/dev/null | head -n 1)"
-APK_ARM_REL="$(ls app/build/outputs/apk/release/z-local-bloxd-*arm64-v8a*.apk local-bloxd/build/outputs/apk/release/*arm64-v8a*.apk 2>/dev/null | head -n 1)"
 
 if [ -z "$APK_X86_DBG" ] || [ ! -f "$APK_X86_DBG" ]; then
   { echo "HOOK-RESULT $VERSION FAILED: x86_64 debug APK not found"; } > "$REPORT"

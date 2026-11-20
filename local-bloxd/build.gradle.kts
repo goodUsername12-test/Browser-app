@@ -215,6 +215,7 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders"
 // ALWAYS gets both separate APKs even when assembleDebug/assembleRelease hits Gradle build cache!
 val copyLocalBloxdDebugApkToApp by tasks.registering {
     outputs.upToDateWhen { false }
+    mustRunAfter(":app:assembleDebug")
     doLast {
         val srcDir = layout.buildDirectory.dir("outputs/apk/debug").get().asFile
         val dstDir = rootProject.file("app/build/outputs/apk/debug").apply { mkdirs() }
@@ -226,6 +227,7 @@ val copyLocalBloxdDebugApkToApp by tasks.registering {
 
 val copyLocalBloxdReleaseApkToApp by tasks.registering {
     outputs.upToDateWhen { false }
+    mustRunAfter(":app:assembleRelease")
     doLast {
         val srcDir = layout.buildDirectory.dir("outputs/apk/release").get().asFile
         val dstDir = rootProject.file("app/build/outputs/apk/release").apply { mkdirs() }

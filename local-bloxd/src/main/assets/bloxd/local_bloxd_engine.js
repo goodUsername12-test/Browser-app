@@ -577,7 +577,9 @@
     return (n00 + u * (n10 - n00)) + v * ((n01 + u * (n11 - n01)) - (n00 + u * (n10 - n00)));
   }
 
-  function surfaceHeightAt(wx, wz, seedU32) {
+  function surfaceHeightAt(wx, wz, seedU32, modeId) {
+    if (modeId === 2) return (wx === 16 && wz === 16) ? -4 : -100;
+    if (modeId === 3) return -4;
     // Keep spawn zone [12..21, 12..21] smoothly around y = -4 so [16.5, -2, 16.5] stands cleanly above ground
     const dx = wx - 16;
     const dz = wz - 16;
@@ -593,9 +595,10 @@
     return raw;
   }
 
-  function baseBlockAt(wx, wy, wz, seedU32) {
+  function baseBlockAt(wx, wy, wz, seedU32, modeId) {
+    if (modeId === 2) return (wx === 16 && wy === -4 && wz === 16) ? 4 : 0;
     if (wy <= -32) return 147; // Bedrock
-    const surf = surfaceHeightAt(wx, wz, seedU32);
+    const surf = surfaceHeightAt(wx, wz, seedU32, modeId);
     if (wy > surf) return 0; // Air
     if (wy === surf) return surf <= -7 ? 5 : 4; // Sand near low basins, Grass Block otherwise
     if (wy >= surf - 3) return 2; // Dirt
@@ -608,7 +611,7 @@
     return 28; // Stone
   }
 
-  function generateChunk32(cx, cy, cz, seedU32, overridesMap) {
+  function generateChunk32(cx, cy, cz, seedU32, overridesMap, modeId) {
     const voxels = new Uint16Array(32768);
     const baseX = cx * 32;
     const baseY = cy * 32;
@@ -634,11 +637,12 @@
       const wx = baseX + lx;
       for (let lz = 0; lz < 32; lz++) {
         const wz = baseZ + lz;
-        const surf = surfaceHeightAt(wx, wz, seedU32);
+        const surf = surfaceHeightAt(wx, wz, seedU32, modeId);
         for (let ly = 0; ly < 32; ly++) {
           const wy = baseY + ly;
           let block = 0;
-          if (wy <= -32) block = 147;
+          if (modeId === 2) block = (wx === 16 && wy === -4 && wz === 16) ? 4 : 0;
+          else if (wy <= -32) block = 147;
           else if (wy > surf) block = 0;
           else if (wy === surf) block = surf <= -7 ? 5 : 4;
           else if (wy >= surf - 3) block = 2;
@@ -1141,7 +1145,7 @@
     }
   }
 
-  function buildChunk32Rle(cx, cy, cz, seedU32, overridesMap, nativeBridge) {
+  function buildChunk32Rle(cx, cy, cz, seedU32, overridesMap, nativeBridge, modeId) {
     const baseX = cx * 32;
     const baseY = cy * 32;
     const baseZ = cz * 32;
@@ -1160,7 +1164,7 @@
     }
     if (nativeBridge && typeof nativeBridge.generateChunk32RleBase64 === 'function') {
       try {
-        const b64 = nativeBridge.generateChunk32RleBase64(cx | 0, cy | 0, cz | 0, seedU32 | 0, 0);
+        const b64 = nativeBridge.generateChunk32RleBase64(cx | 0, cy | 0, cz | 0, seedU32 | 0, (modeId || 0) | 0);
         if (b64 && typeof b64 === 'string' && b64.length > 0) {
           const nativeRle = base64ToUint8Array(b64);
           if (nativeRle.length > 0) {
@@ -1175,7 +1179,7 @@
         }
       } catch (_) {}
     }
-    const voxels = generateChunk32(cx, cy, cz, seedU32, overridesMap);
+    const voxels = generateChunk32(cx, cy, cz, seedU32, overridesMap, modeId || 0);
     return rleEncode(voxels);
   }
 
@@ -1538,11 +1542,21 @@
       const state = new rt.RoomState();
       const encoder = new rt.schema.Encoder(state);
 
+      const modeLower = String(modeRaw || '').toLowerCase();
+      const terrainModeId = (saved && typeof saved.terrainModeId === 'number')
+        ? saved.terrainModeId
+        : ((modeLower.includes('flat') || modeLower.includes('plots')) ? 3
+          : ((modeLower.includes('oneblock') || modeLower.includes('skyblock') || modeLower.includes('skygrid')) ? 2 : 0));
+      const defaultGameMode = (modeLower.includes('creative') || modeLower.includes('plots') || modeLower.includes('worlds'))
+        ? 'creative'
+        : 'survival';
       const world = {
         worldId,
         seed,
         seedU32,
-        gameMode: (saved && saved.gameMode) || (String(modeRaw || '').includes('creative') ? 'creative' : 'survival'),
+        modeRaw: String(modeRaw || 'classic'),
+        terrainModeId,
+        gameMode: (saved && saved.gameMode) || defaultGameMode,
         worldTime: (saved && typeof saved.worldTime === 'number') ? saved.worldTime : 6000,
         overrides,
         codeDocs,
@@ -1634,7 +1648,7 @@
       const iz = Math.floor(wz);
       const key = `${ix},${iy},${iz}`;
       if (world.overrides.has(key)) return world.overrides.get(key);
-      return baseBlockAt(ix, iy, iz, world.seedU32);
+      return baseBlockAt(ix, iy, iz, world.seedU32, world.terrainModeId || 0);
     }
 
     function isSolidBlock(blockId) {
@@ -1681,26 +1695,67 @@
       }
     }
 
-    function buildClientOptions(gameMode) {
+    function buildClientOptions(gameMode, rawModeName) {
       const isCreative = gameMode === 'creative';
+      const modeLower = String(rawModeName || '').toLowerCase();
+      const isPeaceful = modeLower === 'classic' || modeLower.includes('peaceful');
+      // Exact official Bloxd.io default ClientOptions (github.com/Bloxdy/code-api/CLIENT_OPTIONS.md)
       return {
         canChange: true,
         canCraft: true,
         canEditCode: true,
         canPickBlocks: true,
         canPickUpItems: true,
+        canCustomiseChar: true,
+        canFish: true,
+        canRecordReplays: false,
+        canUseZoomKey: true,
         creative: isCreative,
         canUseDevCreativeItems: isCreative,
         canAltAction: true,
         canCrouch: true,
+        canClimbWalls: false,
         useInventory: true,
         useFullInventory: true,
-        defaultBlock: 2,
+        inventoryItemsMoveable: true,
+        defaultBlock: 'Block of Gold',
         canSeeNametagsThroughWalls: true,
-        walkingSpeed: 4.5,
-        runningSpeedMultiplier: 1.45,
-        crouchingSpeedMultiplier: 0.55,
-        jumpAmount: 8.2,
+        showBasicMovementControls: true,
+        showKillfeed: true,
+        skyBox: 'default',
+        minChunkAddDist: [2, 2],
+        // Official Bloxd movement & physics constants
+        walkingSpeed: 4,
+        runningSpeed: 7,
+        crouchingSpeed: 2,
+        speedMultiplier: 1,
+        jumpAmount: 8,
+        airJumpCount: 0,
+        bunnyhopMaxMultiplier: 1.3,
+        flySpeedMultiplier: 1.5,
+        airAccScale: 1,
+        airFrictionScale: 1,
+        groundFrictionScale: 1,
+        airMomentumConservation: false,
+        gravityMultiplier: 1,
+        bounciness: 0,
+        blockReach: 6,
+        ezBridging: true,
+        ezTowering: true,
+        ttbMultiplier: 1,
+        movementBasedFovScale: 1,
+        maxHealth: 100,
+        initialHealth: 100,
+        maxShield: 100,
+        initialShield: 0,
+        healthRegenAmount: 0.05,
+        healthRegenInterval: 4000,
+        healthRegenStartAfter: 5000,
+        secsToRespawn: 5,
+        useRespawnButton: true,
+        autoRespawn: false,
+        fallDamage: !isCreative && !isPeaceful,
+        invincible: isCreative || isPeaceful,
       };
     }
 
@@ -2370,7 +2425,7 @@
         session.vy = typeof ctrl.vy === 'number' ? ctrl.vy : 0;
       } else {
         if (ctrl.jump && session.onGround) {
-          session.vy = 8.2;
+          session.vy = 8;
           session.onGround = false;
         }
         session.vy = Math.max(-36, session.vy - 24 * dt);
@@ -2526,7 +2581,7 @@
         const cx = Number(parts[0]) || 0;
         const cy = Number(parts[1]) || 0;
         const cz = Number(parts[2]) || 0;
-        const rle = buildChunk32Rle(cx, cy, cz, world.seedU32, world.overrides, nativeBridge);
+        const rle = buildChunk32Rle(cx, cy, cz, world.seedU32, world.overrides, nativeBridge, world.terrainModeId || 0);
         sendS2C(session, op.db || 24, {
           W9: chunkId,
           ci: false,
@@ -2988,7 +3043,7 @@
           const fullState = world.encoder.encodeAll();
           session.deliverFrame(buildRoomStateFrame(fullState));
           // Send initialization burst
-          sendS2C(session, op.sc || 1, buildClientOptions(world.gameMode));
+          sendS2C(session, op.sc || 1, buildClientOptions(world.gameMode, world.modeRaw));
           sendS2C(session, op.Tb || 64, { aE: session.eId, qE: session.cipherAdjustments.slice() });
           sendS2C(session, op.oc || 56, { FE: false, pE: world.seed, Bk: [], ck: null });
           sendS2C(session, op.wc || 106, {

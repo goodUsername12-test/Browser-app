@@ -211,27 +211,38 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders"
     dependsOn(buildLocalBloxdRust)
 }
 
-// Copy arm64-v8a APKs alongside app's APKs so GitHub Actions uploads both separate APKs in artifacts!
+// Copy arm64-v8a APKs alongside app's APKs via finalizedBy tasks so GitHub Actions
+// ALWAYS gets both separate APKs even when assembleDebug/assembleRelease hits Gradle build cache!
+val copyLocalBloxdDebugApkToApp by tasks.registering {
+    outputs.upToDateWhen { false }
+    doLast {
+        val srcDir = layout.buildDirectory.dir("outputs/apk/debug").get().asFile
+        val dstDir = rootProject.file("app/build/outputs/apk/debug").apply { mkdirs() }
+        srcDir.listFiles()?.filter { it.extension == "apk" }?.forEach { apk ->
+            apk.copyTo(File(dstDir, "z-local-bloxd-${apk.name.removePrefix("local-bloxd-")}"), overwrite = true)
+        }
+    }
+}
+
+val copyLocalBloxdReleaseApkToApp by tasks.registering {
+    outputs.upToDateWhen { false }
+    doLast {
+        val srcDir = layout.buildDirectory.dir("outputs/apk/release").get().asFile
+        val dstDir = rootProject.file("app/build/outputs/apk/release").apply { mkdirs() }
+        srcDir.listFiles()?.filter { it.extension == "apk" }?.forEach { apk ->
+            apk.copyTo(File(dstDir, "z-local-bloxd-${apk.name.removePrefix("local-bloxd-")}"), overwrite = true)
+        }
+    }
+}
+
 afterEvaluate {
     val abisProp = (project.findProperty("fable.abis") as String?).orEmpty()
     if (!abisProp.contains("x86_64")) {
         tasks.matching { it.name == "assembleDebug" }.configureEach {
-            doLast {
-                val srcDir = layout.buildDirectory.dir("outputs/apk/debug").get().asFile
-                val dstDir = rootProject.file("app/build/outputs/apk/debug").apply { mkdirs() }
-                srcDir.listFiles()?.filter { it.extension == "apk" }?.forEach { apk ->
-                    apk.copyTo(File(dstDir, "z-local-bloxd-${apk.name.removePrefix("local-bloxd-")}"), overwrite = true)
-                }
-            }
+            finalizedBy(copyLocalBloxdDebugApkToApp)
         }
         tasks.matching { it.name == "assembleRelease" }.configureEach {
-            doLast {
-                val srcDir = layout.buildDirectory.dir("outputs/apk/release").get().asFile
-                val dstDir = rootProject.file("app/build/outputs/apk/release").apply { mkdirs() }
-                srcDir.listFiles()?.filter { it.extension == "apk" }?.forEach { apk ->
-                    apk.copyTo(File(dstDir, "z-local-bloxd-${apk.name.removePrefix("local-bloxd-")}"), overwrite = true)
-                }
-            }
+            finalizedBy(copyLocalBloxdReleaseApkToApp)
         }
     }
 }

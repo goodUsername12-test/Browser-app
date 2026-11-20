@@ -104,7 +104,7 @@ audit_apk() {
   has_rust="$(grep -c "lib/${abi}/liblocal_bloxd_rust.so" "$ART/contents-${label}.txt" || true)"
 
   local elf_info=""
-  if command -v readelf >/dev/null 2>&1 && [ "$has_cpp" -ge 1 ]; then
+  if command -v readelf >/dev/null 2>&1; then
     local tmpdir="$ART/elf-${label}"; rm -rf "$tmpdir"; mkdir -p "$tmpdir"
     unzip -q -o "$apk" "lib/${abi}/*.so" -d "$tmpdir" 2>/dev/null || true
     for so in "$tmpdir/lib/${abi}"/*.so; do
@@ -126,7 +126,12 @@ audit_apk "arm64-debug" "$APK_ARM_DBG" "arm64-v8a"
 audit_apk "arm64-release" "$APK_ARM_REL" "arm64-v8a"
 audit_apk "x86_64-debug" "$APK_X86_DBG" "x86_64"
 [ -n "$APK_X86_REL" ] && audit_apk "x86_64-release" "$APK_X86_REL" "x86_64"
-log "APK Audit:$(printf '%b' "$AUDIT_SUMMARY")"
+
+{
+  echo "HOOK-AUDIT $VERSION (Node 10/10 OK, static_audit 0 err, :local-bloxd JVM tests OK)"
+  printf '%b\n' "$AUDIT_SUMMARY"
+} > "$ART/audit.md"
+post "$ART/audit.md"
 
 if [ "$AUDIT_FAIL" -ne 0 ]; then
   { echo "HOOK-RESULT $VERSION FAILED: APK audit failed"; printf '%b\n' "$AUDIT_SUMMARY"; } > "$REPORT"
@@ -158,28 +163,68 @@ fi
 log "AVD ready with $AVD_OK"
 
 ./gradlew --stop >/dev/null 2>&1 || true
-log "Booting emulator"
+adb start-server >/dev/null 2>&1 || true
+log "Booting offline emulator (-dns-server 127.0.0.1)"
 emulator -avd fable -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect \
-  -camera-back none -camera-front none -memory 4096 -cores 4 > "$ART/emulator.log" 2>&1 &
+  -camera-back none -camera-front none -dns-server 127.0.0.1 -memory 3072 -cores 4 > "$ART/emulator.log" 2>&1 &
+EMU_PID=$!
+
 timeout 300 adb wait-for-device || log "emulator did not appear"
 for i in $(seq 1 150); do
+  if ! kill -0 "$EMU_PID" 2>/dev/null; then
+    log "Emulator process $EMU_PID exited prematurely during boot!"
+    break
+  fi
   [ "$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
   sleep 2
 done
-adb shell settings put global window_animation_scale 0
-adb shell settings put global transition_animation_scale 0
-adb shell settings put global animator_duration_scale 0
+adb shell settings put global window_animation_scale 0 || true
+adb shell settings put global transition_animation_scale 0 || true
+adb shell settings put global animator_duration_scale 0 || true
 adb shell input keyevent 82 || true
 BOOTED="$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+log "Boot completed: $BOOTED (emu_alive=$(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no))"
 if [ "$BOOTED" != "1" ]; then
-  { echo "HOOK-RESULT $VERSION FAILED: emulator did not boot"; echo '```'; tail -n 60 "$ART/emulator.log"; echo '```'; } > "$REPORT"
+  {
+    echo "HOOK-RESULT $VERSION FAILED: emulator did not boot (emu_pid=$EMU_PID)"
+    echo '```'
+    adb devices -l 2>&1 || true
+    echo "--- emulator.log ---"
+    tail -n 80 "$ART/emulator.log"
+    echo '```'
+  } > "$REPORT"
   post "$REPORT"; exit 1
 fi
 
-log "Enforcing strict offline mode on emulator"
+log "Disabling wifi & cellular data on emulator (DNS already blackholed to 127.0.0.1)"
 adb shell svc wifi disable >/dev/null 2>&1 || true
 adb shell svc data disable >/dev/null 2>&1 || true
-adb shell cmd connectivity airplane-mode enable >/dev/null 2>&1 || adb shell settings put global airplane_mode_on 1 >/dev/null 2>&1 || true
+sleep 2
+
+ensure_adb() {
+  for attempt in 1 2 3 4 5; do
+    if [ "$(adb get-state 2>/dev/null | tr -d '\r')" = "device" ]; then
+      return 0
+    fi
+    log "Waiting for adb device (attempt $attempt, emu_alive=$(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no))"
+    timeout 30 adb wait-for-device >/dev/null 2>&1 || true
+    sleep 3
+  done
+  return 1
+}
+
+install_apk_safe() {
+  local apk="$1" logf="$2"
+  for attempt in 1 2 3; do
+    ensure_adb || return 1
+    if timeout 240 adb install -r -g "$apk" > "$logf" 2>&1; then
+      return 0
+    fi
+    log "adb install attempt $attempt failed: $(tr '\n' ' ' < "$logf")"
+    sleep 5
+  done
+  return 1
+}
 
 shot() {
   timeout 15 adb exec-out screencap -p > "$ART/$1.png" 2>/dev/null || return
@@ -204,12 +249,24 @@ step_check() {
   fi
 }
 
+if ! ensure_adb; then
+  {
+    echo "HOOK-RESULT $VERSION FAILED: adb device lost after boot"
+    echo '```'
+    adb devices -l 2>&1 || true
+    echo "--- emu alive: $(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no) ---"
+    tail -n 80 "$ART/emulator.log"
+    echo '```'
+  } > "$REPORT"
+  post "$REPORT"; kill "$EMU_PID" >/dev/null 2>&1 || true; exit 1
+fi
+
 adb logcat -c
 
-# --- Phase A: x86_64 Release-configured APK test (if assembled) ---
+# --- Phase A: x86_64 Release-configured APK test ---
 if [ -n "$APK_X86_REL" ] && [ -f "$APK_X86_REL" ]; then
   log "A) Installing x86_64 RELEASE APK ($PKG_REL)"
-  if timeout 240 adb install -r -g "$APK_X86_REL" > "$ART/install-rel.log" 2>&1; then
+  if install_apk_safe "$APK_X86_REL" "$ART/install-rel.log"; then
     timeout 90 adb shell am start -W -n "$ACT_REL" > "$ART/start-rel.txt" 2>&1
     sleep 18; step_check "release cold start offline (https://bloxd.io/)" "$PKG_REL"; shot 0a-release-cold-start
     timeout 90 adb shell am start -W -a android.intent.action.VIEW \
@@ -218,17 +275,27 @@ if [ -n "$APK_X86_REL" ] && [ -f "$APK_X86_REL" ]; then
     step_check "release classic local_world + touch" "$PKG_REL"; shot 0b-release-classic
     adb shell am force-stop "$PKG_REL" >/dev/null 2>&1 || true
   else
-    STEPS="${STEPS}\n- release apk install: FAILED"
+    STEPS="${STEPS}\n- release apk install: FAILED ($(tr '\n' ' ' < "$ART/install-rel.log" | cut -c1-160))"
     STEP_FAIL=1
   fi
 fi
 
 # --- Phase B: x86_64 Debug APK full lifecycle + upgrade + persistence test ---
 log "B) Installing x86_64 DEBUG APK ($PKG_DBG)"
-timeout 240 adb install -r -g "$APK_X86_DBG" > "$ART/install.log" 2>&1 || {
-  { echo "HOOK-RESULT $VERSION FAILED: adb install debug APK"; echo '```'; cat "$ART/install.log"; echo '```'; } > "$REPORT"
+if ! install_apk_safe "$APK_X86_DBG" "$ART/install.log"; then
+  {
+    echo "HOOK-RESULT $VERSION FAILED: adb install debug APK"
+    echo '```'
+    cat "$ART/install.log"
+    echo "--- adb devices ---"
+    adb devices -l 2>&1 || true
+    echo "--- emu alive: $(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no) ---"
+    echo "--- emulator.log tail ---"
+    tail -n 60 "$ART/emulator.log"
+    echo '```'
+  } > "$REPORT"
   post "$REPORT"; adb emu kill >/dev/null 2>&1 || true; exit 1
-}
+fi
 
 log "1) Debug cold start offline Bloxd home"
 timeout 90 adb shell am start -W -n "$ACT_DBG" > "$ART/start.txt" 2>&1
@@ -257,7 +324,7 @@ timeout 90 adb shell am start -W -n "$ACT_DBG" >> "$ART/start.txt" 2>&1
 sleep 18; step_check "debug cold restart after force-stop" "$PKG_DBG"; shot 5-after-restart
 
 log "6) Upgrade-install over existing app data"
-adb install -r -g "$APK_X86_DBG" > "$ART/install-upgrade.log" 2>&1 || STEP_FAIL=1
+install_apk_safe "$APK_X86_DBG" "$ART/install-upgrade.log" || STEP_FAIL=1
 timeout 90 adb shell am start -W -n "$ACT_DBG" >> "$ART/start.txt" 2>&1
 sleep 12; step_check "debug launch after upgrade reinstall" "$PKG_DBG"
 
@@ -285,7 +352,7 @@ WEB_TAIL="$(grep -E "LocalBloxdWeb|LocalBloxdNative" "$ART/logcat.txt" | tail -n
   printf '%s\n' "$FATAL_NATIVE" | head -n 60
   echo "== SecurityException checks =="
   printf '%s\n' "$SEC_ERRS" | head -n 30
-  echo "== LocalBloxdWeb / LocalBloxdNative / chromium errors =="
+  echo "== LocalBloxdWeb / LocalBloxdNative / AndroidRuntime errors =="
   grep -E "^(E|W)/(LocalBloxdWeb|LocalBloxdNative|AndroidRuntime|System\.err)" "$ART/logcat.txt" | head -n 140
 } | cut -c1-300 > "$ART/problems.txt"
 

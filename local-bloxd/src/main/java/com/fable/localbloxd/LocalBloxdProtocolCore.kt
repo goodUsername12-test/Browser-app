@@ -823,14 +823,22 @@ object LocalBloxdProtocolCore {
 
     // ---- CodeMirror 6 ChangeSet.toJSON() Applier (UTF-16 code-unit exact) ----
 
+    private fun requireSafeNonNegInt(num: Number, label: String): Int {
+        val d = num.toDouble()
+        if (!d.isFinite() || d < 0.0 || d > Int.MAX_VALUE.toDouble() || d != kotlin.math.floor(d)) {
+            throw IllegalArgumentException("$label must be a valid non-negative integer")
+        }
+        return num.toLong().toInt()
+    }
+
     fun applyCodeMirrorChangeSet(docText: String, changes: List<Any?>): String {
         var pos = 0
         val out = StringBuilder(docText.length + 32)
         for (item in changes) {
             when (item) {
                 is Number -> {
-                    val retain = item.toInt()
-                    if (retain < 0 || pos + retain > docText.length) {
+                    val retain = requireSafeNonNegInt(item, "CodeMirror retain count")
+                    if (retain > docText.length - pos) {
                         throw IllegalArgumentException("CodeMirror retain count out of bounds")
                     }
                     out.append(docText, pos, pos + retain)
@@ -838,9 +846,10 @@ object LocalBloxdProtocolCore {
                 }
                 is List<*> -> {
                     if (item.isEmpty()) throw IllegalArgumentException("Empty CodeMirror replace entry")
-                    val delLen = (item[0] as? Number)?.toInt()
+                    val delNum = item[0] as? Number
                         ?: throw IllegalArgumentException("CodeMirror delete length must be integer")
-                    if (delLen < 0 || pos + delLen > docText.length) {
+                    val delLen = requireSafeNonNegInt(delNum, "CodeMirror delete length")
+                    if (delLen > docText.length - pos) {
                         throw IllegalArgumentException("CodeMirror delete length out of bounds")
                     }
                     pos += delLen

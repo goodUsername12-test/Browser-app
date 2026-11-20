@@ -69,8 +69,8 @@ void detect_topology() noexcept {
     g_topo.big_mask = big_mask;
 }
 
-inline std::uint32_t hash2d(int x, int z, std::uint32_t seed) noexcept {
-    std::uint32_t h = seed ^ (static_cast<std::uint32_t>(x) * 374761393u) ^ (static_cast<std::uint32_t>(z) * 668265263u);
+inline std::uint32_t hash2d_u32(std::uint32_t x, std::uint32_t z, std::uint32_t seed) noexcept {
+    std::uint32_t h = seed ^ (x * 374761393u) ^ (z * 668265263u);
     h = (h ^ (h >> 13u)) * 1274126177u;
     return h ^ (h >> 16u);
 }
@@ -78,17 +78,21 @@ inline std::uint32_t hash2d(int x, int z, std::uint32_t seed) noexcept {
 inline double value_noise_2d(double x, double z, std::uint32_t seed) noexcept {
     const double x_fl = std::floor(x);
     const double z_fl = std::floor(z);
-    const int xi = static_cast<int>(x_fl);
-    const int zi = static_cast<int>(z_fl);
+    const std::int64_t xi = static_cast<std::int64_t>(x_fl);
+    const std::int64_t zi = static_cast<std::int64_t>(z_fl);
+    const std::uint32_t xi0 = static_cast<std::uint32_t>(xi);
+    const std::uint32_t zi0 = static_cast<std::uint32_t>(zi);
+    const std::uint32_t xi1 = static_cast<std::uint32_t>(xi + 1);
+    const std::uint32_t zi1 = static_cast<std::uint32_t>(zi + 1);
     const double xf = x - x_fl;
     const double zf = z - z_fl;
     const double u = xf * xf * (3.0 - 2.0 * xf);
     const double v = zf * zf * (3.0 - 2.0 * zf);
 
-    const double n00 = static_cast<double>(hash2d(xi, zi, seed) & 0xFFFFu) / 65535.0;
-    const double n10 = static_cast<double>(hash2d(xi + 1, zi, seed) & 0xFFFFu) / 65535.0;
-    const double n01 = static_cast<double>(hash2d(xi, zi + 1, seed) & 0xFFFFu) / 65535.0;
-    const double n11 = static_cast<double>(hash2d(xi + 1, zi + 1, seed) & 0xFFFFu) / 65535.0;
+    const double n00 = static_cast<double>(hash2d_u32(xi0, zi0, seed) & 0xFFFFu) / 65535.0;
+    const double n10 = static_cast<double>(hash2d_u32(xi1, zi0, seed) & 0xFFFFu) / 65535.0;
+    const double n01 = static_cast<double>(hash2d_u32(xi0, zi1, seed) & 0xFFFFu) / 65535.0;
+    const double n11 = static_cast<double>(hash2d_u32(xi1, zi1, seed) & 0xFFFFu) / 65535.0;
 
     const double nx0 = n00 + u * (n10 - n00);
     const double nx1 = n01 + u * (n11 - n01);
@@ -102,16 +106,17 @@ inline int js_math_round(double x) noexcept {
 
 // Exact match to local_bloxd_engine.js surfaceHeightAt(wx, wz, seedU32):
 // Spawn zone around [16, 16] stands cleanly at y = -4 so [16.5, -2, 16.5] is above ground.
-inline int terrain_height(int wx, int wz, std::uint32_t seed, int mode_id) noexcept {
+inline int terrain_height(std::int64_t wx, std::int64_t wz, std::uint32_t seed, int mode_id) noexcept {
     if (mode_id == 2) {
         return (wx == 16 && wz == 16) ? -4 : -100;
     }
     if (mode_id == 3) {
         return -4;
     }
-    const int dx = wx - 16;
-    const int dz = wz - 16;
-    const int dist_sq = dx * dx + dz * dz;
+    const std::int64_t dx = wx - 16;
+    const std::int64_t dz = wz - 16;
+    const bool near_spawn = (dx >= -10 && dx <= 10 && dz >= -10 && dz <= 10);
+    const std::int64_t dist_sq = near_spawn ? (dx * dx + dz * dz) : 100;
     if (dist_sq <= 25) {
         return -4;
     }
@@ -128,12 +133,14 @@ inline int terrain_height(int wx, int wz, std::uint32_t seed, int mode_id) noexc
 // Exact Bloxd world_meta block IDs matching local_bloxd_engine.js baseBlockAt:
 // 0 Air, 2 Dirt, 4 Grass Block, 5 Sand, 28 Stone, 40 Coal Ore, 41 Iron Ore,
 // 42 Gold Ore, 45 Diamond Ore, 147 Bedrock, 465 Moonstone Ore.
-inline std::uint16_t base_block_with_surf(int wx, int wy, int wz, int surf, std::uint32_t seed) noexcept {
+inline std::uint16_t base_block_with_surf(std::int64_t wx, std::int64_t wy, std::int64_t wz, int surf, std::uint32_t seed) noexcept {
     if (wy <= -32) return 147u;
     if (wy > surf) return 0u;
     if (wy == surf) return (surf <= -7) ? 5u : 4u;
     if (wy >= surf - 3) return 2u;
-    const std::uint32_t r = hash2d(wx + wy * 31, wz - wy * 17, seed + 911u) & 0x3FFu;
+    const std::uint32_t hx = static_cast<std::uint32_t>(wx) + static_cast<std::uint32_t>(wy) * 31u;
+    const std::uint32_t hz = static_cast<std::uint32_t>(wz) - static_cast<std::uint32_t>(wy) * 17u;
+    const std::uint32_t r = hash2d_u32(hx, hz, seed + 911u) & 0x3FFu;
     if (wy < -24 && r < 4u) return 45u;
     if (wy < -20 && r >= 4u && r < 7u) return 465u;
     if (wy < -18 && r >= 7u && r < 14u) return 42u;
@@ -159,9 +166,9 @@ void generate_chunk32_rle(
     std::vector<std::uint8_t>& out_rle
 ) {
     out_rle.clear();
-    const int base_x = cx * 32;
-    const int base_y = cy * 32;
-    const int base_z = cz * 32;
+    const std::int64_t base_x = static_cast<std::int64_t>(cx) * 32;
+    const std::int64_t base_y = static_cast<std::int64_t>(cy) * 32;
+    const std::int64_t base_z = static_cast<std::int64_t>(cz) * 32;
 
     if (base_y > 16) {
         out_rle.reserve(4);
@@ -173,7 +180,7 @@ void generate_chunk32_rle(
     int heights[32][32];
     int max_h = -1024;
     for (int lx = 0; lx < 32; ++lx) {
-        const int wx = base_x + lx;
+        const std::int64_t wx = base_x + lx;
         for (int lz = 0; lz < 32; ++lz) {
             const int h = terrain_height(wx, base_z + lz, seed, mode_id);
             heights[lx][lz] = h;
@@ -195,11 +202,11 @@ void generate_chunk32_rle(
 
     // Exact chunkIndex(x, y, z) = (x << 10) + (y << 5) + z traversal order
     for (int lx = 0; lx < 32; ++lx) {
-        const int wx = base_x + lx;
+        const std::int64_t wx = base_x + lx;
         for (int ly = 0; ly < 32; ++ly) {
-            const int wy = base_y + ly;
+            const std::int64_t wy = base_y + ly;
             for (int lz = 0; lz < 32; ++lz) {
-                const int wz = base_z + lz;
+                const std::int64_t wz = base_z + lz;
                 std::uint16_t block = 0u;
                 if (mode_id == 2) {
                     block = (wx == 16 && wy == -4 && wz == 16) ? 4u : 0u;
@@ -236,9 +243,9 @@ void generate_subchunk_16(
     std::uint8_t* out_voxels
 ) noexcept {
     std::memset(out_voxels, 0, 4096);
-    const int base_x = cx * 16;
-    const int base_y = cy * 16;
-    const int base_z = cz * 16;
+    const std::int64_t base_x = static_cast<std::int64_t>(cx) * 16;
+    const std::int64_t base_y = static_cast<std::int64_t>(cy) * 16;
+    const std::int64_t base_z = static_cast<std::int64_t>(cz) * 16;
 
     if (base_y > 16) {
         return;
@@ -246,9 +253,9 @@ void generate_subchunk_16(
 
     if (mode_id == 2) {
         if (base_x <= 16 && 16 < base_x + 16 && base_y <= -4 && -4 < base_y + 16 && base_z <= 16 && 16 < base_z + 16) {
-            const int lx = 16 - base_x;
-            const int ly = -4 - base_y;
-            const int lz = 16 - base_z;
+            const int lx = static_cast<int>(16 - base_x);
+            const int ly = static_cast<int>(-4 - base_y);
+            const int lz = static_cast<int>(16 - base_z);
             out_voxels[(ly << 8) | (lz << 4) | lx] = 4u;
         }
         return;
@@ -269,12 +276,12 @@ void generate_subchunk_16(
     }
 
     for (int lz = 0; lz < 16; ++lz) {
-        const int wz = base_z + lz;
+        const std::int64_t wz = base_z + lz;
         for (int lx = 0; lx < 16; ++lx) {
-            const int wx = base_x + lx;
+            const std::int64_t wx = base_x + lx;
             const int surface_y = heights[lz][lx];
             for (int ly = 0; ly < 16; ++ly) {
-                const int wy = base_y + ly;
+                const std::int64_t wy = base_y + ly;
                 const std::uint16_t b16 = base_block_with_surf(wx, wy, wz, surface_y, seed);
                 out_voxels[(ly << 8) | (lz << 4) | lx] = static_cast<std::uint8_t>(b16 <= 255u ? b16 : 28u);
             }
@@ -337,21 +344,26 @@ Java_com_fable_localbloxd_NativeBloxdBridge_nativeGenerateChunk32Rle(
     jint seed,
     jint mode_id
 ) {
-    std::vector<std::uint8_t> rle;
-    generate_chunk32_rle(
-        static_cast<int>(cx),
-        static_cast<int>(cy),
-        static_cast<int>(cz),
-        static_cast<std::uint32_t>(seed),
-        static_cast<int>(mode_id),
-        rle
-    );
-    const jsize len = static_cast<jsize>(rle.size());
-    jbyteArray arr = env->NewByteArray(len);
-    if (arr != nullptr && len > 0) {
-        env->SetByteArrayRegion(arr, 0, len, reinterpret_cast<const jbyte*>(rle.data()));
+    if (env == nullptr) return nullptr;
+    try {
+        std::vector<std::uint8_t> rle;
+        generate_chunk32_rle(
+            static_cast<int>(cx),
+            static_cast<int>(cy),
+            static_cast<int>(cz),
+            static_cast<std::uint32_t>(seed),
+            static_cast<int>(mode_id),
+            rle
+        );
+        const jsize len = static_cast<jsize>(rle.size());
+        jbyteArray arr = env->NewByteArray(len);
+        if (arr != nullptr && len > 0) {
+            env->SetByteArrayRegion(arr, 0, len, reinterpret_cast<const jbyte*>(rle.data()));
+        }
+        return arr;
+    } catch (...) {
+        return nullptr;
     }
-    return arr;
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -364,20 +376,25 @@ Java_com_fable_localbloxd_NativeBloxdBridge_nativeGenerateSubchunk(
     jint seed,
     jint mode_id
 ) {
-    std::array<std::uint8_t, 4096> voxels{};
-    generate_subchunk_16(
-        static_cast<int>(cx),
-        static_cast<int>(cy),
-        static_cast<int>(cz),
-        static_cast<std::uint32_t>(seed),
-        static_cast<int>(mode_id),
-        voxels.data()
-    );
-    jbyteArray arr = env->NewByteArray(4096);
-    if (arr != nullptr) {
-        env->SetByteArrayRegion(arr, 0, 4096, reinterpret_cast<const jbyte*>(voxels.data()));
+    if (env == nullptr) return nullptr;
+    try {
+        std::array<std::uint8_t, 4096> voxels{};
+        generate_subchunk_16(
+            static_cast<int>(cx),
+            static_cast<int>(cy),
+            static_cast<int>(cz),
+            static_cast<std::uint32_t>(seed),
+            static_cast<int>(mode_id),
+            voxels.data()
+        );
+        jbyteArray arr = env->NewByteArray(4096);
+        if (arr != nullptr) {
+            env->SetByteArrayRegion(arr, 0, 4096, reinterpret_cast<const jbyte*>(voxels.data()));
+        }
+        return arr;
+    } catch (...) {
+        return nullptr;
     }
-    return arr;
 }
 
 JNIEXPORT jint JNICALL
@@ -389,12 +406,16 @@ Java_com_fable_localbloxd_NativeBloxdBridge_nativeGetSurfaceHeight(
     jint seed,
     jint mode_id
 ) {
-    return static_cast<jint>(terrain_height(
-        static_cast<int>(wx),
-        static_cast<int>(wz),
-        static_cast<std::uint32_t>(seed),
-        static_cast<int>(mode_id)
-    ));
+    try {
+        return static_cast<jint>(terrain_height(
+            static_cast<std::int64_t>(wx),
+            static_cast<std::int64_t>(wz),
+            static_cast<std::uint32_t>(seed),
+            static_cast<int>(mode_id)
+        ));
+    } catch (...) {
+        return -4;
+    }
 }
 
 JNIEXPORT void JNICALL

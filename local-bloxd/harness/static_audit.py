@@ -3,7 +3,7 @@ import os
 import re
 import sys
 
-ROOT = "/tmp/fable"
+ROOT = os.environ.get("FABLE_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MOD = os.path.join(ROOT, "local-bloxd")
 KT_MAIN = os.path.join(MOD, "src/main/java/com/fable/localbloxd")
 KT_TEST = os.path.join(MOD, "src/test/java/com/fable/localbloxd")
@@ -191,6 +191,11 @@ for fn in sorted(server_bridge_calls):
 
 check("assetServer.intercept(uri, request.method ?: \"GET\", request.requestHeaders ?: emptyMap())" in act_src,
       "LocalBloxdActivity forwards requestHeaders to LocalBloxdAssetServer.intercept")
+act_no_comments = re.sub(r'//.*', '', re.sub(r'/\*.*?\*/', '', act_src, flags=re.S))
+check(not re.search(r'\bblockNetworkLoads\s*=\s*false\b', act_no_comments),
+      "LocalBloxdActivity never sets blockNetworkLoads = false (avoids SecurityException without INTERNET)")
+check("onRenderProcessGone" in act_src,
+      "LocalBloxdActivity handles onRenderProcessGone cleanly")
 
 # 8. JS -> JsBridge @JavascriptInterface verification
 js_ifaces = set(re.findall(r'@JavascriptInterface\s+fun\s+(\w+)\s*\(', bridge_src))

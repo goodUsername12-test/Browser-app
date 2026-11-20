@@ -18,9 +18,11 @@ object NativeBloxdBridge {
     private const val TAG = "LocalBloxdNative"
     private const val MAX_NAME_CODEPOINTS = LocalBloxdProtocolCore.MAX_NAME_CODEPOINTS
     private const val MAX_STAGED_POST_BYTES = 4 * 1024 * 1024
+    private const val MAX_TOTAL_STAGED_POST_BYTES = 16 * 1024 * 1024L
     private const val MAX_STAGED_POST_ENTRIES = 64
     private const val STAGED_POST_TTL_MS = 60_000L
     private const val MAX_COLLAB_HISTORY_PER_DOC = 256
+    private const val MAX_PERSIST_FILE_BYTES = 16 * 1024 * 1024L
 
     private data class StagedPostBody(
         val bytes: ByteArray,
@@ -64,7 +66,9 @@ object NativeBloxdBridge {
     }
 
     private val stagedPostCounter = AtomicLong(0L)
-    private val stagedPostBodies = ConcurrentHashMap<String, StagedPostBody>()
+    private val stagedPostLock = Any()
+    private var stagedPostTotalBytes: Long = 0L
+    private val stagedPostBodies = LinkedHashMap<String, StagedPostBody>(16)
 
     private val worldBlocks = ConcurrentHashMap<String, ConcurrentHashMap<String, Int>>()
     private val worldMeta = ConcurrentHashMap<String, String>()
@@ -102,28 +106,42 @@ object NativeBloxdBridge {
         val bytes = bodyUtf8.toByteArray(StandardCharsets.UTF_8)
         if (bytes.size > MAX_STAGED_POST_BYTES) return ""
         val now = System.currentTimeMillis()
-        if (stagedPostBodies.size >= MAX_STAGED_POST_ENTRIES) {
+        val token = "p${stagedPostCounter.incrementAndGet()}"
+        synchronized(stagedPostLock) {
             val iter = stagedPostBodies.entries.iterator()
             while (iter.hasNext()) {
                 val entry = iter.next()
                 if (now - entry.value.createdAtMs > STAGED_POST_TTL_MS) {
+                    stagedPostTotalBytes = (stagedPostTotalBytes - entry.value.bytes.size).coerceAtLeast(0L)
                     iter.remove()
                 }
             }
-            if (stagedPostBodies.size >= MAX_STAGED_POST_ENTRIES) {
-                stagedPostBodies.entries.minByOrNull { it.value.createdAtMs }?.key?.let {
-                    stagedPostBodies.remove(it)
+            while (
+                stagedPostBodies.isNotEmpty() &&
+                (stagedPostBodies.size >= MAX_STAGED_POST_ENTRIES ||
+                    stagedPostTotalBytes + bytes.size > MAX_TOTAL_STAGED_POST_BYTES)
+            ) {
+                val oldestKey = stagedPostBodies.entries.iterator().next().key
+                val removed = stagedPostBodies.remove(oldestKey)
+                if (removed != null) {
+                    stagedPostTotalBytes = (stagedPostTotalBytes - removed.bytes.size).coerceAtLeast(0L)
                 }
             }
+            stagedPostBodies[token] = StagedPostBody(bytes, now)
+            stagedPostTotalBytes += bytes.size
         }
-        val token = "p${stagedPostCounter.incrementAndGet()}"
-        stagedPostBodies[token] = StagedPostBody(bytes, now)
         return token
     }
 
     fun consumeStagedPostBody(token: String?): ByteArray? {
         if (token.isNullOrBlank()) return null
-        val entry = stagedPostBodies.remove(token.trim()) ?: return null
+        val entry = synchronized(stagedPostLock) {
+            val removed = stagedPostBodies.remove(token.trim())
+            if (removed != null) {
+                stagedPostTotalBytes = (stagedPostTotalBytes - removed.bytes.size).coerceAtLeast(0L)
+            }
+            removed
+        } ?: return null
         if (System.currentTimeMillis() - entry.createdAtMs > STAGED_POST_TTL_MS) {
             return null
         }
@@ -149,27 +167,39 @@ object NativeBloxdBridge {
         ioExecutor.execute { runCatching { nativeRelaxThreads() } }
     }
 
+    private fun runFlush(appCtx: Context) {
+        for ((wKey, flag) in dirtyBlockWorlds.entries) {
+            if (flag.compareAndSet(true, false)) {
+                if (!writeBlocksFile(appCtx, wKey)) flag.set(true)
+            }
+        }
+        for ((wKey, flag) in dirtyMetaWorlds.entries) {
+            if (flag.compareAndSet(true, false)) {
+                val meta = worldMeta[wKey]
+                if (meta != null && !writeMetaFile(appCtx, wKey, meta)) flag.set(true)
+            }
+        }
+        for ((wKey, flag) in dirtyCodeWorlds.entries) {
+            if (flag.compareAndSet(true, false)) {
+                if (!writeCodeFile(appCtx, wKey)) flag.set(true)
+            }
+        }
+        if (dirtyProfile.compareAndSet(true, false)) {
+            if (!writeProfileFile(appCtx)) dirtyProfile.set(true)
+        }
+    }
+
     fun flushNow(ctx: Context) {
         val appCtx = ctx.applicationContext
-        ioExecutor.execute {
-            for ((wKey, flag) in dirtyBlockWorlds.entries) {
-                if (flag.compareAndSet(true, false)) {
-                    writeBlocksFile(appCtx, wKey)
-                }
-            }
-            for ((wKey, flag) in dirtyMetaWorlds.entries) {
-                if (flag.compareAndSet(true, false)) {
-                    worldMeta[wKey]?.let { writeMetaFile(appCtx, wKey, it) }
-                }
-            }
-            for ((wKey, flag) in dirtyCodeWorlds.entries) {
-                if (flag.compareAndSet(true, false)) {
-                    writeCodeFile(appCtx, wKey)
-                }
-            }
-            if (dirtyProfile.compareAndSet(true, false)) {
-                writeProfileFile(appCtx)
-            }
+        ioExecutor.execute { runFlush(appCtx) }
+    }
+
+    fun flushNowBlocking(ctx: Context, timeoutMs: Long = 1500L) {
+        val appCtx = ctx.applicationContext
+        runCatching {
+            ioExecutor.submit { runFlush(appCtx) }.get(timeoutMs, TimeUnit.MILLISECONDS)
+        }.onFailure { err ->
+            Log.w(TAG, "Bounded flush did not finish in ${timeoutMs}ms: ${err.message}")
         }
     }
 
@@ -178,19 +208,27 @@ object NativeBloxdBridge {
     @Synchronized
     fun ensureLoaded(ctx: Context) {
         if (initializedFromDisk) return
-        initializedFromDisk = true
         val dir = worldDir(ctx)
-        dir.listFiles()?.forEach { f ->
+        val files = dir.listFiles() ?: run {
+            Log.w(TAG, "Could not list world dir: ${dir.absolutePath}")
+            return
+        }
+        files.forEach { f ->
+            if (!f.isFile || f.name.endsWith(".tmp")) return@forEach
+            if (f.length() > MAX_PERSIST_FILE_BYTES) {
+                Log.w(TAG, "Skipping oversized persistence file ${f.name} (${f.length()} bytes)")
+                return@forEach
+            }
             runCatching {
                 when {
                     f.name == "player_profile.json" -> {
-                        val obj = JSONObject(f.readText())
+                        val obj = JSONObject(f.readText(StandardCharsets.UTF_8))
                         persistedPlayerName = truncateByCodePoints(obj.optString("playerName", ""))
                     }
                     f.name.startsWith("blocks_") && f.name.endsWith(".txt") -> {
                         val wKey = f.name.removePrefix("blocks_").removeSuffix(".txt")
                         val map = ConcurrentHashMap<String, Int>(1024)
-                        val flat = f.readText()
+                        val flat = f.readText(StandardCharsets.UTF_8)
                         for (rec in flat.split(';')) {
                             if (rec.isBlank()) continue
                             val p = rec.split(',')
@@ -204,20 +242,21 @@ object NativeBloxdBridge {
                         }
                         worldBlocks[wKey] = map
                         if (wKey == "local_world" && hasRust) {
-                            nativeRustLoadWorldEdits(flat)
+                            runCatching { nativeRustLoadWorldEdits(flat) }
                         }
                     }
                     f.name.startsWith("meta_") && f.name.endsWith(".json") -> {
                         val wKey = f.name.removePrefix("meta_").removeSuffix(".json")
-                        worldMeta[wKey] = f.readText()
+                        worldMeta[wKey] = f.readText(StandardCharsets.UTF_8)
                     }
                     f.name.startsWith("code_") && f.name.endsWith(".json") -> {
                         val wKey = f.name.removePrefix("code_").removeSuffix(".json")
-                        val obj = JSONObject(f.readText())
+                        val obj = JSONObject(f.readText(StandardCharsets.UTF_8))
                         val map = ConcurrentHashMap<String, LocalBloxdProtocolCore.CodeDocRecord>(16)
                         val keys = obj.keys()
                         while (keys.hasNext()) {
                             val k = keys.next()
+                            val validKey = LocalBloxdProtocolCore.validateDocKey(k) ?: continue
                             val entry = obj.optJSONObject(k)
                             if (entry != null) {
                                 val rev = if (entry.has("revision")) {
@@ -225,7 +264,7 @@ object NativeBloxdBridge {
                                 } else {
                                     entry.optInt("version", 0)
                                 }
-                                map[k] = LocalBloxdProtocolCore.CodeDocRecord(
+                                map[validKey] = LocalBloxdProtocolCore.CodeDocRecord(
                                     code = entry.optString("code", ""),
                                     revision = rev.coerceAtLeast(0),
                                     canSeeCode = entry.optBoolean("canSeeCode", true),
@@ -237,50 +276,58 @@ object NativeBloxdBridge {
                         worldCodeDocs[wKey] = map
                     }
                 }
+            }.onFailure { err ->
+                Log.w(TAG, "Failed loading persistence file ${f.name}: ${err.message}")
             }
         }
+        initializedFromDisk = true
     }
 
-    private fun writeProfileFile(ctx: Context) {
-        runCatching {
-            val dir = worldDir(ctx)
-            val tmp = File(dir, "player_profile.json.tmp")
-            val dst = File(dir, "player_profile.json")
-            val obj = JSONObject().put("playerName", persistedPlayerName)
-            tmp.writeText(obj.toString())
-            tmp.renameTo(dst)
-        }
-    }
-
-    private fun writeBlocksFile(ctx: Context, wKey: String) {
-        runCatching {
-            val map = worldBlocks[wKey] ?: return
-            val sb = StringBuilder(map.size * 16)
-            for ((coord, id) in map.entries) {
-                sb.append(coord).append(',').append(id).append(';')
+    private fun atomicWriteText(dst: File, content: String): Boolean {
+        val tmp = File(dst.parentFile, "${dst.name}.tmp")
+        return runCatching {
+            tmp.writeText(content, StandardCharsets.UTF_8)
+            if (tmp.renameTo(dst)) {
+                true
+            } else {
+                if (dst.exists()) dst.delete()
+                if (tmp.renameTo(dst)) {
+                    true
+                } else {
+                    dst.writeText(content, StandardCharsets.UTF_8)
+                    tmp.delete()
+                    true
+                }
             }
-            val dir = worldDir(ctx)
-            val tmp = File(dir, "blocks_${wKey}.txt.tmp")
-            val dst = File(dir, "blocks_${wKey}.txt")
-            tmp.writeText(sb.toString())
-            tmp.renameTo(dst)
-        }
+        }.onFailure { err ->
+            Log.e(TAG, "Atomic write failed for ${dst.name}: ${err.message}")
+            runCatching { tmp.delete() }
+        }.getOrDefault(false)
     }
 
-    private fun writeMetaFile(ctx: Context, wKey: String, json: String) {
-        runCatching {
-            val dir = worldDir(ctx)
-            val tmp = File(dir, "meta_${wKey}.json.tmp")
-            val dst = File(dir, "meta_${wKey}.json")
-            tmp.writeText(json)
-            tmp.renameTo(dst)
-        }
+    private fun writeProfileFile(ctx: Context): Boolean {
+        val dir = worldDir(ctx)
+        val obj = JSONObject().put("playerName", persistedPlayerName)
+        return atomicWriteText(File(dir, "player_profile.json"), obj.toString())
     }
 
-    private fun writeCodeFile(ctx: Context, wKey: String) {
-        runCatching {
-            val map = worldCodeDocs[wKey] ?: return
-            val obj = JSONObject()
+    private fun writeBlocksFile(ctx: Context, wKey: String): Boolean {
+        val map = worldBlocks[wKey] ?: return true
+        val sb = StringBuilder(map.size * 16)
+        for ((coord, id) in map.entries) {
+            sb.append(coord).append(',').append(id).append(';')
+        }
+        return atomicWriteText(File(worldDir(ctx), "blocks_${wKey}.txt"), sb.toString())
+    }
+
+    private fun writeMetaFile(ctx: Context, wKey: String, json: String): Boolean {
+        return atomicWriteText(File(worldDir(ctx), "meta_${wKey}.json"), json)
+    }
+
+    private fun writeCodeFile(ctx: Context, wKey: String): Boolean {
+        val map = worldCodeDocs[wKey] ?: return true
+        val obj = JSONObject()
+        synchronized(map) {
             for ((docKey, rec) in map.entries) {
                 obj.put(
                     docKey,
@@ -293,12 +340,8 @@ object NativeBloxdBridge {
                         .put("engine", rec.engine)
                 )
             }
-            val dir = worldDir(ctx)
-            val tmp = File(dir, "code_${wKey}.json.tmp")
-            val dst = File(dir, "code_${wKey}.json")
-            tmp.writeText(obj.toString())
-            tmp.renameTo(dst)
         }
+        return atomicWriteText(File(worldDir(ctx), "code_${wKey}.json"), obj.toString())
     }
 
     private fun scheduleProfilePersist(ctx: Context) {
@@ -782,7 +825,7 @@ object NativeBloxdBridge {
             val wKey = safeKey(world ?: requestedLobby)
             val map = worldBlocks.getOrPut(wKey) { ConcurrentHashMap(1024) }
             map["$x,$y,$z"] = blockId
-            if (hasRust) {
+            if (hasRust && wKey == "local_world") {
                 runCatching { nativeRustPutBlock(x, y, z, blockId) }
             }
             scheduleBlocksPersist(appContext, wKey)
@@ -792,7 +835,7 @@ object NativeBloxdBridge {
         fun clearWorldEdits(world: String?) {
             val wKey = safeKey(world ?: requestedLobby)
             worldBlocks[wKey]?.clear()
-            if (hasRust) {
+            if (hasRust && wKey == "local_world") {
                 runCatching { nativeRustClearBlocks() }
             }
             scheduleBlocksPersist(appContext, wKey)
@@ -820,11 +863,11 @@ object NativeBloxdBridge {
             val wKey = safeKey(cleanWorld)
             val key = docKey?.trim()?.takeIf { it.isNotEmpty() } ?: return
             val map = worldCodeDocs.getOrPut(wKey) { ConcurrentHashMap(16) }
-            val validKey = LocalBloxdProtocolCore.validateDocKey(key) ?: key
+            val validKey = LocalBloxdProtocolCore.validateDocKey(key) ?: return
             val existing = map[validKey]
             syncCodeDocFull(
                 world = cleanWorld,
-                docKey = key,
+                docKey = validKey,
                 code = code,
                 version = version,
                 canSeeCode = existing?.canSeeCode ?: true,
@@ -846,7 +889,7 @@ object NativeBloxdBridge {
             val cleanWorld = world?.trim()?.takeIf { it.isNotEmpty() } ?: requestedLobby
             val wKey = safeKey(cleanWorld)
             val key = docKey?.trim()?.takeIf { it.isNotEmpty() } ?: return
-            val validKey = LocalBloxdProtocolCore.validateDocKey(key) ?: key
+            val validKey = LocalBloxdProtocolCore.validateDocKey(key) ?: return
             activeCodeLobby = cleanWorld
             activeCodeDocKey = validKey
             val map = worldCodeDocs.getOrPut(wKey) { ConcurrentHashMap(16) }
@@ -957,8 +1000,12 @@ object NativeBloxdBridge {
         }
 
         @JavascriptInterface
-        fun saveCodeBlock(x: Int, y: Int, z: Int, code: String) {
-            syncCodeDoc(requestedLobby, "codeBlock:$x,$y,$z", code, 1)
+        fun saveCodeBlock(x: Int, y: Int, z: Int, code: String?) {
+            val cleanWorld = requestedLobby
+            val wKey = safeKey(cleanWorld)
+            val docKey = "codeBlock:$x,$y,$z"
+            val nextRev = (worldCodeDocs[wKey]?.get(docKey)?.revision ?: 0) + 1
+            syncCodeDoc(cleanWorld, docKey, code ?: "", nextRev)
         }
 
         @JavascriptInterface

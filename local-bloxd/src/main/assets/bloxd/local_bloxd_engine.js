@@ -63,9 +63,12 @@
     return out;
   }
 
-  async function seedBrowserLocalForage(preparedSeed) {
-    if (!preparedSeed || typeof indexedDB === 'undefined') return false;
+  async function hasSeededBrowserLocalForage(seedVersion) {
+    if (typeof indexedDB === 'undefined') return false;
     return new Promise((resolve) => {
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const timer = setTimeout(() => done(false), 1500);
       try {
         const req = indexedDB.open('bloxd_localforage', 2);
         req.onupgradeneeded = () => {
@@ -74,26 +77,78 @@
             db.createObjectStore('keyvaluepairs');
           }
         };
-        req.onerror = () => resolve(false);
+        req.onerror = () => { clearTimeout(timer); done(false); };
+        req.onblocked = () => { clearTimeout(timer); done(false); };
         req.onsuccess = () => {
           try {
             const db = req.result;
             if (!db.objectStoreNames.contains('keyvaluepairs')) {
               db.close();
-              return resolve(false);
+              clearTimeout(timer);
+              return done(false);
+            }
+            const tx = db.transaction('keyvaluepairs', 'readonly');
+            const store = tx.objectStore('keyvaluepairs');
+            const getReq = store.get('__fableAtlasSeedVersion');
+            getReq.onsuccess = () => {
+              const ok = getReq.result === seedVersion;
+              db.close();
+              clearTimeout(timer);
+              done(ok);
+            };
+            getReq.onerror = () => { db.close(); clearTimeout(timer); done(false); };
+          } catch (_) {
+            clearTimeout(timer);
+            done(false);
+          }
+        };
+      } catch (_) {
+        clearTimeout(timer);
+        done(false);
+      }
+    });
+  }
+
+  async function seedBrowserLocalForage(preparedSeed, seedVersion) {
+    if (!preparedSeed || typeof indexedDB === 'undefined') return false;
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const timer = setTimeout(() => done(false), 4000);
+      try {
+        const req = indexedDB.open('bloxd_localforage', 2);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('keyvaluepairs')) {
+            db.createObjectStore('keyvaluepairs');
+          }
+        };
+        req.onerror = () => { clearTimeout(timer); done(false); };
+        req.onblocked = () => { clearTimeout(timer); done(false); };
+        req.onsuccess = () => {
+          try {
+            const db = req.result;
+            if (!db.objectStoreNames.contains('keyvaluepairs')) {
+              db.close();
+              clearTimeout(timer);
+              return done(false);
             }
             const tx = db.transaction('keyvaluepairs', 'readwrite');
             const store = tx.objectStore('keyvaluepairs');
             if (preparedSeed.atlasCache) store.put(preparedSeed.atlasCache, 'atlasCache');
             if (preparedSeed.texturePack) store.put(preparedSeed.texturePack, 'texturePack');
-            tx.oncomplete = () => { db.close(); resolve(true); };
-            tx.onerror = () => { db.close(); resolve(false); };
+            if (seedVersion) store.put(seedVersion, '__fableAtlasSeedVersion');
+            tx.oncomplete = () => { db.close(); clearTimeout(timer); done(true); };
+            tx.onerror = () => { db.close(); clearTimeout(timer); done(false); };
+            tx.onabort = () => { db.close(); clearTimeout(timer); done(false); };
           } catch (_) {
-            resolve(false);
+            clearTimeout(timer);
+            done(false);
           }
         };
       } catch (_) {
-        resolve(false);
+        clearTimeout(timer);
+        done(false);
       }
     });
   }
@@ -1841,22 +1896,24 @@
 
     function syncNativeCodeDoc(world, docKey, doc) {
       if (!nativeBridge || !doc) return;
+      const safeRev = Math.max(0, Math.min(0x7fffffff, Math.trunc(Number(doc.revision) || 0)));
+      const safeCode = typeof doc.code === 'string' ? doc.code : String(doc.code || '');
       if (typeof nativeBridge.syncCodeDocFull === 'function') {
         try {
           nativeBridge.syncCodeDocFull(
-            world.worldId,
-            docKey,
-            doc.code,
-            doc.revision,
+            String(world.worldId || 'local_world'),
+            String(docKey || ''),
+            safeCode,
+            safeRev,
             doc.canSeeCode !== false,
             doc.canEditCode !== false,
-            doc.engine || 'default'
+            String(doc.engine || 'default')
           );
           return;
         } catch (_) {}
       }
       if (typeof nativeBridge.syncCodeDoc === 'function') {
-        try { nativeBridge.syncCodeDoc(world.worldId, docKey, doc.code, doc.revision); } catch (_) {}
+        try { nativeBridge.syncCodeDoc(String(world.worldId || 'local_world'), String(docKey || ''), safeCode, safeRev); } catch (_) {}
       }
     }
 
@@ -2905,6 +2962,12 @@
       send(rawData) {
         if (this.readyState !== LocalWebSocket.OPEN) throw new Error('WebSocket is not open');
         if (this._isSocial) return;
+        if (typeof Blob !== 'undefined' && rawData instanceof Blob) {
+          rawData.arrayBuffer().then((buf) => {
+            if (this.readyState === LocalWebSocket.OPEN) this.send(new Uint8Array(buf));
+          }).catch(() => {});
+          return;
+        }
         const session = this._session;
         if (!session) return;
         const world = session.world;
@@ -2916,6 +2979,12 @@
         if (decoded.kind === 'join_ack') {
           if (session.joined) return;
           session.joined = true;
+          if (typeof window !== 'undefined') {
+            window.__fableRuntimeStats = window.__fableRuntimeStats || { errors: 0, wsJoins: 0 };
+            window.__fableRuntimeStats.wsJoins = (window.__fableRuntimeStats.wsJoins || 0) + 1;
+            window.__fableRuntimeStats.lastRoom = world.worldId + ':' + world.gameMode;
+            console.log('[FABLE-ROOM-JOIN] world=' + world.worldId + ' mode=' + world.gameMode + ' joins=' + window.__fableRuntimeStats.wsJoins);
+          }
           const fullState = world.encoder.encodeAll();
           session.deliverFrame(buildRoomStateFrame(fullState));
           // Send initialization burst
@@ -3108,21 +3177,40 @@
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
     const scriptEl = document.querySelector('script[data-bloxd-main]');
     const mainSrc = scriptEl ? scriptEl.getAttribute('data-bloxd-main') : '/static/js/7rp1w.main.57cd8edd.js';
+    const stats = (window.__fableRuntimeStats = window.__fableRuntimeStats || {
+      booted: false,
+      wsInstalled: false,
+      seeded: false,
+      errors: 0,
+      wsJoins: 0,
+      lastRoom: '',
+    });
 
+    if (!window.__fableDiagInstalled) {
+      window.__fableDiagInstalled = true;
+      window.addEventListener('error', (ev) => {
+        stats.errors += 1;
+        console.error('[FABLE-ERR] window.error: ' + (ev && ev.message ? ev.message : String(ev)) + ' @ ' + (ev && ev.filename ? ev.filename + ':' + ev.lineno : 'unknown'));
+      });
+      window.addEventListener('unhandledrejection', (ev) => {
+        stats.errors += 1;
+        const r = ev && ev.reason;
+        console.error('[FABLE-ERR] unhandledrejection: ' + (r && r.stack ? r.stack : String(r)));
+      });
+    }
+
+    // Step 1: Load core protocol/world metadata and install LocalWebSocket FIRST
+    // so IndexedDB issues can NEVER prevent the offline engine from attaching.
+    let engineReady = false;
     try {
-      const [protoRes, metaRes, seedRes] = await Promise.all([
+      const [protoRes, metaRes] = await Promise.all([
         window.fetch('/bloxd_protocol_map.json'),
         window.fetch('/bloxd_world_meta.json'),
-        window.fetch('/localforage_seed.json'),
       ]);
-      const [protocolMap, worldMeta, rawSeed] = await Promise.all([
+      const [protocolMap, worldMeta] = await Promise.all([
         protoRes.json(),
         metaRes.json(),
-        seedRes.json(),
       ]);
-
-      const preparedSeed = prepareAtlasSeed(rawSeed);
-      await seedBrowserLocalForage(preparedSeed);
 
       try {
         const nb = window.FableLocalNative;
@@ -3140,15 +3228,61 @@
       window.__fableLocalEngine = engine;
       window.__fableSetPlayerName = (name) => engine.setPlayerName(name);
       window.WebSocket = engine.LocalWebSocket;
+      stats.wsInstalled = true;
+      engineReady = true;
     } catch (err) {
-      console.error('[FableLocalEngine] Bootstrap error:', err);
+      stats.errors += 1;
+      console.error('[FABLE-ERR] Engine bootstrap failed:', err);
     }
 
-    if (mainSrc && !document.querySelector(`script[src="${mainSrc}"]`)) {
+    // Step 2: Best-effort bounded atlas seed (versioned so subsequent launches skip 1.7 MB rewrite)
+    const SEED_VER = 'fable_seed_v1';
+    try {
+      const alreadySeeded = await hasSeededBrowserLocalForage(SEED_VER);
+      if (alreadySeeded) {
+        stats.seeded = true;
+      } else {
+        const seedRes = await window.fetch('/localforage_seed.json');
+        if (seedRes && seedRes.ok) {
+          const rawSeed = await seedRes.json();
+          const preparedSeed = prepareAtlasSeed(rawSeed);
+          stats.seeded = await seedBrowserLocalForage(preparedSeed, SEED_VER);
+        }
+      }
+    } catch (seedErr) {
+      console.warn('[FableLocalEngine] Atlas seed skipped:', seedErr);
+    }
+
+    const nativeStatus = (window.FableLocalNative && typeof window.FableLocalNative.isNativeReady === 'function')
+      ? String(window.FableLocalNative.isNativeReady())
+      : 'unavailable';
+    stats.booted = engineReady;
+    console.log('[FABLE-BOOT] engineReady=' + engineReady + ' ws=' + stats.wsInstalled + ' seeded=' + stats.seeded + ' native=' + nativeStatus + ' url=' + location.href);
+
+    if (engineReady && mainSrc && !document.querySelector(`script[src="${mainSrc}"]`)) {
       const mainScript = document.createElement('script');
       mainScript.defer = true;
       mainScript.src = mainSrc;
+      mainScript.onerror = () => {
+        stats.errors += 1;
+        console.error('[FABLE-ERR] Failed to load main bundle: ' + mainSrc);
+      };
       document.head.appendChild(mainScript);
+
+      // Emit periodic health telemetry so Android logcat/CI can verify real mount, canvas, and room join
+      const emitHealth = (tag) => {
+        try {
+          const rootEl = document.getElementById('root');
+          const hasPreload = !!(rootEl && rootEl.querySelector('.PreloadLoader'));
+          const canvas = document.querySelector('canvas');
+          const cw = canvas ? (canvas.width || 0) : 0;
+          const ch = canvas ? (canvas.height || 0) : 0;
+          console.log('[FABLE-HEALTH] t=' + tag + ' mounted=' + (!hasPreload && !!rootEl && rootEl.childElementCount > 0) + ' canvas=' + cw + 'x' + ch + ' wsJoins=' + stats.wsJoins + ' room=' + (stats.lastRoom || 'none') + ' errs=' + stats.errors + ' path=' + location.pathname + location.search);
+        } catch (_) {}
+      };
+      setTimeout(() => emitHealth('4s'), 4000);
+      setTimeout(() => emitHealth('10s'), 10000);
+      setTimeout(() => emitHealth('18s'), 18000);
     }
   }
 

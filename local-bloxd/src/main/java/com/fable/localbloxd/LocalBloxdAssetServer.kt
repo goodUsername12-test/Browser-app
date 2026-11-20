@@ -101,11 +101,14 @@ class LocalBloxdAssetServer(context: Context) {
     private fun reasonPhraseFor(status: Int): String = when (status) {
         200 -> "OK"
         204 -> "No Content"
+        206 -> "Partial Content"
         400 -> "Bad Request"
         403 -> "Forbidden"
         404 -> "Not Found"
         409 -> "Conflict"
+        416 -> "Range Not Satisfiable"
         435 -> "Offline Action Error"
+        500 -> "Internal Server Error"
         else -> if (status in 200..299) "OK" else "Error"
     }
 
@@ -136,6 +139,28 @@ class LocalBloxdAssetServer(context: Context) {
         return out
     }
 
+    private fun parseByteRange(rangeHeader: String?, totalLen: Int): Pair<Int, Int>? {
+        if (rangeHeader.isNullOrBlank() || totalLen <= 0) return null
+        val trimmed = rangeHeader.trim()
+        if (!trimmed.startsWith("bytes=", ignoreCase = true)) return null
+        val spec = trimmed.substring(6).substringBefore(',').trim()
+        val dash = spec.indexOf('-')
+        if (dash < 0) return null
+        val startStr = spec.substring(0, dash).trim()
+        val endStr = spec.substring(dash + 1).trim()
+        return if (startStr.isEmpty()) {
+            val suffix = endStr.toIntOrNull() ?: return null
+            if (suffix <= 0) return null
+            val start = (totalLen - suffix).coerceAtLeast(0)
+            start to (totalLen - 1)
+        } else {
+            val start = startStr.toIntOrNull() ?: return null
+            val end = if (endStr.isEmpty()) totalLen - 1 else (endStr.toIntOrNull() ?: return null)
+            if (start < 0 || start >= totalLen || end < start) return null
+            start to end.coerceAtMost(totalLen - 1)
+        }
+    }
+
     private fun responseBytes(
         mime: String,
         bytes: ByteArray,
@@ -146,12 +171,47 @@ class LocalBloxdAssetServer(context: Context) {
         isPreflight: Boolean = false
     ): WebResourceResponse {
         val encoding = if (mime.startsWith("text/") || mime.contains("json") || mime.contains("javascript") || mime.contains("svg")) "utf-8" else null
+        val hdrs = LinkedHashMap(headers(mime, immutable, requestHeaders, isPreflight))
+        hdrs["Accept-Ranges"] = "bytes"
+        if (status == 200 && !isPreflight) {
+            val rangeHdr = headerValue(requestHeaders, "Range")
+            if (!rangeHdr.isNullOrBlank() && bytes.isNotEmpty()) {
+                val range = parseByteRange(rangeHdr, bytes.size)
+                if (range != null) {
+                    val (start, end) = range
+                    val sliceLen = end - start + 1
+                    val slice = bytes.copyOfRange(start, end + 1)
+                    hdrs["Content-Range"] = "bytes $start-$end/${bytes.size}"
+                    hdrs["Content-Length"] = sliceLen.toString()
+                    return WebResourceResponse(
+                        mime.substringBefore(';'),
+                        encoding,
+                        206,
+                        "Partial Content",
+                        hdrs,
+                        ByteArrayInputStream(slice)
+                    )
+                } else {
+                    hdrs["Content-Range"] = "bytes */${bytes.size}"
+                    hdrs["Content-Length"] = "0"
+                    return WebResourceResponse(
+                        "text/plain",
+                        "utf-8",
+                        416,
+                        "Range Not Satisfiable",
+                        hdrs,
+                        ByteArrayInputStream(ByteArray(0))
+                    )
+                }
+            }
+        }
+        hdrs["Content-Length"] = bytes.size.toString()
         return WebResourceResponse(
             mime.substringBefore(';'),
             encoding,
             status,
             reason,
-            headers(mime, immutable, requestHeaders, isPreflight),
+            hdrs,
             ByteArrayInputStream(bytes)
         )
     }
@@ -175,7 +235,7 @@ class LocalBloxdAssetServer(context: Context) {
         immutable: Boolean,
         requestHeaders: Map<String, String>
     ): WebResourceResponse? {
-        if (assetPath.contains("..")) return null
+        if (assetPath.split('/').any { it == ".." }) return null
         ramCache[assetPath]?.let { cached ->
             return responseBytes(mime, cached, 200, "OK", immutable, requestHeaders)
         }
@@ -184,18 +244,23 @@ class LocalBloxdAssetServer(context: Context) {
             assets.open(assetPath, AssetManager.ACCESS_STREAMING)
         }.getOrNull() ?: return null
         val availableEst = runCatching { stream.available() }.getOrDefault(0)
-        if (availableEst in 1..(256 * 1024)) {
+        val wantsRange = !headerValue(requestHeaders, "Range").isNullOrBlank()
+        if ((availableEst in 1..(256 * 1024)) || (wantsRange && availableEst in 1..(2 * 1024 * 1024))) {
             val bytes = runCatching { stream.use { it.readBytes() } }.getOrNull() ?: return null
-            ramCache[assetPath] = bytes
+            if (bytes.size <= 256 * 1024) {
+                ramCache[assetPath] = bytes
+            }
             return responseBytes(mime, bytes, 200, "OK", immutable, requestHeaders)
         }
         val encoding = if (mime.startsWith("text/") || mime.contains("json") || mime.contains("javascript") || mime.contains("svg")) "utf-8" else null
+        val hdrs = LinkedHashMap(headers(mime, immutable, requestHeaders))
+        hdrs["Accept-Ranges"] = "bytes"
         return WebResourceResponse(
             mime.substringBefore(';'),
             encoding,
             200,
             "OK",
-            headers(mime, immutable, requestHeaders),
+            hdrs,
             stream
         )
     }
@@ -411,8 +476,9 @@ class LocalBloxdAssetServer(context: Context) {
             }
         }
 
-        val cleanRel = Uri.decode(rawPath).trimStart('/')
-        if (cleanRel.contains("..")) {
+        // Android Uri.getPath() is already percent-decoded; avoid double-decoding.
+        val cleanRel = rawPath.trimStart('/')
+        if (cleanRel.split('/').any { it == ".." }) {
             return responseBytes("text/plain", "Forbidden".toByteArray(), 403, "Forbidden", false, requestHeaders)
         }
         val directAsset = "bloxd/$cleanRel"
@@ -437,7 +503,11 @@ class LocalBloxdAssetServer(context: Context) {
             return responseBytes("text/css", ByteArray(0), 200, "OK", false, requestHeaders)
         }
         if (cleanRel.endsWith(".png") || cleanRel.endsWith(".jpg") || cleanRel.endsWith(".webp")) {
-            return responseBytes("image/png", dioritePngBytes.takeIf { it.isNotEmpty() } ?: fallbackThumbBytes, 200, "OK", true, requestHeaders)
+            return if (dioritePngBytes.isNotEmpty()) {
+                responseBytes("image/png", dioritePngBytes, 200, "OK", true, requestHeaders)
+            } else {
+                responseBytes("image/jpeg", fallbackThumbBytes, 200, "OK", true, requestHeaders)
+            }
         }
         if (cleanRel.endsWith(".mp3") || cleanRel.endsWith(".ogg") || cleanRel.endsWith(".wav")) {
             return responseAsset("bloxd/sounds/generatedSprites/step.ogg", "audio/ogg", true, requestHeaders)

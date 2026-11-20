@@ -147,25 +147,30 @@ abstract class BuildLocalBloxdRustTask : DefaultTask() {
             val llvmBin = File(ndkDir, "toolchains/llvm/prebuilt/linux-x86_64/bin")
             val aarchLinker = File(llvmBin, "aarch64-linux-android26-clang")
             val x86Linker = File(llvmBin, "x86_64-linux-android26-clang")
-            if (!aarchLinker.canExecute() || !x86Linker.canExecute()) return
 
             val home = System.getProperty("user.home").orEmpty()
             val cargoBin = File(home, ".cargo/bin")
             val rustupExe = if (File(cargoBin, "rustup").canExecute()) File(cargoBin, "rustup").absolutePath else "rustup"
             val cargoExe = if (File(cargoBin, "cargo").canExecute()) File(cargoBin, "cargo").absolutePath else "cargo"
 
-            ProcessBuilder(rustupExe, "target", "add", "aarch64-linux-android", "x86_64-linux-android")
-                .redirectErrorStream(true).start().apply {
-                    inputStream.bufferedReader().readText()
-                    waitFor()
-                }
+            val addProc = ProcessBuilder(rustupExe, "target", "add", "aarch64-linux-android", "x86_64-linux-android")
+                .redirectErrorStream(true).start()
+            val addLog = addProc.inputStream.bufferedReader().readText()
+            val addCode = addProc.waitFor()
+            if (addCode != 0) {
+                logger.warn("Local Bloxd rustup target add exited $addCode: $addLog")
+            }
 
             val manifest = File(rustProjectDir.get().asFile, "Cargo.toml").absolutePath
             val targets = listOf(
-                "aarch64-linux-android" to "arm64-v8a",
-                "x86_64-linux-android" to "x86_64"
+                Triple("aarch64-linux-android", "arm64-v8a", aarchLinker),
+                Triple("x86_64-linux-android", "x86_64", x86Linker)
             )
-            for ((rustTarget, abi) in targets) {
+            for ((rustTarget, abi, linker) in targets) {
+                if (!linker.canExecute()) {
+                    logger.warn("Local Bloxd Rust linker missing for $rustTarget: ${linker.absolutePath}")
+                    continue
+                }
                 val pb = ProcessBuilder(
                     cargoExe, "build", "--manifest-path", manifest, "--release", "--target", rustTarget
                 ).redirectErrorStream(true)
@@ -175,15 +180,18 @@ abstract class BuildLocalBloxdRustTask : DefaultTask() {
                 env["RUSTFLAGS"] = "-C link-arg=-Wl,-z,max-page-size=16384"
                 val proc = pb.start()
                 val logOut = proc.inputStream.bufferedReader().readText()
-                if (proc.waitFor() == 0) {
+                val exit = proc.waitFor()
+                if (exit == 0) {
                     val soFile = File(rustProjectDir.get().asFile, "target/$rustTarget/release/liblocal_bloxd_rust.so")
                     if (soFile.isFile) {
                         val dest = File(File(outRoot, abi).apply { mkdirs() }, "liblocal_bloxd_rust.so")
                         soFile.copyTo(dest, overwrite = true)
                         logger.lifecycle("Built Local Bloxd Rust $abi/liblocal_bloxd_rust.so (${dest.length() / 1024} KB)")
+                    } else {
+                        logger.warn("Local Bloxd Rust output missing: ${soFile.absolutePath}")
                     }
                 } else {
-                    logger.warn("Local Bloxd Cargo build failed for $rustTarget: $logOut")
+                    logger.warn("Local Bloxd Cargo build failed ($exit) for $rustTarget: $logOut")
                 }
             }
         } catch (e: Exception) {

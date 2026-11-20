@@ -163,31 +163,60 @@ if [ -z "$AVD_OK" ]; then
 fi
 log "AVD ready with $AVD_OK"
 
+# Configure crisp 720x1280 display (1280x720 in sensorLandscape) so touch coords & screenshots are HD
+AVD_CFG="$ANDROID_AVD_HOME/fable.avd/config.ini"
+if [ -f "$AVD_CFG" ]; then
+  sed -i '/^hw\.lcd\./d' "$AVD_CFG"
+  {
+    echo "hw.lcd.width=720"
+    echo "hw.lcd.height=1280"
+    echo "hw.lcd.density=320"
+    echo "hw.gpu.enabled=yes"
+  } >> "$AVD_CFG"
+fi
+
 ./gradlew --stop >/dev/null 2>&1 || true
 adb start-server >/dev/null 2>&1 || true
-log "Booting offline emulator (-dns-server 127.0.0.1)"
-emulator -avd fable -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect \
-  -camera-back none -camera-front none -dns-server 127.0.0.1 -memory 3072 -cores 4 > "$ART/emulator.log" 2>&1 &
-EMU_PID=$!
 
-timeout 300 adb wait-for-device || log "emulator did not appear"
-for i in $(seq 1 150); do
-  if ! kill -0 "$EMU_PID" 2>/dev/null; then
-    log "Emulator process $EMU_PID exited prematurely during boot!"
+# Emulator 37.2+/37.3+ swiftshader_indirect SEGVs on Chromium WebView (Google Issue 583903265).
+# Use Google-recommended -gpu lavapipe with automatic fallback to -gpu swangle_indirect.
+BOOTED=""
+EMU_PID=""
+GPU_USED=""
+for GPU_MODE in lavapipe swangle_indirect; do
+  log "Booting offline emulator with -gpu $GPU_MODE -dns-server 127.0.0.1"
+  : > "$ART/emulator.log"
+  emulator -avd fable -no-window -no-audio -no-boot-anim -no-snapshot -gpu "$GPU_MODE" \
+    -camera-back none -camera-front none -dns-server 127.0.0.1 -memory 3072 -cores 4 > "$ART/emulator.log" 2>&1 &
+  EMU_PID=$!
+  timeout 180 adb wait-for-device || log "wait-for-device timed out for $GPU_MODE"
+  for i in $(seq 1 120); do
+    if ! kill -0 "$EMU_PID" 2>/dev/null; then
+      log "Emulator ($GPU_MODE) exited prematurely during boot"
+      break
+    fi
+    if [ "$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+      BOOTED="1"
+      GPU_USED="$GPU_MODE"
+      break
+    fi
+    sleep 2
+  done
+  if [ "$BOOTED" = "1" ] && kill -0 "$EMU_PID" 2>/dev/null; then
     break
   fi
-  [ "$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+  kill "$EMU_PID" >/dev/null 2>&1 || true
   sleep 2
 done
+
 adb shell settings put global window_animation_scale 0 || true
 adb shell settings put global transition_animation_scale 0 || true
 adb shell settings put global animator_duration_scale 0 || true
 adb shell input keyevent 82 || true
-BOOTED="$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
-log "Boot completed: $BOOTED (emu_alive=$(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no))"
+log "Boot completed: $BOOTED (gpu=$GPU_USED, emu_alive=$(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no))"
 if [ "$BOOTED" != "1" ]; then
   {
-    echo "HOOK-RESULT $VERSION FAILED: emulator did not boot (emu_pid=$EMU_PID)"
+    echo "HOOK-RESULT $VERSION FAILED: emulator did not boot (gpu=$GPU_USED)"
     echo '```'
     adb devices -l 2>&1 || true
     echo "--- emulator.log ---"

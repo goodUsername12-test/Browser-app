@@ -1,11 +1,5 @@
 name: Apply update from issue
 
-# Lets the repository owner deliver a new project version through issue #2:
-# the version is posted as base64 comments ("FABLE-DATA <version> i/n") followed by
-# "FABLE-APPLY <version> <sha256>". This workflow rebuilds the archive, checks the
-# hash, commits it to the default branch and starts the "Build APK" workflow.
-# Only comments written by the repository owner are accepted.
-
 on:
   issue_comment:
     types: [created]
@@ -22,12 +16,15 @@ concurrency:
 jobs:
   apply:
     if: >-
-      github.event.issue.number == 2 &&
+      github.event.issue.number >= 2 &&
       (
         github.event.comment.user.login == github.repository_owner ||
         github.event.comment.user.login == 'dust-agent[bot]'
       ) &&
-      startsWith(github.event.comment.body, 'FABLE-APPLY ')
+      (
+        startsWith(github.event.comment.body, 'FABLE-APPLY ') ||
+        startsWith(github.event.comment.body, 'FABLE-APPLY-APP ')
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -38,6 +35,7 @@ jobs:
       BODY: ${{ github.event.comment.body }}
       OWNER: ${{ github.repository_owner }}
       BRANCH: ${{ github.event.repository.default_branch }}
+      ISSUE_NUM: ${{ github.event.issue.number }}
     steps:
       - name: Check out default branch
         uses: actions/checkout@v5
@@ -46,24 +44,24 @@ jobs:
 
       - name: Download and verify the new version
         run: |
-          read -r _ VERSION SHA256 _rest <<< "$(printf '%s\n' "$BODY" | head -n 1 | tr -d '\r')"
+          read -r CMD VERSION SHA256 _rest <<< "$(printf '%s\n' "$BODY" | head -n 1 | tr -d '\r')"
+          echo "CMD=$CMD" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Applying $VERSION ($SHA256)"
-          gh api "repos/$GITHUB_REPOSITORY/issues/2/comments?per_page=100" --paginate \
+          echo "Applying $VERSION ($SHA256) via $CMD from issue #$ISSUE_NUM"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUM/comments?per_page=100" --paginate \
             --jq ".[] | select((.user.login == \"$OWNER\") or (.user.login == \"dust-agent[bot]\")) | select(.body | startswith(\"FABLE-DATA $VERSION \")) | .body" \
             | tr -d '\r' | grep -v '^FABLE-DATA' | tr -cd 'A-Za-z0-9+/=' | base64 -d > "$RUNNER_TEMP/fable.tar.xz"
           echo "$SHA256  $RUNNER_TEMP/fable.tar.xz" | sha256sum -c -
 
       - name: Replace project files
         run: |
-          # GITHUB_TOKEN may not modify workflow files, so the current ones are kept.
           cp -r .github "$RUNNER_TEMP/github-keep"
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          tar -xJf "$RUNNER_TEMP/fable.tar.xz"
-          if ! diff -rq .github/workflows "$RUNNER_TEMP/github-keep/workflows" >/dev/null 2>&1; then
-            echo "WORKFLOWS_CHANGED=yes" >> "$GITHUB_ENV"
-            echo "::warning::This version changes workflow files; they must be pushed from the Codespace."
+          if [ "$CMD" = "FABLE-APPLY-APP" ]; then
+            find . -mindepth 1 -maxdepth 1 ! -name .git ! -name local-bloxd -exec rm -rf {} +
+          else
+            find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           fi
+          tar -xJf "$RUNNER_TEMP/fable.tar.xz"
           rm -rf .github && cp -r "$RUNNER_TEMP/github-keep" .github
           chmod +x gradlew
 
@@ -82,4 +80,4 @@ jobs:
       - name: Report
         if: always()
         run: |
-          gh issue comment 2 --body "FABLE-APPLIED $VERSION ${{ job.status }} commit ${COMMIT:-none} workflows-changed ${WORKFLOWS_CHANGED:-no} run $GITHUB_RUN_ID"
+          gh issue comment "$ISSUE_NUM" --body "FABLE-APPLIED $VERSION ${{ job.status }} commit ${COMMIT:-none} run $GITHUB_RUN_ID"

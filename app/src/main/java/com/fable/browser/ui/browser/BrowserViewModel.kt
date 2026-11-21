@@ -56,6 +56,8 @@ class BrowserViewModel @Inject constructor(
     val contextMenu = tabManager.contextMenu
     val prompt = promptBridge.current
     val activeDownloads: StateFlow<Int> = downloader.activeCount
+    val captureState: StateFlow<com.fable.browser.engine.CaptureUiState> = tabManager.captureState
+    val perfSnapshot: StateFlow<com.fable.browser.engine.PerfSnapshot> = com.fable.browser.engine.PerformanceTelemetry.snapshot
 
     val settings: StateFlow<Settings> = settingsStore.settings
         .stateIn(viewModelScope, SharingStarted.Eagerly, Settings())
@@ -267,12 +269,19 @@ class BrowserViewModel @Inject constructor(
     }
 
     fun savePageCode() {
-        if (!tabManager.savePageCode("all")) activityBridge.toast("This page cannot be saved")
+        if (!tabManager.savePageCode("all", continuous = false)) activityBridge.toast("This page cannot be saved")
     }
 
     fun saveMemorySnapshot() {
-        if (!tabManager.savePageCode("memory")) activityBridge.toast("This page cannot be saved")
+        if (!tabManager.savePageCode("memory", continuous = settings.value.archiveContinuousCapture)) {
+            activityBridge.toast("This page cannot be saved")
+        }
     }
+
+    fun pauseCapture() = tabManager.pauseCapture()
+    fun resumeCapture() = tabManager.resumeCapture()
+    fun stopAndSaveCapture() = tabManager.stopAndSaveCapture()
+    fun cancelCapture() = tabManager.cancelCapture()
 
 
     fun saveAsPdf() {

@@ -205,6 +205,15 @@ data class Settings(
     val batteryFreezeBgTabs: Boolean = true,
     val batteryReduceMotion: Boolean = false,
     val batteryOledDimPct: Int = 0,
+    val etpEnabled: Boolean = true,
+    val cookiePurging: Boolean = true,
+    val stealthLowDetectability: Boolean = true,
+    val blinkPrivacyParity: Boolean = true,
+    val isolateNativeBridge: Boolean = true,
+    val proxyStripLeakHeaders: Boolean = true,
+    val perfHudEnabled: Boolean = false,
+    val archiveIncludeCookies: Boolean = false,
+    val archiveContinuousCapture: Boolean = true,
 ) {
     fun toRecorderConfig(): RecorderConfig = RecorderConfig(
         resolution = recResolution,
@@ -402,6 +411,15 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val BAT_FREEZE_BG_TABS = booleanPreferencesKey("bat_freeze_bg_tabs")
         val BAT_REDUCE_MOTION = booleanPreferencesKey("bat_reduce_motion")
         val BAT_OLED_DIM_PCT = intPreferencesKey("bat_oled_dim_pct")
+        val ETP_ENABLED = booleanPreferencesKey("etp_enabled")
+        val COOKIE_PURGING = booleanPreferencesKey("cookie_purging")
+        val STEALTH_LOW_DETECT = booleanPreferencesKey("stealth_low_detectability")
+        val BLINK_PRIVACY_PARITY = booleanPreferencesKey("blink_privacy_parity")
+        val ISOLATE_NATIVE_BRIDGE = booleanPreferencesKey("isolate_native_bridge")
+        val PROXY_STRIP_LEAK_HEADERS = booleanPreferencesKey("proxy_strip_leak_headers")
+        val PERF_HUD_ENABLED = booleanPreferencesKey("perf_hud_enabled")
+        val ARCHIVE_INCLUDE_COOKIES = booleanPreferencesKey("archive_include_cookies")
+        val ARCHIVE_CONTINUOUS_CAPTURE = booleanPreferencesKey("archive_continuous_capture")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -573,6 +591,15 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             batteryFreezeBgTabs = p[Keys.BAT_FREEZE_BG_TABS] ?: true,
             batteryReduceMotion = p[Keys.BAT_REDUCE_MOTION] ?: false,
             batteryOledDimPct = (p[Keys.BAT_OLED_DIM_PCT] ?: 0).coerceIn(0, 50),
+            etpEnabled = p[Keys.ETP_ENABLED] ?: true,
+            cookiePurging = p[Keys.COOKIE_PURGING] ?: true,
+            stealthLowDetectability = p[Keys.STEALTH_LOW_DETECT] ?: true,
+            blinkPrivacyParity = p[Keys.BLINK_PRIVACY_PARITY] ?: true,
+            isolateNativeBridge = p[Keys.ISOLATE_NATIVE_BRIDGE] ?: true,
+            proxyStripLeakHeaders = p[Keys.PROXY_STRIP_LEAK_HEADERS] ?: true,
+            perfHudEnabled = p[Keys.PERF_HUD_ENABLED] ?: false,
+            archiveIncludeCookies = p[Keys.ARCHIVE_INCLUDE_COOKIES] ?: false,
+            archiveContinuousCapture = p[Keys.ARCHIVE_CONTINUOUS_CAPTURE] ?: true,
         )
     }.distinctUntilChanged()
 
@@ -823,6 +850,15 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setBatteryFreezeBgTabs(v: Boolean) = set(Keys.BAT_FREEZE_BG_TABS, v)
     suspend fun setBatteryReduceMotion(v: Boolean) = set(Keys.BAT_REDUCE_MOTION, v)
     suspend fun setBatteryOledDimPct(v: Int) = set(Keys.BAT_OLED_DIM_PCT, v.coerceIn(0, 50))
+    suspend fun setEtpEnabled(v: Boolean) = set(Keys.ETP_ENABLED, v)
+    suspend fun setCookiePurging(v: Boolean) = set(Keys.COOKIE_PURGING, v)
+    suspend fun setStealthLowDetectability(v: Boolean) = set(Keys.STEALTH_LOW_DETECT, v)
+    suspend fun setBlinkPrivacyParity(v: Boolean) = set(Keys.BLINK_PRIVACY_PARITY, v)
+    suspend fun setIsolateNativeBridge(v: Boolean) = set(Keys.ISOLATE_NATIVE_BRIDGE, v)
+    suspend fun setProxyStripLeakHeaders(v: Boolean) = set(Keys.PROXY_STRIP_LEAK_HEADERS, v)
+    suspend fun setPerfHudEnabled(v: Boolean) = set(Keys.PERF_HUD_ENABLED, v)
+    suspend fun setArchiveIncludeCookies(v: Boolean) = set(Keys.ARCHIVE_INCLUDE_COOKIES, v)
+    suspend fun setArchiveContinuousCapture(v: Boolean) = set(Keys.ARCHIVE_CONTINUOUS_CAPTURE, v)
     suspend fun applyEcoGamingPreset() {
         context.dataStore.edit {
             it[Keys.BAT_SAVER_MASTER] = true

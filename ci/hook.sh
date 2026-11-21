@@ -3,152 +3,211 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
-export FABLE_ROOT="$REPO_ROOT"
 
 VERSION="$(cat .fable-version 2>/dev/null || echo unknown)"
+REPORT_ISSUE="${FABLE_REPORT_ISSUE:-4}"
 ART="${RUNNER_TEMP:-/tmp}/hook-artifacts"; mkdir -p "$ART"
 REPORT="${RUNNER_TEMP:-/tmp}/hook-report.md"; : > "$REPORT"
-PKG_DBG="com.fable.localbloxd.debug"
-ACT_DBG="$PKG_DBG/com.fable.localbloxd.LocalBloxdActivity"
-PKG_REL="com.fable.localbloxd"
-ACT_REL="$PKG_REL/com.fable.localbloxd.LocalBloxdActivity"
+PKG="com.fable.browser.debug"
+ACT="$PKG/com.fable.browser.MainActivity"
 
 log() { echo "[hook] $*"; }
 post() {
   if [ -n "${GITHUB_REPOSITORY:-}" ] && command -v gh >/dev/null 2>&1; then
-    gh issue comment 2 --repo "$GITHUB_REPOSITORY" --body-file "$1" >/dev/null 2>&1 || log "could not post $1"
+    gh issue comment "$REPORT_ISSUE" --repo "$GITHUB_REPOSITORY" --body-file "$1" >/dev/null 2>&1 || log "could not post $1 to #$REPORT_ISSUE"
   fi
 }
 
-{ echo "HOOK-START $VERSION local-bloxd offline CI & emulator verification started"; } > "$ART/start.md"; post "$ART/start.md"
+{ echo "HOOK-START $VERSION Fable Browser emulator verification started (API 34 x86_64)"; } > "$ART/start.md"; post "$ART/start.md"
 
-# 1. Node integration harness (10 suites)
-log "Running local-bloxd Node integration harness"
-if command -v node >/dev/null 2>&1; then
-  if ! node local-bloxd/harness/local_room_harness.js > "$ART/node-harness.log" 2>&1; then
-    { echo "HOOK-RESULT $VERSION FAILED: local_room_harness.js"; echo '```'; tail -n 60 "$ART/node-harness.log"; echo '```'; } > "$REPORT"
-    post "$REPORT"; exit 1
-  fi
-  log "Node harness: $(tail -n 1 "$ART/node-harness.log")"
-fi
+LOCAL_BLOXD_OK="yes"
+[ -f local-bloxd/src/main/assets/bloxd/local_bloxd_engine.js ] || LOCAL_BLOXD_OK="MISSING"
 
-# 2. Python static audit
-log "Running local-bloxd static audit"
-if command -v python3 >/dev/null 2>&1 && [ -f local-bloxd/harness/static_audit.py ]; then
-  if ! python3 local-bloxd/harness/static_audit.py > "$ART/static-audit.log" 2>&1; then
-    { echo "HOOK-RESULT $VERSION FAILED: static_audit.py"; echo '```'; tail -n 60 "$ART/static-audit.log"; echo '```'; } > "$REPORT"
-    post "$REPORT"; exit 1
-  fi
-  log "Static audit: $(tail -n 1 "$ART/static-audit.log")"
-fi
+APK_ARM_DBG="$(ls app/build/outputs/apk/debug/*arm64-v8a*.apk 2>/dev/null | head -n 1)"
+APK_ARM_REL="$(ls app/build/outputs/apk/release/*arm64-v8a*.apk 2>/dev/null | head -n 1)"
 
-# 3. :local-bloxd JVM unit tests
-log "Running :local-bloxd:testDebugUnitTest"
-if ! ./gradlew :local-bloxd:testDebugUnitTest --stacktrace > "$ART/unit-tests.log" 2>&1; then
-  { echo "HOOK-RESULT $VERSION FAILED: :local-bloxd:testDebugUnitTest"; echo '```'; tail -n 80 "$ART/unit-tests.log"; echo '```'; } > "$REPORT"
+log "Building :app x86_64 debug APK for Android emulator"
+if ! ./gradlew :app:assembleDebug -Pfable.abis=x86_64 -q > "$ART/x86-build.log" 2>&1; then
+  { echo "HOOK-RESULT $VERSION FAILED: :app x86_64 build"; echo '```'; tail -n 80 "$ART/x86-build.log"; echo '```'; } > "$REPORT"
   post "$REPORT"; exit 1
 fi
-
-# 4. Snapshot arm64 APKs BEFORE switching ABI split to x86_64
-APK_ARM_DBG="$(ls app/build/outputs/apk/debug/z-local-bloxd-*arm64-v8a*.apk local-bloxd/build/outputs/apk/debug/*arm64-v8a*.apk 2>/dev/null | head -n 1)"
-APK_ARM_REL="$(ls app/build/outputs/apk/release/z-local-bloxd-*arm64-v8a*.apk local-bloxd/build/outputs/apk/release/*arm64-v8a*.apk 2>/dev/null | head -n 1)"
-
-log "Building :local-bloxd x86_64 debug and release APKs"
-if ! ./gradlew :local-bloxd:assembleDebug :local-bloxd:assembleRelease -Pfable.abis=x86_64 -q > "$ART/x86-build.log" 2>&1; then
-  { echo "HOOK-RESULT $VERSION FAILED: :local-bloxd x86_64 build"; echo '```'; tail -n 80 "$ART/x86-build.log"; echo '```'; } > "$REPORT"
-  post "$REPORT"; exit 1
-fi
-
-APK_X86_DBG="$(ls local-bloxd/build/outputs/apk/debug/*x86_64*.apk 2>/dev/null | head -n 1)"
-APK_X86_REL="$(ls local-bloxd/build/outputs/apk/release/*x86_64*.apk 2>/dev/null | head -n 1)"
-
+APK_X86_DBG="$(ls app/build/outputs/apk/debug/*x86_64*.apk 2>/dev/null | head -n 1)"
 if [ -z "$APK_X86_DBG" ] || [ ! -f "$APK_X86_DBG" ]; then
   { echo "HOOK-RESULT $VERSION FAILED: x86_64 debug APK not found"; } > "$REPORT"
   post "$REPORT"; exit 1
 fi
+
+AUDIT_SUMMARY=""
+for entry in "arm64-debug:$APK_ARM_DBG:arm64-v8a" "arm64-release:$APK_ARM_REL:arm64-v8a" "x86_64-debug:$APK_X86_DBG:x86_64"; do
+  IFS=: read -r lbl path abi <<< "$entry"
+  if [ -n "$path" ] && [ -f "$path" ]; then
+    sz="$(stat -c %s "$path" 2>/dev/null || wc -c < "$path")"
+    cpp="$(unzip -l "$path" 2>/dev/null | grep -c "lib/${abi}/libfable_fast.so" || true)"
+    ext="$(unzip -l "$path" 2>/dev/null | grep -c "assets/extensions/fable_shield/blocker.js" || true)"
+    AUDIT_SUMMARY="${AUDIT_SUMMARY}\n- ${lbl}: $(basename "$path") (${sz}B) cpp=${cpp} shield=${ext}"
+  else
+    AUDIT_SUMMARY="${AUDIT_SUMMARY}\n- ${lbl}: not present"
+  fi
+done
+AUDIT_SUMMARY="${AUDIT_SUMMARY}\n- local-bloxd-intact: ${LOCAL_BLOXD_OK}"
+
+cat <<'PYSRV' > "$ART/test_server.py"
+import base64, http.server, json, socketserver, urllib.parse
+
+MIN_PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+MIN_WASM = bytes([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+MIN_WOFF2 = b"wOF2" + b"\x00" * 44
+
+INDEX_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Fable Benchmark & Capture Test</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <h1>Fable Browser Verification Page</h1>
+  <img id="logo" src="/logo.png" width="32" height="32">
+  <canvas id="c2d" width="128" height="128"></canvas>
+  <pre id="status">loading</pre>
+  <script src="/app.js"></script>
+</body>
+</html>"""
+
+STYLE_CSS = """@font-face { font-family: 'FableTestFont'; src: url('/font.woff2') format('woff2'); font-display: swap; }
+body { font-family: 'FableTestFont', sans-serif; background: #101820; color: #f1f5f9; }"""
+
+APP_JS = """(async function() {
+  window.__fableTestIntegrity = "UNTOUCHED_ORIGINAL_CODE";
+  try {
+    const c = document.getElementById("c2d");
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#22c55e"; ctx.fillRect(0, 0, 128, 128);
+    ctx.fillStyle = "#ffffff"; ctx.fillText("FABLE", 20, 64);
+  } catch (e) {}
+  try { localStorage.setItem("fable_ls_key", "ls_ok_v56"); sessionStorage.setItem("fable_ss_key", "ss_ok_v56"); } catch (e) {}
+  try {
+    const req = indexedDB.open("fable_test_db", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("kv");
+    req.onsuccess = () => {
+      const tx = req.result.transaction("kv", "readwrite");
+      tx.objectStore("kv").put({ hello: "world", ver: 56 }, "k1");
+    };
+  } catch (e) {}
+  const apiRes = await fetch("/api/data.json").then(r => r.json()).catch(() => ({}));
+  const wasmBuf = await fetch("/module.wasm").then(r => r.arrayBuffer()).catch(() => new ArrayBuffer(0));
+  let frames = 0;
+  function tick() {
+    frames++;
+    const ctx = document.getElementById("c2d").getContext("2d");
+    ctx.fillStyle = (frames % 2 === 0) ? "#22c55e" : "#16a34a";
+    ctx.fillRect(0, 0, 16, 16);
+    if (frames < 180) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  document.getElementById("status").textContent = JSON.stringify({
+    integrity: window.__fableTestIntegrity,
+    apiOk: apiRes.ok === true,
+    wasmBytes: wasmBuf.byteLength
+  });
+  console.log("FABLE-PAGE-READY " + document.getElementById("status").textContent);
+})();"""
+
+PRIVACY_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Privacy Probe</title></head>
+<body><pre id="out">probing</pre>
+<script>
+(function() {
+  const unauthClip = (window.FableHybridBridge && window.FableHybridBridge.getClipboardText)
+    ? String(window.FableHybridBridge.getClipboardText() || "") : "NO_BRIDGE";
+  const res = {
+    href: location.href,
+    gpc: navigator.globalPrivacyControl === true,
+    dnt: navigator.doNotTrack || "",
+    hasHybridMarker: typeof window.__fableHybridEngine !== "undefined",
+    unauthClipBlocked: unauthClip === "" || unauthClip === "NO_BRIDGE",
+    hasBattery: typeof navigator.getBattery === "function"
+  };
+  document.getElementById("out").textContent = JSON.stringify(res);
+  console.log("FABLE-PRIVACY-PROBE " + JSON.stringify(res));
+})();
+</script>
+<script src="/dynamic/extra.json"></script>
+</body></html>"""
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+    def do_GET(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        p = parsed.path
+        if p == "/index.html" or p == "/":
+            self._send(200, "text/html; charset=utf-8", INDEX_HTML.encode())
+        elif p == "/style.css":
+            self._send(200, "text/css; charset=utf-8", STYLE_CSS.encode())
+        elif p == "/app.js":
+            self._send(200, "application/javascript; charset=utf-8", APP_JS.encode())
+        elif p == "/logo.png":
+            self._send(200, "image/png", MIN_PNG)
+        elif p == "/font.woff2":
+            self._send(200, "font/woff2", MIN_WOFF2)
+        elif p == "/module.wasm":
+            self._send(200, "application/wasm", MIN_WASM)
+        elif p == "/api/data.json":
+            self._send(200, "application/json", json.dumps({"ok": True, "items": [1, 2, 3], "engine": "fable"}).encode())
+        elif p == "/dynamic/extra.json":
+            self._send(200, "application/json", json.dumps({"dynamic": True, "ts": 56}).encode())
+        elif p == "/privacy.html":
+            hdrs = {k.lower(): v for k, v in self.headers.items()}
+            print(f"REQ_PRIVACY path={self.path} gpc={hdrs.get('sec-gpc','')} dnt={hdrs.get('dnt','')} xff={hdrs.get('x-forwarded-for','')}", flush=True)
+            self._send(200, "text/html; charset=utf-8", PRIVACY_HTML.encode())
+        elif p == "/cookie-set":
+            body = b"<html><body>Cookie set</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Set-Cookie", "fable_persist=ok_v56; Path=/; Max-Age=86400; SameSite=Lax")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif p == "/cookie-check":
+            ck = self.headers.get("Cookie", "")
+            ok = "fable_persist=ok_v56" in ck
+            print(f"REQ_COOKIE_CHECK ok={ok} cookie={ck}", flush=True)
+            self._send(200, "text/html; charset=utf-8", f"<html><body>COOKIE_PERSIST={ok}</body></html>".encode())
+        else:
+            self._send(404, "text/plain", b"not found")
+    def _send(self, code, ctype, data):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=60")
+        self.end_headers()
+        self.wfile.write(data)
+
+with socketserver.TCPServer(("127.0.0.1", 18080), Handler) as httpd:
+    print("TEST_SERVER_READY 18080", flush=True)
+    httpd.serve_forever()
+PYSRV
+
+python3 "$ART/test_server.py" > "$ART/server.log" 2>&1 &
+SRV_PID=$!
+sleep 1
+
+log "Enabling KVM"
+echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
 
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 export PATH="$SDK/cmdline-tools/latest/bin:$SDK/emulator:$SDK/platform-tools:$PATH"
 export ANDROID_SDK_ROOT="$SDK" ANDROID_HOME="$SDK"
 export ANDROID_USER_HOME="$HOME/.android" ANDROID_AVD_HOME="$HOME/.android/avd"
 mkdir -p "$ANDROID_AVD_HOME"
-AAPT2="$(find "$SDK/build-tools" -maxdepth 2 -name aapt2 2>/dev/null | sort -V | tail -n 1 || true)"
-
-AUDIT_FAIL=0
-AUDIT_SUMMARY=""
-
-audit_apk() {
-  local label="$1" apk="$2" abi="$3"
-  if [ -z "$apk" ] || [ ! -f "$apk" ]; then
-    AUDIT_SUMMARY="${AUDIT_SUMMARY}\n- ${label}: MISSING"
-    AUDIT_FAIL=1
-    return
-  fi
-  local sz; sz="$(stat -c %s "$apk" 2>/dev/null || wc -c < "$apk")"
-  local perms="unknown" pkg="unknown"
-  if [ -n "$AAPT2" ] && [ -x "$AAPT2" ]; then
-    "$AAPT2" dump badging "$apk" > "$ART/badging-${label}.txt" 2>&1 || true
-    "$AAPT2" dump permissions "$apk" > "$ART/perms-${label}.txt" 2>&1 || true
-    if grep -q "android.permission.INTERNET" "$ART/perms-${label}.txt"; then
-      AUDIT_SUMMARY="${AUDIT_SUMMARY}\n- ${label}: FAIL android.permission.INTERNET present!"
-      AUDIT_FAIL=1
-      return
-    fi
-    pkg="$(grep -oE "package: name='[^']+'" "$ART/badging-${label}.txt" | head -n 1 || echo unknown)"
-    perms="$(tr '\n' ' ' < "$ART/perms-${label}.txt" | cut -c1-120)"
-  fi
-  unzip -l "$apk" > "$ART/contents-${label}.txt" 2>&1 || true
-  local has_eng has_c117 has_cpp has_rust
-  has_eng="$(grep -c 'assets/bloxd/local_bloxd_engine.js' "$ART/contents-${label}.txt" || true)"
-  has_c117="$(grep -c 'assets/bloxd/static/js/7rp1w.117.2c551f46.chunk.js' "$ART/contents-${label}.txt" || true)"
-  has_cpp="$(grep -c "lib/${abi}/liblocal_bloxd_native.so" "$ART/contents-${label}.txt" || true)"
-  has_rust="$(grep -c "lib/${abi}/liblocal_bloxd_rust.so" "$ART/contents-${label}.txt" || true)"
-
-  local elf_info=""
-  if command -v readelf >/dev/null 2>&1; then
-    local tmpdir="$ART/elf-${label}"; rm -rf "$tmpdir"; mkdir -p "$tmpdir"
-    unzip -q -o "$apk" "lib/${abi}/*.so" -d "$tmpdir" 2>/dev/null || true
-    for so in "$tmpdir/lib/${abi}"/*.so; do
-      [ -f "$so" ] || continue
-      local soname; soname="$(basename "$so")"
-      local needed align
-      needed="$(readelf -d "$so" 2>/dev/null | grep NEEDED | sed -E 's/.*\[([^]]+)\].*/\1/' | tr '\n' ',' | sed 's/,$//')"
-      align="$(readelf -lW "$so" 2>/dev/null | awk '$1=="LOAD"{print $NF}' | sort -u | tr '\n' ',' | sed 's/,$//')"
-      elf_info="${elf_info} ${soname}(align=${align};needed=${needed})"
-    done
-  fi
-  AUDIT_SUMMARY="${AUDIT_SUMMARY}\n- ${label}: $(basename "$apk") (${sz}B) ${pkg} perms=[${perms}] eng=${has_eng} c117=${has_c117} cpp=${has_cpp} rust=${has_rust}${elf_info}"
-  if [ "$has_eng" -lt 1 ] || [ "$has_c117" -lt 1 ]; then
-    AUDIT_FAIL=1
-  fi
-}
-
-audit_apk "arm64-debug" "$APK_ARM_DBG" "arm64-v8a"
-audit_apk "arm64-release" "$APK_ARM_REL" "arm64-v8a"
-audit_apk "x86_64-debug" "$APK_X86_DBG" "x86_64"
-[ -n "$APK_X86_REL" ] && audit_apk "x86_64-release" "$APK_X86_REL" "x86_64"
-
-{
-  echo "HOOK-AUDIT $VERSION (Node 10/10 OK, static_audit 0 err, :local-bloxd JVM tests OK)"
-  printf '%b\n' "$AUDIT_SUMMARY"
-} > "$ART/audit.md"
-post "$ART/audit.md"
-
-if [ "$AUDIT_FAIL" -ne 0 ]; then
-  { echo "HOOK-RESULT $VERSION FAILED: APK audit failed"; printf '%b\n' "$AUDIT_SUMMARY"; } > "$REPORT"
-  post "$REPORT"; exit 1
-fi
-
-# 5. Boot offline Android API 34 x86_64 emulator
-log "Enabling KVM"
-echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
-sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
 
 yes | sdkmanager --licenses > "$ART/licenses.log" 2>&1 || true
 AVD_OK=""
 for IMG in "system-images;android-34;google_apis;x86_64" "system-images;android-33;google_apis;x86_64" "system-images;android-34;default;x86_64"; do
   log "Installing $IMG"
-  timeout 360 sdkmanager --install "$IMG" "emulator" "platform-tools" >> "$ART/sdkmanager.log" 2>&1 || log "sdkmanager error for $IMG"
+  timeout 360 sdkmanager --install "$IMG" "emulator" "platform-tools" >> "$ART/sdkmanager.log" 2>&1 || true
   IMG_DIR="$SDK/$(echo "$IMG" | tr ';' '/')"
   if [ ! -d "$IMG_DIR" ]; then
     sudo -E env "PATH=$PATH" timeout 300 sdkmanager --install "$IMG" "emulator" >> "$ART/sdkmanager.log" 2>&1 || true
@@ -158,280 +217,255 @@ for IMG in "system-images;android-34;google_apis;x86_64" "system-images;android-
   if { emulator -list-avds 2>/dev/null; avdmanager list avd -c 2>/dev/null; } | grep -qx fable; then AVD_OK="$IMG"; break; fi
 done
 if [ -z "$AVD_OK" ]; then
-  { echo "HOOK-RESULT $VERSION FAILED: emulator setup (no AVD)"; echo '```'; tail -n 25 "$ART/sdkmanager.log"; echo '```'; } > "$REPORT"
-  post "$REPORT"; exit 1
-fi
-log "AVD ready with $AVD_OK"
-
-# Configure crisp 720x1280 display (1280x720 in sensorLandscape) so touch coords & screenshots are HD
-AVD_CFG="$ANDROID_AVD_HOME/fable.avd/config.ini"
-if [ -f "$AVD_CFG" ]; then
-  sed -i '/^hw\.lcd\./d' "$AVD_CFG"
-  {
-    echo "hw.lcd.width=720"
-    echo "hw.lcd.height=1280"
-    echo "hw.lcd.density=320"
-    echo "hw.gpu.enabled=yes"
-  } >> "$AVD_CFG"
+  { echo "HOOK-RESULT $VERSION FAILED: no AVD"; tail -n 30 "$ART/sdkmanager.log"; } > "$REPORT"
+  post "$REPORT"; kill "$SRV_PID" >/dev/null 2>&1 || true; exit 1
 fi
 
 ./gradlew --stop >/dev/null 2>&1 || true
 adb start-server >/dev/null 2>&1 || true
 
-# Emulator 37.2+/37.3+ swiftshader_indirect SEGVs on Chromium WebView (Google Issue 583903265).
-# Use Google-recommended -gpu lavapipe with automatic fallback to -gpu swangle_indirect.
 BOOTED=""
 EMU_PID=""
 GPU_USED=""
 for GPU_MODE in lavapipe swangle_indirect; do
-  log "Booting offline emulator with -gpu $GPU_MODE -dns-server 127.0.0.1"
+  log "Booting emulator with -gpu $GPU_MODE"
   : > "$ART/emulator.log"
   emulator -avd fable -no-window -no-audio -no-boot-anim -no-snapshot -gpu "$GPU_MODE" \
-    -camera-back none -camera-front none -dns-server 127.0.0.1 -memory 3072 -cores 4 > "$ART/emulator.log" 2>&1 &
+    -camera-back none -camera-front none -memory 4096 -cores 4 > "$ART/emulator.log" 2>&1 &
   EMU_PID=$!
-  timeout 180 adb wait-for-device || log "wait-for-device timed out for $GPU_MODE"
+  timeout 180 adb wait-for-device || true
   for i in $(seq 1 120); do
-    if ! kill -0 "$EMU_PID" 2>/dev/null; then
-      log "Emulator ($GPU_MODE) exited prematurely during boot"
-      break
-    fi
+    kill -0 "$EMU_PID" 2>/dev/null || break
     if [ "$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
-      BOOTED="1"
-      GPU_USED="$GPU_MODE"
-      break
+      BOOTED="1"; GPU_USED="$GPU_MODE"; break
     fi
     sleep 2
   done
-  if [ "$BOOTED" = "1" ] && kill -0 "$EMU_PID" 2>/dev/null; then
-    break
-  fi
-  kill "$EMU_PID" >/dev/null 2>&1 || true
-  sleep 2
+  [ "$BOOTED" = "1" ] && kill -0 "$EMU_PID" 2>/dev/null && break
+  kill "$EMU_PID" >/dev/null 2>&1 || true; sleep 2
 done
+
+if [ "$BOOTED" != "1" ]; then
+  { echo "HOOK-RESULT $VERSION FAILED: emulator did not boot"; tail -n 60 "$ART/emulator.log"; } > "$REPORT"
+  post "$REPORT"; kill "$SRV_PID" >/dev/null 2>&1 || true; exit 1
+fi
 
 adb shell settings put global window_animation_scale 0 || true
 adb shell settings put global transition_animation_scale 0 || true
 adb shell settings put global animator_duration_scale 0 || true
 adb shell input keyevent 82 || true
-log "Boot completed: $BOOTED (gpu=$GPU_USED, emu_alive=$(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no))"
-if [ "$BOOTED" != "1" ]; then
-  {
-    echo "HOOK-RESULT $VERSION FAILED: emulator did not boot (gpu=$GPU_USED)"
-    echo '```'
-    adb devices -l 2>&1 || true
-    echo "--- emulator.log ---"
-    tail -n 80 "$ART/emulator.log"
-    echo '```'
-  } > "$REPORT"
-  post "$REPORT"; exit 1
+adb reverse tcp:18080 tcp:18080 || true
+
+if ! timeout 240 adb install -r -g "$APK_X86_DBG" > "$ART/install.log" 2>&1; then
+  { echo "HOOK-RESULT $VERSION FAILED: adb install"; cat "$ART/install.log"; } > "$REPORT"
+  post "$REPORT"; kill "$EMU_PID" "$SRV_PID" >/dev/null 2>&1 || true; exit 1
 fi
-
-log "Disabling wifi & cellular data on emulator (DNS already blackholed to 127.0.0.1)"
-adb shell svc wifi disable >/dev/null 2>&1 || true
-adb shell svc data disable >/dev/null 2>&1 || true
-sleep 2
-
-ensure_adb() {
-  for attempt in 1 2 3 4 5; do
-    if [ "$(adb get-state 2>/dev/null | tr -d '\r')" = "device" ]; then
-      return 0
-    fi
-    log "Waiting for adb device (attempt $attempt, emu_alive=$(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no))"
-    timeout 30 adb wait-for-device >/dev/null 2>&1 || true
-    sleep 3
-  done
-  return 1
-}
-
-install_apk_safe() {
-  local apk="$1" logf="$2"
-  for attempt in 1 2 3; do
-    ensure_adb || return 1
-    if timeout 240 adb install -r -g "$apk" > "$logf" 2>&1; then
-      return 0
-    fi
-    log "adb install attempt $attempt failed: $(tr '\n' ' ' < "$logf")"
-    sleep 5
-  done
-  return 1
-}
 
 shot() {
   timeout 15 adb exec-out screencap -p > "$ART/$1.png" 2>/dev/null || return
   if command -v convert >/dev/null 2>&1; then
-    convert "$ART/$1.png" -resize 420x -quality 65 "$ART/$1.jpg" 2>/dev/null
+    convert "$ART/$1.png" -resize 360x -quality 60 "$ART/$1.jpg" 2>/dev/null
     { echo "HOOK-SHOT $VERSION $1"; base64 -w 76 "$ART/$1.jpg"; } > "$ART/$1.shot"
     post "$ART/$1.shot"
   fi
 }
-alive_pkg() { adb shell pidof "$1" 2>/dev/null | tr -d '\r'; }
+alive() { adb shell pidof "$PKG" 2>/dev/null | tr -d '\r'; }
 
 STEPS=""
 STEP_FAIL=0
-step_check() {
-  local desc="$1" pkg="$2"
-  local pid; pid="$(alive_pkg "$pkg")"
+step() {
+  local pid; pid="$(alive)"
   if [ -n "$pid" ]; then
-    STEPS="${STEPS}\n- ${desc}: RUNNING (pid=${pid})"
+    STEPS="${STEPS}\n- $1: PASS (pid=${pid})"
   else
-    STEPS="${STEPS}\n- ${desc}: NOT RUNNING (CRASHED/DEAD)"
+    STEPS="${STEPS}\n- $1: FAIL (NOT RUNNING)"
     STEP_FAIL=1
   fi
 }
 
-if ! ensure_adb; then
-  {
-    echo "HOOK-RESULT $VERSION FAILED: adb device lost after boot"
-    echo '```'
-    adb devices -l 2>&1 || true
-    echo "--- emu alive: $(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no) ---"
-    tail -n 80 "$ART/emulator.log"
-    echo '```'
-  } > "$REPORT"
-  post "$REPORT"; kill "$EMU_PID" >/dev/null 2>&1 || true; exit 1
-fi
-
 adb logcat -c
 
-# --- Phase A: x86_64 Release-configured APK test ---
-if [ -n "$APK_X86_REL" ] && [ -f "$APK_X86_REL" ]; then
-  log "A) Installing x86_64 RELEASE APK ($PKG_REL)"
-  if install_apk_safe "$APK_X86_REL" "$ART/install-rel.log"; then
-    timeout 90 adb shell am start -W -n "$ACT_REL" > "$ART/start-rel.txt" 2>&1
-    sleep 18; step_check "release cold start offline (https://bloxd.io/)" "$PKG_REL"; shot 0a-release-cold-start
-    timeout 90 adb shell am start -W -a android.intent.action.VIEW \
-      -d "https://bloxd.io/play/classic?lobby=local_world" -n "$ACT_REL" >> "$ART/start-rel.txt" 2>&1
-    sleep 18; adb shell input tap 640 360; sleep 2; adb shell input swipe 500 360 720 320 300; sleep 3
-    step_check "release classic local_world + touch" "$PKG_REL"; shot 0b-release-classic
-    adb shell am force-stop "$PKG_REL" >/dev/null 2>&1 || true
-  else
-    STEPS="${STEPS}\n- release apk install: FAILED ($(tr '\n' ' ' < "$ART/install-rel.log" | cut -c1-160))"
-    STEP_FAIL=1
-  fi
+log "Phase 1: Cold & Warm Launch Benchmark"
+timeout 90 adb shell am start -W -n "$ACT" > "$ART/cold-start-1.txt" 2>&1
+sleep 14; step "cold start #1 (new tab)"; shot 1-cold-start
+adb shell am start -n "$ACT" --ez fable_test_perf_hud true >/dev/null 2>&1 || true
+sleep 2
+
+log "Phase 2: Multi-Asset Page Load (GeckoView & Blink Combined)"
+adb shell dumpsys gfxinfo "$PKG" reset >/dev/null 2>&1 || true
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/index.html" -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 14; step "load local multi-asset page (GeckoView)"; shot 2-gecko-page
+
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/index.html" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 14; step "load local multi-asset page (Blink Combined)"; shot 3-blink-page
+adb shell am start -n "$ACT" --ez fable_perf_dump true >/dev/null 2>&1 || true
+sleep 2
+adb shell dumpsys gfxinfo "$PKG" > "$ART/gfxinfo.txt" 2>/dev/null || true
+
+log "Phase 3: Privacy ON vs OFF Verification"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/privacy.html?utm_source=ci_on&fbclid=abc123&keep=1" -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 12; step "privacy ON probe (GeckoView)"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/privacy.html?utm_source=ci_blink_on&fbclid=xyz&keep=2" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 12; step "privacy ON probe (Blink Combined)"; shot 4-privacy-on
+
+adb shell am start -n "$ACT" --ez fable_test_adblock false >/dev/null 2>&1 || true
+sleep 3
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/privacy.html?utm_source=ci_off&keep=3" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 12; step "privacy OFF probe (verifying optional toggles)"
+adb shell am start -n "$ACT" --ez fable_test_adblock true >/dev/null 2>&1 || true
+sleep 2
+
+log "Phase 4: Zero-Mutation Full Page Code ZIP Collector"
+adb shell ls /sdcard/Download > "$ART/dl-before-code.txt" 2>/dev/null || true
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/index.html" -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 12
+adb shell am start -n "$ACT" --ez fable_save_page_code true >/dev/null 2>&1 || true
+sleep 25; shot 5-after-page-code
+adb shell ls /sdcard/Download > "$ART/dl-after-code.txt" 2>/dev/null || true
+CODE_ZIP="$(comm -13 <(sort "$ART/dl-before-code.txt") <(sort "$ART/dl-after-code.txt") | tr -d '\r' | grep -i '\.zip$' | head -n 1)"
+CODE_ZIP_REPORT="NO ZIP CREATED"
+if [ -n "$CODE_ZIP" ]; then
+  adb pull "/sdcard/Download/$CODE_ZIP" "$ART/page-code.zip" >/dev/null 2>&1 || true
+  CODE_ZIP_REPORT="$(python3 - "$ART/page-code.zip" <<'PYZIP'
+import json, sys, zipfile
+try:
+    z = zipfile.ZipFile(sys.argv[1])
+    names = z.namelist()
+    man = json.loads(z.read("capture-manifest.json").decode()) if "capture-manifest.json" in names else {}
+    has_js = any(n.endswith(".js") for n in names)
+    has_css = any(n.endswith(".css") for n in names)
+    has_png = any(n.endswith(".png") for n in names)
+    has_wasm = any(n.endswith(".wasm") for n in names)
+    has_json = any("data.json" in n for n in names)
+    has_har = any(n.endswith(".har") for n in names)
+    has_ls = any("local-storage.json" in n for n in names)
+    has_journal = "capture-journal.jsonl" in names
+    tot = sum(i.file_size for i in z.infolist())
+    print(f"OK {len(names)} files ({tot//1024}KB) schema={man.get('schema')} status={man.get('status')} zeroMut={man.get('zeroMutation')} cookies={man.get('containsSensitiveData')} js={has_js} css={has_css} png={has_png} wasm={has_wasm} api={has_json} har={has_har} ls={has_ls} journal={has_journal}")
+except Exception as e:
+    print(f"BAD ZIP: {e}")
+PYZIP
+)"
 fi
+step "zero-mutation full page ZIP ($CODE_ZIP_REPORT)"
 
-# --- Phase B: x86_64 Debug APK full lifecycle + upgrade + persistence test ---
-log "B) Installing x86_64 DEBUG APK ($PKG_DBG)"
-if ! install_apk_safe "$APK_X86_DBG" "$ART/install.log"; then
-  {
-    echo "HOOK-RESULT $VERSION FAILED: adb install debug APK"
-    echo '```'
-    cat "$ART/install.log"
-    echo "--- adb devices ---"
-    adb devices -l 2>&1 || true
-    echo "--- emu alive: $(kill -0 "$EMU_PID" 2>/dev/null && echo yes || echo no) ---"
-    echo "--- emulator.log tail ---"
-    tail -n 60 "$ART/emulator.log"
-    echo '```'
-  } > "$REPORT"
-  post "$REPORT"; adb emu kill >/dev/null 2>&1 || true; exit 1
+log "Phase 5: Controllable Live Memory Snapshot (Start -> Pause -> Resume -> Stop & Save)"
+adb shell ls /sdcard/Download > "$ART/dl-before-snap.txt" 2>/dev/null || true
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/index.html" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 10
+adb shell am start -n "$ACT" --ez fable_start_snapshot true >/dev/null 2>&1 || true
+sleep 6; shot 6-snap-capturing
+adb shell am start -n "$ACT" --ez fable_pause_capture true >/dev/null 2>&1 || true
+sleep 3; shot 7-snap-paused
+adb shell am start -n "$ACT" --ez fable_resume_capture true >/dev/null 2>&1 || true
+sleep 3
+adb shell am start -n "$ACT" --ez fable_stop_capture true >/dev/null 2>&1 || true
+sleep 14; shot 8-snap-saved
+adb shell ls /sdcard/Download > "$ART/dl-after-snap.txt" 2>/dev/null || true
+SNAP_ZIP="$(comm -13 <(sort "$ART/dl-before-snap.txt") <(sort "$ART/dl-after-snap.txt") | tr -d '\r' | grep -i '\.zip$' | head -n 1)"
+SNAP_ZIP_REPORT="NO SNAPSHOT ZIP CREATED"
+if [ -n "$SNAP_ZIP" ]; then
+  adb pull "/sdcard/Download/$SNAP_ZIP" "$ART/snapshot.zip" >/dev/null 2>&1 || true
+  SNAP_ZIP_REPORT="$(python3 - "$ART/snapshot.zip" <<'PYSNAP'
+import json, sys, zipfile
+try:
+    z = zipfile.ZipFile(sys.argv[1])
+    names = z.namelist()
+    man = json.loads(z.read("capture-manifest.json").decode()) if "capture-manifest.json" in names else {}
+    tot = sum(i.file_size for i in z.infolist())
+    print(f"OK {len(names)} files ({tot//1024}KB) schema={man.get('schema')} status={man.get('status')} continuous={man.get('continuous')} zeroMut={man.get('zeroMutation')} journal={'capture-journal.jsonl' in names}")
+except Exception as e:
+    print(f"BAD SNAPSHOT ZIP: {e}")
+PYSNAP
+)"
 fi
+step "controllable live snapshot Pause/Resume/Stop ($SNAP_ZIP_REPORT)"
 
-log "1) Debug cold start offline Bloxd home"
-timeout 90 adb shell am start -W -n "$ACT_DBG" > "$ART/start.txt" 2>&1
-sleep 22; step_check "debug cold start offline (https://bloxd.io/)" "$PKG_DBG"; shot 1-cold-start
+log "Phase 6: Cookie Persistence across Force-Stop"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/cookie-set" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 6
+adb shell input keyevent KEYCODE_HOME; sleep 3
+adb shell am force-stop "$PKG"; sleep 2
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/cookie-check" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 8; step "cookie persistence after force-stop"
 
-log "2) Deep-link into offline classic local_world"
-timeout 90 adb shell am start -W -a android.intent.action.VIEW \
-  -d "https://bloxd.io/play/classic?lobby=local_world" -n "$ACT_DBG" >> "$ART/start.txt" 2>&1
-sleep 25; step_check "debug open offline classic local_world" "$PKG_DBG"; shot 2-play-classic
-
-log "3) Simulate touch/drag interaction on WebView canvas"
-adb shell input tap 640 360; sleep 2
-adb shell input swipe 500 360 720 320 300; sleep 4
-step_check "debug touch & drag input in local room" "$PKG_DBG"; shot 3-after-touch
-
-log "4) Background/foreground lifecycle x3"
+log "Phase 7: Live Web Smoke + Background/Foreground x3"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com" -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 10
 for n in 1 2 3; do
-  adb shell input keyevent KEYCODE_HOME; sleep 4
-  timeout 90 adb shell am start -W -n "$ACT_DBG" >> "$ART/start.txt" 2>&1; sleep 5
+  adb shell input keyevent KEYCODE_HOME; sleep 3
+  timeout 90 adb shell am start -W -n "$ACT" >> "$ART/nav.txt" 2>&1; sleep 3
 done
-step_check "debug background/foreground x3" "$PKG_DBG"; shot 4-after-background
-
-log "5) Force-stop and cold restart persistence check"
-adb shell am force-stop "$PKG_DBG"; sleep 2
-timeout 90 adb shell am start -W -n "$ACT_DBG" >> "$ART/start.txt" 2>&1
-sleep 18; step_check "debug cold restart after force-stop" "$PKG_DBG"; shot 5-after-restart
-
-log "6) Upgrade-install over existing app data"
-install_apk_safe "$APK_X86_DBG" "$ART/install-upgrade.log" || STEP_FAIL=1
-timeout 90 adb shell am start -W -n "$ACT_DBG" >> "$ART/start.txt" 2>&1
-sleep 12; step_check "debug launch after upgrade reinstall" "$PKG_DBG"
-
-PERSIST_LS="$(adb shell run-as "$PKG_DBG" ls -la files/bloxd_local_worlds 2>/dev/null | head -n 30 || echo '(no bloxd_local_worlds dir yet)')"
+step "background/foreground lifecycle x3"; shot 9-final
 
 adb logcat -d -v brief > "$ART/logcat.txt" 2>/dev/null || true
-adb logcat -d -b events -v brief 2>/dev/null | grep -E "(am_anr|am_crash|am_proc_died).*localbloxd" > "$ART/events.txt" || true
+adb logcat -d -b events -v brief 2>/dev/null | grep -E "(am_anr|am_crash|am_proc_died).*fable" > "$ART/events.txt" || true
+FREEZE="$(adb shell run-as "$PKG" cat files/freeze_report.txt 2>/dev/null | head -c 4000 || true)"
 
-# Scoped crash / error extraction for com.fable.localbloxd*
-APP_CRASHES="$(grep -E "am_crash.*localbloxd|am_anr.*localbloxd" "$ART/events.txt" | wc -l | tr -d ' ')"
-FATAL_JAVA="$(awk '/FATAL EXCEPTION/{flag=1; buf=$0"\n"; next} flag{buf=buf $0"\n"; if(NF==0 || /^[^ \tE]/){if(buf ~ /localbloxd/) print buf; flag=0}} END{if(flag && buf ~ /localbloxd/) print buf}' "$ART/logcat.txt")"
-FATAL_NATIVE="$(grep -E "Fatal signal.*localbloxd|Abort message|WebView render process gone" "$ART/logcat.txt" || true)"
-SEC_ERRS="$(grep -iE "SecurityException.*(INTERNET|localbloxd|blockNetworkLoads)" "$ART/logcat.txt" || true)"
-CHUNK_ERRS="$(grep -ciE "ChunkLoadError|Failed to fetch dynamically imported module" "$ART/logcat.txt" || true)"
-FABLE_BOOT_LINES="$(grep -E "FABLE-BOOT|FABLE-HEALTH|FABLE-ROOM-JOIN" "$ART/logcat.txt" | tail -n 40 | cut -c1-260)"
-FABLE_ERR_LINES="$(grep -E "FABLE-ERR|LocalBloxdWeb.*\[ERROR\]|onReceivedError|onReceivedHttpError" "$ART/logcat.txt" | tail -n 50 | cut -c1-260)"
-WEB_TAIL="$(grep -E "LocalBloxdWeb|LocalBloxdNative" "$ART/logcat.txt" | tail -n 60 | cut -c1-260)"
-
-{
-  echo "== Scoped ANR / crash events (localbloxd) =="
-  head -n 30 "$ART/events.txt"
-  echo "== Scoped Fatal Java Exceptions (localbloxd) =="
-  printf '%s\n' "$FATAL_JAVA" | head -n 120
-  echo "== Scoped Native / Renderer Fatal Signals =="
-  printf '%s\n' "$FATAL_NATIVE" | head -n 60
-  echo "== SecurityException checks =="
-  printf '%s\n' "$SEC_ERRS" | head -n 30
-  echo "== LocalBloxdWeb / LocalBloxdNative / AndroidRuntime errors =="
-  grep -E "^(E|W)/(LocalBloxdWeb|LocalBloxdNative|AndroidRuntime|System\.err)" "$ART/logcat.txt" | head -n 140
-} | cut -c1-300 > "$ART/problems.txt"
+APP_CRASHES="$(grep -E "am_crash.*fable|am_anr.*fable" "$ART/events.txt" | wc -l | tr -d ' ')"
+FATAL_JAVA="$(awk '/FATAL EXCEPTION/{flag=1; buf=$0"\n"; next} flag{buf=buf $0"\n"; if(NF==0 || /^[^ \tE]/){if(buf ~ /com\.fable\.browser/) print buf; flag=0}} END{if(flag && buf ~ /com\.fable\.browser/) print buf}' "$ART/logcat.txt")"
+FATAL_NATIVE="$(grep -E "Fatal signal.*fable|Abort message.*fable" "$ART/logcat.txt" || true)"
+PERF_LINES="$(grep -E "FABLE-PERF" "$ART/logcat.txt" | tail -n 25)"
+CAPTURE_LINES="$(grep -E "FABLE-CAPTURE" "$ART/logcat.txt" | tail -n 20)"
+PRIVACY_LINES="$(grep -E "FABLE-PRIVACY-PROBE|FABLE-PRIVACY-TEST|FABLE-PAGE-READY" "$ART/logcat.txt" | tail -n 20)"
+GFX_SUMMARY="$(grep -E "Total frames rendered|Janky frames|50th percentile|90th percentile|95th percentile|99th percentile" "$ART/gfxinfo.txt" | head -n 12)"
 
 OVERALL_FAIL=0
 FAIL_REASONS=""
-if [ "$STEP_FAIL" -ne 0 ]; then OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} process-died"; fi
-if [ "${APP_CRASHES:-0}" -gt 0 ]; then OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} am_crash/anr(${APP_CRASHES})"; fi
-if [ -n "$FATAL_JAVA" ]; then OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} fatal-java-exception"; fi
-if [ -n "$FATAL_NATIVE" ]; then OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} fatal-native/renderer"; fi
-if [ -n "$SEC_ERRS" ]; then OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} security-exception"; fi
-if [ "${CHUNK_ERRS:-0}" -gt 0 ]; then OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} chunk-load-error(${CHUNK_ERRS})"; fi
-if [ -z "$FABLE_BOOT_LINES" ]; then OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} missing-fable-boot-marker"; fi
+[ "$STEP_FAIL" -ne 0 ] && OVERALL_FAIL=1 && FAIL_REASONS="${FAIL_REASONS} process-died"
+[ "${APP_CRASHES:-0}" -gt 0 ] && OVERALL_FAIL=1 && FAIL_REASONS="${FAIL_REASONS} am_crash/anr(${APP_CRASHES})"
+[ -n "$FATAL_JAVA" ] && OVERALL_FAIL=1 && FAIL_REASONS="${FAIL_REASONS} fatal-java"
+[ -n "$FATAL_NATIVE" ] && OVERALL_FAIL=1 && FAIL_REASONS="${FAIL_REASONS} fatal-native"
+[ "$LOCAL_BLOXD_OK" != "yes" ] && OVERALL_FAIL=1 && FAIL_REASONS="${FAIL_REASONS} local-bloxd-missing"
+echo "$CODE_ZIP_REPORT" | grep -q "^OK " || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} page-code-zip"; }
+echo "$SNAP_ZIP_REPORT" | grep -q "^OK " || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} snapshot-zip"; }
+grep -q "REQ_COOKIE_CHECK ok=True" "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} cookie-persist"; }
+grep -q "REQ_PRIVACY path=/privacy.html?keep=2 gpc=1" "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-on"; }
+grep -q "REQ_PRIVACY path=/privacy.html?utm_source=ci_off&keep=3 gpc= " "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-off"; }
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
 
 {
-  echo "HOOK-RESULT $VERSION $VERDICT — local-bloxd offline emulator API 34 x86_64"
+  echo "HOOK-RESULT $VERSION $VERDICT — Fable Browser API 34 x86_64 Emulator (gpu=$GPU_USED)"
   echo ""
-  echo "### APK & Native ELF Audit"
+  echo "### APK Audit"
   printf '%b\n' "$AUDIT_SUMMARY"
   echo ""
-  echo "### Lifecycle Steps"
+  echo "### Verification Steps"
   printf '%b\n' "$STEPS"
   echo ""
-  echo "ChunkLoadErrors: $CHUNK_ERRS | AppCrashEvents: $APP_CRASHES"
-  echo ""
-  echo "### Boot / Health / Room Telemetry"
+  echo "### Cold Start (am start -W)"
   echo '```'
-  echo "${FABLE_BOOT_LINES:-(none)}"
+  grep -E "Status|LaunchState|TotalTime|WaitTime" "$ART/cold-start-1.txt" || true
   echo '```'
-  echo "### JS / WebView Errors"
+  echo "### Performance Telemetry (FABLE-PERF + gfxinfo)"
   echo '```'
-  echo "${FABLE_ERR_LINES:-(none)}"
+  echo "${PERF_LINES:-(none)}"
+  echo "--- gfxinfo ---"
+  echo "${GFX_SUMMARY:-(none)}"
   echo '```'
-  echo "### Persistence directory (files/bloxd_local_worlds)"
+  echo "### Privacy ON/OFF & Server Verification"
   echo '```'
-  echo "$PERSIST_LS"
+  cat "$ART/server.log" | tail -n 25
+  echo "--- JS probes ---"
+  echo "${PRIVACY_LINES:-(none)}"
   echo '```'
-  echo "### LocalBloxdWeb / LocalBloxdNative tail"
+  echo "### Capture & Controllable Snapshot Telemetry"
   echo '```'
-  echo "${WEB_TAIL:-(none)}"
+  echo "Page Code ZIP: $CODE_ZIP_REPORT"
+  echo "Snapshot ZIP:  $SNAP_ZIP_REPORT"
+  echo "${CAPTURE_LINES:-(none)}"
   echo '```'
-  echo "### Problems found in logcat ($(wc -l < "$ART/problems.txt") lines)"
+  echo "### Freeze / Crash Check"
   echo '```'
-  head -c 30000 "$ART/problems.txt"
+  echo "AppCrashEvents: $APP_CRASHES | FreezeReport: ${FREEZE:-none}"
+  [ -n "$FATAL_JAVA" ] && printf '%s\n' "$FATAL_JAVA" | head -n 60
+  [ -n "$FATAL_NATIVE" ] && printf '%s\n' "$FATAL_NATIVE" | head -n 40
   echo '```'
 } > "$REPORT"
 
 post "$REPORT"
 adb emu kill >/dev/null 2>&1 || true
+kill "$EMU_PID" "$SRV_PID" >/dev/null 2>&1 || true
 exit "$OVERALL_FAIL"

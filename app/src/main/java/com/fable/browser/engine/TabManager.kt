@@ -501,7 +501,9 @@ class TabManager @Inject constructor(
         tab.ecoBoostDisabled = settings.batterySaverMaster || settings.batteryEcoCpu
         tab.hybridBlockChecker = { reqUrl, docHost ->
             val s = settings
-            val adBlock = s.hybridGeckoAdBlock && (if (tab.isIncognito) s.incognitoAdBlock else s.adBlockEnabled)
+            val allowed = FablePrivacyPolicy.isAdBlockAllowedSite(docHost, s)
+            val adBlock = s.blinkPrivacyParity && s.hybridGeckoAdBlock && !allowed &&
+                (if (tab.isIncognito) s.incognitoAdBlock else s.adBlockEnabled)
             proxyConfig.shouldBlockHybrid(reqUrl, docHost, adBlock)
         }
         tab.hybridCustomUserAgent = {
@@ -517,9 +519,10 @@ class TabManager @Inject constructor(
         }
         tab.hybridExtraHeadersProvider = { _ ->
             val s = settings
-            val sendDnt = if (tab.isIncognito) s.incognitoSendDnt else s.sendGpc
-            val sendGpc = if (tab.isIncognito) s.incognitoGpc else s.sendGpc
-            val shield = tab.isSuper || (tab.isIncognito && s.incognitoFingerprintProtection) || s.normalTabShield
+            val bp = s.blinkPrivacyParity
+            val sendDnt = bp && (if (tab.isIncognito) s.incognitoSendDnt else s.sendGpc)
+            val sendGpc = bp && (if (tab.isIncognito) s.incognitoGpc else s.sendGpc)
+            val shield = bp && (tab.isSuper || (tab.isIncognito && s.incognitoFingerprintProtection) || s.normalTabShield)
             val desktop = tab.isDesktopMode.value
             buildMap {
                 if (sendDnt) put("DNT", "1")
@@ -539,6 +542,15 @@ class TabManager @Inject constructor(
                 }
             }
         }
+        tab.hybridSettingsProvider = { settings }
+        tab.hybridPrivacyProvider = { pageUrl ->
+            FablePrivacyPolicy.evaluate(
+                settings = settings,
+                url = pageUrl.ifBlank { tab.url.value },
+                isIncognito = tab.isIncognito,
+                isSuper = tab.isSuper
+            )
+        }
         tab.hybridBootstrapProvider = { pageUrl ->
             val s = settings
             val id = if (tab.isSuper) superIncognito.current(s) else null
@@ -548,16 +560,28 @@ class TabManager @Inject constructor(
                 isSuper = tab.isSuper,
                 superIdentity = id,
                 pageUrl = pageUrl.ifBlank { tab.url.value },
-                isDesktopMode = tab.isDesktopMode.value
+                isDesktopMode = tab.isDesktopMode.value,
+                bridgeToken = tab.bridgeToken
             )
         }
-        tab.hybridArchiveScriptProvider = { reqId, mode ->
+        tab.hybridArchiveScriptProvider = { reqId, mode, continuous ->
             HybridEngineBridge.buildBlinkArchiveScript(
                 reqId = reqId,
                 mode = mode,
                 incognito = tab.isIncognito,
-                settings = settings
+                settings = settings,
+                continuous = continuous,
+                extraObservedUrls = tab.observedBlinkUrls.keys
             )
+        }
+        tab.hybridObservedUrlHandler = { observedUrl, pageUrl ->
+            if (proxyConfig.captureState.value.phase == CapturePhase.CAPTURING && proxyConfig.captureState.value.continuous) {
+                proxyConfig.enqueueBlinkObservedUrls(
+                    listOf(observedUrl),
+                    pageUrl,
+                    FableUnifiedEngine.defaultBlinkUserAgent
+                )
+            }
         }
         tab.hybridArchiveMessageHandler = { rawJson ->
             proxyConfig.onHybridArchiveMessage(rawJson)
@@ -908,18 +932,35 @@ class TabManager @Inject constructor(
             }
         }
         if (tab.isHybridBlink.value) {
+            val decision = FablePrivacyPolicy.evaluate(settings, url, tab.isIncognito, tab.isSuper)
+            if (decision.blinkPrivacyParity && decision.httpsOnly &&
+                UrlUtils.isInsecure(url) && !UrlUtils.isLoopback(url) &&
+                !tab.isHttpAllowed(UrlUtils.host(url))
+            ) {
+                tab.updateUrl(url)
+                tab.updateInterstitial(Interstitial.HttpsOnly(url))
+                tab.updateLoading(false)
+                return
+            }
+            val effectiveUrl = if (decision.blinkPrivacyParity && decision.stripTrackingParams &&
+                (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true))
+            ) {
+                UrlUtils.stripTrackingParams(url)
+            } else {
+                url
+            }
             tab.lastLoadedBlinkUrl = ""
-            tab.updateUrl(url)
-            if (!settings.hybridMirrorInputToGecko && !tab.isIncognito && !tab.isSuper && url.startsWith("http", ignoreCase = true)) {
-                proxyConfig.pullGeckoCookiesToBlink(url)
+            tab.updateUrl(effectiveUrl)
+            if (!settings.hybridMirrorInputToGecko && !tab.isIncognito && !tab.isSuper && effectiveUrl.startsWith("http", ignoreCase = true)) {
+                proxyConfig.pullGeckoCookiesToBlink(effectiveUrl)
             }
             if (settings.hybridMirrorInputToGecko) {
                 ensureLive(tab)
-                whenSuperReady(tab, url) {
+                whenSuperReady(tab, effectiveUrl) {
                     runCatching {
                         tab.session.setActive(true)
                         setPriority(tab, high = true)
-                        tab.session.load(GeckoSession.Loader().uri(url))
+                        tab.session.load(GeckoSession.Loader().uri(effectiveUrl))
                     }
                 }
             } else if (tab.session.isOpen && settings.hybridHibernateGecko) {
@@ -929,7 +970,7 @@ class TabManager @Inject constructor(
                     setPriority(tab, high = false)
                 }
             }
-            tab.hybridController?.loadUrl(url)
+            tab.hybridController?.loadUrl(effectiveUrl)
             touchIncognitoActivity()
             return
         }
@@ -1085,16 +1126,23 @@ class TabManager @Inject constructor(
         proxyConfig.toggleReaderMode()
     }
 
-    fun savePageCode(mode: String = "all"): Boolean {
+    val captureState: StateFlow<CaptureUiState> = proxyConfig.captureState
+
+    fun pauseCapture() = proxyConfig.pauseCapture()
+    fun resumeCapture() = proxyConfig.resumeCapture()
+    fun stopAndSaveCapture() = proxyConfig.stopAndSaveCapture()
+    fun cancelCapture() = proxyConfig.cancelCapture()
+
+    fun savePageCode(mode: String = "all", continuous: Boolean = (mode == "memory" && settings.archiveContinuousCapture)): Boolean {
         val tab = activeTab ?: return false
         val url = tab.url.value
         if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("file://")) return false
         if (tab.isHybridBlink.value) {
             val hc = tab.hybridController ?: return false
-            val reqId = proxyConfig.newHybridArchiveRequest() ?: return true
-            return hc.savePageCode(mode, reqId)
+            val reqId = proxyConfig.newHybridArchiveRequest(mode, continuous) ?: return true
+            return hc.savePageCode(mode, reqId, continuous)
         }
-        return proxyConfig.savePageCode(url, mode)
+        return proxyConfig.savePageCode(url, mode, continuous)
     }
 
     fun findInPage(query: String, forward: Boolean = true) {

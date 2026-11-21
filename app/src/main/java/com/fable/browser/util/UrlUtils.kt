@@ -54,6 +54,11 @@ object UrlUtils {
 
     fun isInsecure(url: String): Boolean = url.startsWith("http://", ignoreCase = true)
 
+    fun isLoopback(url: String): Boolean {
+        val h = host(url) ?: return false
+        return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]"
+    }
+
     fun scheme(url: String): String {
         val match = SCHEME_REGEX.find(url) ?: return ""
         return match.value.dropLast(1).lowercase()

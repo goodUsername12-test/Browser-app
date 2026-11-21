@@ -1,3 +1,3 @@
 package com.fable.browser.ui.settings
 
-enum class PrivacyPreset { BALANCED, MAXIMUM, GAMING }
+enum class PrivacyPreset { STEALTH, BALANCED, MAXIMUM, GAMING }

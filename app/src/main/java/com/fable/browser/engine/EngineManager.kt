@@ -201,6 +201,7 @@ class EngineManager @Inject constructor(
         return listOf(
             "media.peerconnection.ice.no_host" to (d.hideLocalIp || superProxyOn(d)),
             "media.peerconnection.ice.default_address_only" to (d.hideLocalIp || superProxyOn(d)),
+            "media.peerconnection.ice.obfuscate_host_addresses" to (d.hideLocalIp || superProxyOn(d)),
             "network.proxy.failover_direct" to !anyProxy,
             "network.http.http3.enable" to true,
             "network.http.http3.enable_0rtt" to d.fastConnections,
@@ -236,7 +237,8 @@ class EngineManager @Inject constructor(
             "javascript.options.shared_memory" to wasmOn,
             "gfx.webrender.all" to true,
             "gfx.webrender.compositor" to true,
-            "gfx.webrender.precache-shaders" to (d.gameMode || d.superGameMode),
+            "dom.ipc.processPrelaunch.enabled" to !optimizing(d),
+            "gfx.webrender.precache-shaders" to (!optimizing(d) || d.gameMode || d.superGameMode),
             "webgl.force-enabled" to true,
             "webgl.msaa-force" to false,
             "webgl.lose-context-on-memory-pressure" to false,
@@ -257,6 +259,11 @@ class EngineManager @Inject constructor(
             "network.http.max-persistent-connections-per-server" to if (d.fastConnections) 16 else 6,
             "gfx.downloadable_fonts.fallback_delay" to 0,
             "gfx.downloadable_fonts.fallback_delay_short" to 0,
+            "gfx.font_loader.delay" to 0,
+            "nglayout.initialpaint.delay" to 0,
+            "nglayout.initialpaint.delay_in_oopif" to 0,
+            "browser.cache.jsbc_compression_level" to 0,
+            "network.http.max-connections" to if (d.fastConnections) 900 else 256,
             "gfx.display.max-frame-rate" to if (d.highRefreshRate) 120 else 60,
             "network.http.max-urgent-start-excessive-connections-per-host" to if (d.fastConnections) 5 else 3,
             "media.preload.auto" to if (dataSaverOn(d)) 1 else 2,
@@ -268,8 +275,8 @@ class EngineManager @Inject constructor(
             "dom.min_background_timeout_value" to if (optimizing(d)) 10_000 else 1_000,
             "dom.timeout.background_throttling_max_budget" to if (optimizing(d)) 20 else 50,
             "browser.sessionhistory.max_entries" to if (optimizing(d)) 25 else 50,
-            "image.mem.decode_bytes_at_a_time" to if (d.gameMode || d.superGameMode) 524_288 else 65_536,
-            "browser.cache.disk.max_entry_size" to 51_200,
+            "image.mem.decode_bytes_at_a_time" to if (optimizing(d)) 65_536 else 524_288,
+            "browser.cache.disk.max_entry_size" to if (optimizing(d)) 51_200 else 102_400,
             "network.buffer.cache.size" to 262_144,
             "network.buffer.cache.count" to 128,
             "network.http.send_window_size" to 1_048_576,
@@ -279,7 +286,7 @@ class EngineManager @Inject constructor(
             "layout.frame_rate" to 0,
             "webgl.max-contexts-per-principal" to 32,
             "javascript.options.mem.nursery.max_kb" to if (d.gameMode || d.superGameMode) 65_536 else 16_384,
-            "javascript.options.mem.gc_incremental_slice_ms" to if (d.gameMode || d.superGameMode) 3 else 10,
+            "javascript.options.mem.gc_incremental_slice_ms" to if (d.gameMode || d.superGameMode) 3 else 4,
             "javascript.options.mem.gc_high_frequency_time_limit_ms" to 400
         )
     }
@@ -494,16 +501,21 @@ class EngineManager @Inject constructor(
                 ContentBlocking.CookieBehavior.ACCEPT_ALL
         )
 
-        applyTrackingProtection(rt, s.strictTrackingProtection)
+        rt.settings.contentBlocking.setCookiePurging(s.cookiePurging)
+        applyTrackingProtection(rt, s.etpEnabled, s.strictTrackingProtection)
 
         shieldExtension?.let { ext ->
             rt.webExtensionController.enable(ext, WebExtensionController.EnableSource.USER)
         }
     }
 
-    private fun applyTrackingProtection(rt: GeckoRuntime, strict: Boolean) {
+    private fun applyTrackingProtection(rt: GeckoRuntime, enabled: Boolean, strict: Boolean) {
         val blocking = rt.settings.contentBlocking
-        if (strict) {
+        if (!enabled) {
+            blocking.setEnhancedTrackingProtectionLevel(ContentBlocking.EtpLevel.NONE)
+            blocking.setAntiTracking(ContentBlocking.AntiTracking.NONE)
+            blocking.setStrictSocialTrackingProtection(false)
+        } else if (strict) {
             blocking.setEnhancedTrackingProtectionLevel(ContentBlocking.EtpLevel.STRICT)
             blocking.setAntiTracking(STRICT_ANTI_TRACKING)
             blocking.setStrictSocialTrackingProtection(true)
@@ -566,15 +578,13 @@ class EngineManager @Inject constructor(
             "signon.rememberSignons" to true,
             "signon.autofillForms" to true,
             "signon.generation.enabled" to true,
-            "dom.ipc.processPrelaunch.enabled" to false,
             "browser.cache.disk.smart_size.enabled" to false,
-            "browser.cache.disk.capacity" to 262144,
-            "media.peerconnection.ice.obfuscate_host_addresses" to true,
+            "browser.cache.disk.capacity" to 524288,
             "media.peerconnection.ice.proxy_only_if_behind_proxy" to true,
             "network.IDN_show_punycode" to true,
             "network.http.pacing.requests.enabled" to false,
-            "network.dnsCacheEntries" to 2048,
-            "network.dnsCacheExpiration" to 3600,
+            "network.dnsCacheEntries" to 4096,
+            "network.dnsCacheExpiration" to 7200,
             "network.ssl_tokens_cache_capacity" to 16384,
             "content.notify.interval" to 16000,
             "javascript.options.warp" to true,

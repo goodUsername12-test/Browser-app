@@ -45,6 +45,11 @@ let config = {
   archiveMaxTotalMb: 600,
   archiveMaxFileMb: 120,
   archiveStreamBufferMb: 160,
+  archiveIncludeCookies: false,
+  archiveContinuousCapture: true,
+  proxyStripLeakHeaders: true,
+  stealthLowDetectability: true,
+  etpEnabled: true,
 };
 
 let superByUa = new Map();
@@ -522,7 +527,31 @@ function onNativeMessage(msg) {
   } else if (msg.type === "reader-toggle") {
     broadcastToActiveTab({ type: "reader-toggle" });
   } else if (msg.type === "save-page") {
-    triggerSavePage(String(msg.id || ""), String(msg.url || ""), String(msg.mode || "all"));
+    const cid = String(msg.id || "");
+    const curl = String(msg.url || "");
+    const cmode = String(msg.mode || "all");
+    const cont = msg.continuous === true;
+    if (cont) {
+      liveCapture = { active: true, paused: false, id: cid, url: curl, mode: cmode, count: 0 };
+    }
+    triggerSavePage(cid, curl, cmode, cont);
+  } else if (msg.type === "capture-control") {
+    const act = String(msg.action || "");
+    const cid = String(msg.id || "");
+    if (act === "pause" && (!cid || liveCapture.id === cid)) {
+      liveCapture.paused = true;
+    } else if (act === "resume" && (!cid || liveCapture.id === cid)) {
+      liveCapture.paused = false;
+    } else if (act === "cancel") {
+      liveCapture = { active: false, paused: false, id: "", url: "", mode: "", count: 0 };
+    } else if (act === "stop") {
+      const targetId = cid || liveCapture.id;
+      const targetUrl = liveCapture.url;
+      liveCapture = { active: false, paused: false, id: "", url: "", mode: "", count: 0 };
+      if (targetId) {
+        flushLiveSessionEnd(targetId, targetUrl);
+      }
+    }
   }
 }
 
@@ -675,11 +704,82 @@ function archiveCfg() {
     maxTotalMb: Math.max(50, Number(config.archiveMaxTotalMb) || 600),
     maxFileMb: Math.max(10, Number(config.archiveMaxFileMb) || 120),
     streamBufferMb: Math.max(16, Number(config.archiveStreamBufferMb) || 160),
+    includeCookies: config.archiveIncludeCookies === true,
+    continuousCapture: config.archiveContinuousCapture !== false,
   };
 }
 
 const tabNetStore = new Map();
 const reqMeta = new Map();
+let liveCapture = { active: false, paused: false, id: "", url: "", mode: "", count: 0 };
+const SENSITIVE_HEADERS = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization"]);
+const CAPTURE_STREAM_TYPES = new Set([
+  "main_frame", "sub_frame", "script", "stylesheet", "font", "image",
+  "media", "xmlhttprequest", "fetch", "object", "other", "imageset"
+]);
+
+function sanitizeHeadersForArchive(list) {
+  if (!Array.isArray(list)) return [];
+  const keepSecrets = config.archiveIncludeCookies === true;
+  return list.slice(0, 80).map((h) => {
+    const nm = String((h && h.name) || "");
+    const val = String((h && h.value) || "");
+    if (!keepSecrets && SENSITIVE_HEADERS.has(nm.toLowerCase())) {
+      return { name: nm, value: "[REDACTED]" };
+    }
+    return { name: nm, value: val };
+  });
+}
+
+function streamLiveEntryToNative(id, entry, incognito) {
+  if (!id || !entry || !entry.bytes || entry.bytes.length === 0) return;
+  let p = "network-stream/live-" + (++liveCapture.count);
+  try {
+    const parsed = new URL(entry.url);
+    const cleanHost = parsed.hostname.replace(/[^a-z0-9.-]/gi, "_");
+    const cleanName = (parsed.pathname.split("/").filter(Boolean).slice(-2).join("_") || "index")
+      .replace(/[^a-z0-9._-]/gi, "_").slice(0, 100);
+    p = "network-stream/" + cleanHost + "/" + liveCapture.count + "_" + cleanName;
+  } catch (_) {}
+  const chunk = 512 * 1024;
+  let seq = 0;
+  for (let off = 0; off < entry.bytes.length; off += chunk) {
+    const end = Math.min(entry.bytes.length, off + chunk);
+    postNative({
+      type: "save-page-data",
+      id,
+      op: "file",
+      path: p,
+      url: entry.url,
+      mime: entry.mime || "",
+      seq: seq++,
+      last: end >= entry.bytes.length,
+      data: b64Bytes(entry.bytes.subarray(off, end)),
+      incognito: !!incognito,
+    });
+  }
+}
+
+async function flushLiveSessionEnd(id, url) {
+  try {
+    if (config.archiveIncludeCookies === true && url && /^https?:/i.test(url) && browser.cookies) {
+      const cks = await browser.cookies.getAll({ url }).catch(() => []);
+      if (cks && cks.length > 0) {
+        const bytes = new TextEncoder().encode(JSON.stringify(cks, null, 2));
+        postNative({
+          type: "save-page-data",
+          id,
+          op: "file",
+          path: "memory/cookies.json",
+          seq: 0,
+          last: true,
+          data: b64Bytes(bytes),
+          incognito: false,
+        });
+      }
+    }
+  } catch (_) {}
+}
 
 function getTabStore(tabId) {
   let s = tabNetStore.get(tabId);
@@ -728,8 +828,12 @@ function captureStreamIfEnabled(details) {
       tabNetStore.set(tabId, { bytes: 0, entries: new Map() });
     }
     const startedAt = Date.now();
-    const shouldStreamBody = details.type === "main_frame" || (config.archiveReadOnly === false && config.archiveDeepHooks === true);
-    reqMeta.set(details.requestId, { tabId, url, method: details.method || "GET", resType: details.type || "other", status: 200, mime: "", startedAt, streamed: shouldStreamBody });
+    const resType = details.type || "other";
+    // Browser network-layer filterResponseData NEVER modifies page source code!
+    // Stream ALL loaded resource types (HTML, JS, CSS, WASM, fonts, images, media, JSON/API/XHR/fetch) transparently.
+    const shouldStreamBody = !isRealtimePingUrl(url, details) &&
+      (CAPTURE_STREAM_TYPES.has(resType) || (liveCapture.active && !liveCapture.paused));
+    reqMeta.set(details.requestId, { tabId, url, method: details.method || "GET", resType, status: 200, mime: "", startedAt, streamed: shouldStreamBody });
     if (!shouldStreamBody) return;
     const wr = browser.webRequest;
     if (!wr || typeof wr.filterResponseData !== "function") return;
@@ -773,22 +877,34 @@ function captureStreamIfEnabled(details) {
         store.entries.delete(oldestKey);
       }
       if (store.bytes + size > maxTabBytes) return;
-      store.entries.set(url, {
+      const rec = {
         url,
         method: meta.method,
         resType: meta.resType,
         status: meta.status || 200,
         statusLine: meta.statusLine || "",
         mime: meta.mime || "",
-        reqHeaders: meta.reqHeaders || [],
-        resHeaders: meta.resHeaders || [],
+        reqHeaders: sanitizeHeadersForArchive(meta.reqHeaders || []),
+        resHeaders: sanitizeHeadersForArchive(meta.resHeaders || []),
         size,
         timeMs: Date.now() - startedAt,
         startedIso: new Date(startedAt).toISOString(),
         bytes: chunks.length === 1 ? chunks[0] : null,
         chunks: chunks.length > 1 ? chunks : null,
-      });
-      store.bytes += size;
+      };
+      if (liveCapture.active && !liveCapture.paused && liveCapture.id) {
+        materializeEntryBytes(rec);
+        streamLiveEntryToNative(liveCapture.id, rec, !!details.incognito);
+        // Release body from JS RAM after flushing to disk staging
+        if (meta.resType !== "main_frame") {
+          rec.bytes = null;
+          rec.chunks = null;
+        }
+        store.entries.set(url, rec);
+      } else {
+        store.entries.set(url, rec);
+        store.bytes += size;
+      }
     };
     filter.onerror = () => {
       reqMeta.delete(details.requestId);
@@ -850,9 +966,9 @@ try {
 } catch (e) {
 }
 
-async function triggerSavePage(id, url, mode) {
+async function triggerSavePage(id, url, mode, continuous) {
   const tabs = await candidateTabs(url);
-  const msg = { type: "fable-save-page", id, url, mode: mode || "all", cfg: archiveCfg(), force: true };
+  const msg = { type: "fable-save-page", id, url, mode: mode || "all", continuous: !!continuous, cfg: archiveCfg(), force: true };
   for (const tab of tabs) {
     try {
       const res = await browser.tabs.sendMessage(tab.id, msg);
@@ -979,14 +1095,24 @@ const CLIENT_HINT_HEADERS = new Set([
   "sec-ch-ua-arch",
   "sec-ch-ua-bitness",
   "sec-ch-ua-platform-version",
+]);
+
+const PROXY_LEAK_HEADERS = new Set([
   "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip",
+  "client-ip",
+  "via",
+  "forwarded",
 ]);
 
 function onBeforeSendHeaders(details) {
   const sup = details.incognito ? superFor(details) : null;
   const saver = config.dataSaver === true;
   const shield = config.normalTabShield === true || details.incognito;
-  if (!sup && !saver && !shield) return {};
+  const stripProxyLeaks = config.proxyStripLeakHeaders !== false && (basicProxyOn() || superProxyOn() || (details.incognito && config.proxyEnabled === true));
+  if (!sup && !saver && !shield && !stripProxyLeaks) return {};
   const headers = [];
   const docHost = hostOf(details.documentUrl || details.originUrl || details.url);
   const target = hostOf(details.url);
@@ -999,11 +1125,14 @@ function onBeforeSendHeaders(details) {
 
     if (name === "save-data") sawSaver = true;
 
+    if (stripProxyLeaks && PROXY_LEAK_HEADERS.has(name)) continue;
+
     if (!shield && !sup) {
       headers.push(header);
       continue;
     }
 
+    if (config.proxyStripLeakHeaders !== false && PROXY_LEAK_HEADERS.has(name)) continue;
     if (CLIENT_HINT_HEADERS.has(name) && (sup ? hides(sup, "hints") : config.stripClientHints !== false)) continue;
     if (hides(sup, "browser") && name.startsWith("sec-ch-ua")) continue;
 
@@ -1143,7 +1272,7 @@ function registerListeners() {
   const blockNormal = config.adBlockEnabled !== false;
   const blockPrivate = config.adBlockIncognito !== false;
   const blockAll = blockNormal;
-  const headersAll = config.normalTabShield === true || config.dataSaver === true;
+  const headersAll = config.normalTabShield === true || config.dataSaver === true || (config.proxyStripLeakHeaders !== false && (basicProxyOn() || superProxyOn()));
   const incognitoProxyOn = config.proxyEnabled === true && !!config.proxyHost;
   const normalProxyOn = basicProxyOn();
   const proxyOn = incognitoProxyOn || superProxyOn() || normalProxyOn;
@@ -1310,7 +1439,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
             method: entry.method,
             url: entry.url,
             httpVersion: "HTTP/2.0",
-            headers: entry.reqHeaders || [],
+            headers: sanitizeHeadersForArchive(entry.reqHeaders || []),
             queryString: qList,
             cookies: [],
             headersSize: -1,
@@ -1320,7 +1449,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
             status: entry.status,
             statusText: entry.statusLine || "OK",
             httpVersion: "HTTP/2.0",
-            headers: entry.resHeaders || [],
+            headers: sanitizeHeadersForArchive(entry.resHeaders || []),
             cookies: [],
             content: contentObj,
             redirectURL: "",
@@ -1343,9 +1472,19 @@ browser.runtime.onMessage.addListener((msg, sender) => {
           flushed.push({ path: p, url: u, kind: "network-stream:" + entry.resType, type: entry.mime, size: entry.size });
         }
       }
-      const harBytes = new TextEncoder().encode(JSON.stringify({ log: { version: "1.2", creator: { name: "Fable Browser", version: "1.25" }, entries: harEntries } }, null, 2));
+      const harBytes = new TextEncoder().encode(JSON.stringify({ log: { version: "1.2", creator: { name: "Fable Browser", version: "1.56" }, entries: harEntries } }, null, 2));
       sendNativeChunked("devtools/network.har", harBytes);
       flushed.push({ path: "devtools/network.har", url: "devtools://network.har", kind: "devtools:har", type: "application/json", size: harBytes.length });
+      if (config.archiveIncludeCookies === true && !incognito && tab && tab.url && /^https?:/i.test(tab.url) && browser.cookies) {
+        try {
+          const cks = await browser.cookies.getAll({ url: tab.url }).catch(() => []);
+          if (cks && cks.length > 0) {
+            const ckBytes = new TextEncoder().encode(JSON.stringify(cks, null, 2));
+            sendNativeChunked("memory/cookies.json", ckBytes);
+            flushed.push({ path: "memory/cookies.json", url: tab.url, kind: "memory:cookies", type: "application/json", size: ckBytes.length });
+          }
+        } catch (_) {}
+      }
       for (const entry of store.entries.values()) {
         if (entry.resType !== "main_frame") {
           entry.bytes = null;

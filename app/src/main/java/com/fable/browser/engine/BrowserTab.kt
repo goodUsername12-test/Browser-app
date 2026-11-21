@@ -107,7 +107,7 @@ class BrowserTab(
     @Volatile var hybridBootstrapProvider: ((String) -> String)? = null
     @Volatile var hybridCustomUserAgent: (() -> String?)? = null
     @Volatile var hybridExtraHeadersProvider: ((String) -> Map<String, String>)? = null
-    @Volatile var hybridArchiveScriptProvider: ((String, String) -> String)? = null
+    @Volatile var hybridArchiveScriptProvider: ((String, String, Boolean) -> String)? = null
     @Volatile var hybridArchiveMessageHandler: ((String) -> Unit)? = null
     @Volatile var hybridDownloadHandler: ((String, String?, String?, String?) -> Unit)? = null
     @Volatile var hybridFileSaveHandler: ((java.io.File, String, String) -> Unit)? = null
@@ -119,6 +119,20 @@ class BrowserTab(
     @Volatile var hybridStorageVaultWrite: ((String, String) -> Unit)? = null
     @Volatile var hybridCookieSyncHandler: ((String) -> Unit)? = null
     @Volatile var hybridCookiePullHandler: ((String) -> Unit)? = null
+    @Volatile var hybridPrivacyProvider: ((String) -> EffectivePrivacyDecision)? = null
+    @Volatile var hybridSettingsProvider: (() -> com.fable.browser.data.prefs.Settings)? = null
+    val bridgeToken: String = UUID.randomUUID().toString()
+    val observedBlinkUrls: java.util.concurrent.ConcurrentHashMap<String, String> = java.util.concurrent.ConcurrentHashMap()
+    @Volatile var hybridObservedUrlHandler: ((String, String) -> Unit)? = null
+
+    fun recordObservedBlinkUrl(url: String, method: String = "GET") {
+        val clean = url.substringBefore('#')
+        if (observedBlinkUrls.size > 4000) observedBlinkUrls.clear()
+        val isNew = observedBlinkUrls.putIfAbsent(clean, method) == null
+        if (isNew && method.equals("GET", ignoreCase = true)) {
+            hybridObservedUrlHandler?.invoke(clean, _url.value)
+        }
+    }
 
     private val httpExceptions = mutableSetOf<String>()
 

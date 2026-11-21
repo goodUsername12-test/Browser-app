@@ -188,19 +188,44 @@ class SettingsViewModel @Inject constructor(
         return t.takeIf { it.isNotEmpty() && '.' in it && t.all { c -> c.isLetterOrDigit() || c == '.' || c == '-' } }
     }
 
+    fun setEtpEnabled(v: Boolean) = edit { store.setEtpEnabled(v) }
+    fun setCookiePurging(v: Boolean) = edit { store.setCookiePurging(v) }
+    fun setStealthLowDetectability(v: Boolean) = edit { store.setStealthLowDetectability(v) }
+    fun setBlinkPrivacyParity(v: Boolean) = edit { store.setBlinkPrivacyParity(v) }
+    fun setIsolateNativeBridge(v: Boolean) = edit { store.setIsolateNativeBridge(v) }
+    fun setProxyStripLeakHeaders(v: Boolean) = edit { store.setProxyStripLeakHeaders(v) }
+    fun setPerfHudEnabled(v: Boolean) = edit {
+        com.fable.browser.engine.PerformanceTelemetry.hudEnabled = v
+        store.setPerfHudEnabled(v)
+    }
+    fun setArchiveIncludeCookies(v: Boolean) = edit { store.setArchiveIncludeCookies(v) }
+    fun setArchiveContinuousCapture(v: Boolean) = edit { store.setArchiveContinuousCapture(v) }
+
     fun applyPreset(preset: PrivacyPreset) = edit {
+        val stealth = preset == PrivacyPreset.STEALTH
         val max = preset == PrivacyPreset.MAXIMUM
         val game = preset == PrivacyPreset.GAMING
-        store.setFingerprintProtectionAll(true)
-        store.setFpCanvas(!game)
-        store.setFpCanvasThirdParty(!game)
-        store.setFpFonts(true)
-        store.setFpUserAgent(true)
-        store.setFpHardware(!game)
-        store.setFpScreen(!game)
-        store.setFpAudio(!game)
-        store.setFpMedia(true)
-        store.setHideGpuModel(!game)
+        store.setEtpEnabled(true)
+        store.setAdBlockEnabled(true)
+        store.setCookiePurging(true)
+        store.setBlockThirdPartyCookies(true)
+        store.setStripTrackingParams(true)
+        store.setSendGpc(true)
+        store.setStealthLowDetectability(stealth || preset == PrivacyPreset.BALANCED)
+        store.setBlinkPrivacyParity(true)
+        store.setIsolateNativeBridge(true)
+        store.setProxyStripLeakHeaders(true)
+        store.setNormalTabShield(max)
+        store.setFingerprintProtectionAll(!stealth)
+        store.setFpCanvas(!game && !stealth)
+        store.setFpCanvasThirdParty(!game && !stealth)
+        store.setFpFonts(!stealth)
+        store.setFpUserAgent(!stealth)
+        store.setFpHardware(!game && !stealth)
+        store.setFpScreen(!game && !stealth)
+        store.setFpAudio(!game && !stealth)
+        store.setFpMedia(!stealth)
+        store.setHideGpuModel(!game && !stealth)
         store.setFpWebGlLimits(max)
         store.setFpSensors(max)
         store.setFpTimezone(max)
@@ -209,10 +234,10 @@ class SettingsViewModel @Inject constructor(
         store.setHideLocalIp(true)
         store.setWebRtcProxyOnly(false)
         store.setWebRtcDisabled(max)
-        store.setBlockPrefetch(true)
+        store.setBlockPrefetch(!game)
         store.setStrictReferrer(true)
         store.setBounceTracking(true)
-        store.setStrictTrackingProtection(true)
+        store.setStrictTrackingProtection(max || stealth)
         store.setNoJit(max)
         store.setDisableWasm(max)
         store.setGameMode(true)

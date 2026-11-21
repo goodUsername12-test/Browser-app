@@ -60,6 +60,7 @@ class BlinkGamingActivity : ComponentActivity() {
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private var customContainer: FrameLayout? = null
     @Volatile private var jsFullScreenActive: Boolean = false
+    @Volatile private var activityBridgeToken: String = ""
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val gameAccountVaultPrefs by lazy {
@@ -168,8 +169,14 @@ class BlinkGamingActivity : ComponentActivity() {
                         jsFullScreenActive = active
                     }
 
+                    private val actBridgeToken: String = java.util.UUID.randomUUID().toString().also { activityBridgeToken = it }
+
                     @JavascriptInterface
-                    fun readAccountVault(host: String?): String {
+                    fun readAccountVault(host: String?): String = readAccountVault(host, null)
+
+                    @JavascriptInterface
+                    fun readAccountVault(host: String?, token: String?): String {
+                        if (token != actBridgeToken) return ""
                         val h = host?.takeIf { it.isNotBlank() } ?: return ""
                         val canonical = UrlUtils.registrableDomain(h) ?: h.lowercase().removePrefix("www.")
                         val key = if (h.startsWith("staging.", ignoreCase = true)) "staging.$canonical" else canonical
@@ -177,7 +184,11 @@ class BlinkGamingActivity : ComponentActivity() {
                     }
 
                     @JavascriptInterface
-                    fun writeAccountVault(host: String?, jsonStr: String?) {
+                    fun writeAccountVault(host: String?, jsonStr: String?) = writeAccountVault(host, jsonStr, null)
+
+                    @JavascriptInterface
+                    fun writeAccountVault(host: String?, jsonStr: String?, token: String?) {
+                        if (token != actBridgeToken) return
                         val h = host?.takeIf { it.isNotBlank() } ?: return
                         val p = jsonStr?.takeIf { it.length in 3..524288 } ?: return
                         val canonical = UrlUtils.registrableDomain(h) ?: h.lowercase().removePrefix("www.")
@@ -243,7 +254,11 @@ class BlinkGamingActivity : ComponentActivity() {
                     }
 
                     @JavascriptInterface
-                    fun getClipboardText(): String {
+                    fun getClipboardText(): String = getClipboardText(null)
+
+                    @JavascriptInterface
+                    fun getClipboardText(token: String?): String {
+                        if (token != actBridgeToken) return ""
                         return runCatching {
                             val cm = applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                             val clip = cm?.primaryClip
@@ -254,7 +269,11 @@ class BlinkGamingActivity : ComponentActivity() {
                     }
 
                     @JavascriptInterface
-                    fun setClipboardText(text: String) {
+                    fun setClipboardText(text: String) = setClipboardText(text, null)
+
+                    @JavascriptInterface
+                    fun setClipboardText(text: String, token: String?) {
+                        if (token != actBridgeToken) return
                         runCatching {
                             val cm = applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                             cm?.setPrimaryClip(ClipData.newPlainText("Fable", text))
@@ -293,7 +312,8 @@ class BlinkGamingActivity : ComponentActivity() {
                 isIncognito = false,
                 isSuper = false,
                 superIdentity = null,
-                pageUrl = intent.getStringExtra(EXTRA_URL).orEmpty()
+                pageUrl = intent.getStringExtra(EXTRA_URL).orEmpty(),
+                bridgeToken = activityBridgeToken
             )
             com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(this, bootScript)
             webViewClient = object : WebViewClient() {

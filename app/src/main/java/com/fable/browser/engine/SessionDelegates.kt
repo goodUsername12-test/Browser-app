@@ -131,6 +131,7 @@ class SessionDelegateFactory @Inject constructor(
 
             val httpsOnly = if (tab.isIncognito) current.incognitoHttpsOnly else current.httpsOnly
             if (httpsOnly && UrlUtils.isInsecure(uri) &&
+                !UrlUtils.isLoopback(uri) &&
                 !tab.isHttpAllowed(UrlUtils.host(uri))
             ) {
                 tab.updateInterstitial(Interstitial.HttpsOnly(uri))
@@ -201,6 +202,7 @@ class SessionDelegateFactory @Inject constructor(
     private fun progressDelegate(tab: BrowserTab) = object : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
             if (tab.isHybridBlink.value) return
+            PerformanceTelemetry.markNavigationStart(url, "GeckoView")
             tab.updateLoading(true)
             tab.updateProgress(5)
             tab.resetBlocked()
@@ -212,6 +214,7 @@ class SessionDelegateFactory @Inject constructor(
                 tab.hybridCookiePullHandler?.invoke(tab.url.value)
             }
             if (tab.isHybridBlink.value) return
+            if (success) PerformanceTelemetry.markPageLoaded(tab.url.value, "GeckoView")
             tab.updateLoading(false)
             tab.updateProgress(if (success) 100 else 0)
         }

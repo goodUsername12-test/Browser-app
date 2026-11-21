@@ -400,7 +400,7 @@
     const maxFileBytes = Math.max(10, Number(cfg.maxFileMb) || 120) * 1024 * 1024;
     const send = (m) => browser.runtime.sendMessage(Object.assign({ type: "fable-save", id, mode }, m)).catch(() => {});
     try {
-      await send({ op: "begin", page: location.href, title: document.title || "", mode });
+      await send({ op: "begin", continuous: !!msg.continuous, readOnly: cfg.readOnly !== false, includeCookies: !!cfg.includeCookies, page: location.href, title: document.title || "", mode });
       const used = new Set();
       const seen = new Map();
       const queue = [];
@@ -440,6 +440,19 @@
       const enc = new TextEncoder();
 
       const rendered = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+      try {
+        if (document.fonts && typeof document.fonts.forEach === "function") {
+          const flist = [];
+          document.fonts.forEach((f) => {
+            flist.push({ family: f.family, status: f.status, style: f.style, weight: f.weight, display: f.display || "" });
+          });
+          if (flist.length > 0) {
+            const fBytes = enc.encode(JSON.stringify(flist, null, 2));
+            await sendBytes("memory/fonts.json", fBytes);
+            index.push({ path: "memory/fonts.json", url: location.href, kind: "memory:fonts", size: fBytes.length });
+          }
+        }
+      } catch (_) {}
       await sendBytes("page/rendered-dom.html", enc.encode(rendered));
       index.push({ path: "page/rendered-dom.html", url: location.href, kind: "current DOM" });
 
@@ -819,7 +832,7 @@
         files: index,
       };
       await sendBytes("index.json", enc.encode(JSON.stringify(info, null, 2)));
-      await send({ op: "end", count: index.filter((x) => x.path).length, bytes: total });
+      await send({ op: msg.continuous ? "phase_snapshot_ready" : "end", count: index.filter((x) => x.path).length, bytes: total });
     } catch (e) {
       await send({ op: "error", message: String(e && e.message ? e.message : e) });
     } finally {

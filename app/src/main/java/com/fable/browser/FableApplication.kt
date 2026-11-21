@@ -1,9 +1,12 @@
 package com.fable.browser
 
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.os.Build
 import com.fable.browser.data.backup.BackupManager
 import com.fable.browser.engine.EngineManager
+import com.fable.browser.engine.FableUnifiedEngine
+import com.fable.browser.engine.PerformanceTelemetry
 import com.fable.browser.engine.TabManager
 import com.fable.browser.util.CrashReporter
 import dagger.Lazy
@@ -19,17 +22,25 @@ class FableApplication : Application() {
     val isMainProcess: Boolean by lazy { currentProcessName().let { it == null || it == packageName } }
 
     override fun onCreate() {
+        PerformanceTelemetry.markAppCreated()
         super.onCreate()
         if (!isMainProcess) return
 
         CrashReporter.install(this)
-        BackupManager.applyStagedRestore(this)
+        if (File(filesDir, "fable_restore").exists() || File(cacheDir, "fable_restore").exists()) {
+            BackupManager.applyStagedRestore(this)
+        }
         engineManager.get().warmUp()
     }
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (isMainProcess) tabManager.get().onTrimMemory(level)
+        if (isMainProcess) {
+            if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+                FableUnifiedEngine.scheduleCookieFlush(immediate = true)
+            }
+            tabManager.get().onTrimMemory(level)
+        }
     }
 
     private fun currentProcessName(): String? =

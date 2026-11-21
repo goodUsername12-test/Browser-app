@@ -50,21 +50,48 @@ fun PrivacySettingsScreen(
         SectionHeader("Quick setup")
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            OutlinedButton(onClick = { viewModel.applyPreset(PrivacyPreset.STEALTH) }, modifier = Modifier.weight(1f)) {
+                Text("Stealth")
+            }
             OutlinedButton(onClick = { viewModel.applyPreset(PrivacyPreset.BALANCED) }, modifier = Modifier.weight(1f)) {
                 Text("Balanced")
             }
             OutlinedButton(onClick = { viewModel.applyPreset(PrivacyPreset.MAXIMUM) }, modifier = Modifier.weight(1f)) {
-                Text("Maximum")
+                Text("Max")
             }
             OutlinedButton(onClick = { viewModel.applyPreset(PrivacyPreset.GAMING) }, modifier = Modifier.weight(1f)) {
                 Text("Gaming")
             }
         }
         SettingRow(
-            title = "Balanced is the default",
-            subtitle = "Maximum may break sites and games. Gaming relaxes only what games need; your IP, cookies and tracking stay protected"
+            title = "All privacy switches below are optional (ON / OFF)",
+            subtitle = "Stealth uses network blocking, storage isolation, GPC, and WebRTC/bridge hardening with normal browser signals (lowest detectability). Every individual switch can be toggled ON or OFF."
+        )
+        SwitchRow(
+            title = "Stealth low-detectability mode",
+            subtitle = "Protects privacy underneath while keeping normal browser APIs so anti-bot detectors don't flag artificial spoofing",
+            checked = settings.stealthLowDetectability,
+            onCheckedChange = viewModel::setStealthLowDetectability
+        )
+        SwitchRow(
+            title = "Blink × Gecko privacy parity",
+            subtitle = "Enforce tracker blocking, 3P cookie blocking, URL parameter stripping, HTTPS-only, GPC/DNT, WebRTC and per-toggle guards inside Blink Combined mode too",
+            checked = settings.blinkPrivacyParity,
+            onCheckedChange = viewModel::setBlinkPrivacyParity
+        )
+        SwitchRow(
+            title = "Native bridge isolation",
+            subtitle = "Hide Fable internal markers and require per-tab tokens on native Kotlin/JNI bridges so untrusted websites cannot probe or access clipboard/vault bridges",
+            checked = settings.isolateNativeBridge,
+            onCheckedChange = viewModel::setIsolateNativeBridge
+        )
+        SwitchRow(
+            title = "Proxy leak-header & DNS hardening",
+            subtitle = "Strip X-Forwarded-For, Via, Forwarded, and Client-IP headers and route DNS through the proxy when active",
+            checked = settings.proxyStripLeakHeaders,
+            onCheckedChange = viewModel::setProxyStripLeakHeaders
         )
         ListDivider()
 
@@ -138,13 +165,32 @@ fun PrivacySettingsScreen(
         )
         ListDivider()
 
-        SectionHeader("Cookies and storage")
+        SectionHeader("Tracking & cookies")
+        SwitchRow(
+            title = "Enhanced Tracking Protection (ETP)",
+            subtitle = "Master switch for Gecko's built-in tracking protection engine (turn OFF if a site breaks)",
+            checked = settings.etpEnabled,
+            onCheckedChange = viewModel::setEtpEnabled
+        )
+        SwitchRow(
+            title = "Strict tracking protection",
+            subtitle = "Blocks additional analytics, social, cryptomining, and fingerprinting trackers",
+            checked = settings.strictTrackingProtection,
+            enabled = settings.etpEnabled,
+            onCheckedChange = viewModel::setStrictTrackingProtection
+        )
         SwitchRow(
             title = "Block third-party cookies",
-            subtitle = "Also partitions third-party storage so embedded frames cannot share state across sites",
+            subtitle = "Also partitions third-party storage in Gecko and blocks 3P cookies in Blink Combined mode",
             icon = Icons.Outlined.Cookie,
             checked = settings.blockThirdPartyCookies,
             onCheckedChange = viewModel::setBlockThirdPartyCookies
+        )
+        SwitchRow(
+            title = "Automatic tracking cookie purging",
+            subtitle = "Periodically purges redirect-tracker cookies for sites you do not interact with",
+            checked = settings.cookiePurging,
+            onCheckedChange = viewModel::setCookiePurging
         )
         ListDivider()
 
@@ -394,6 +440,17 @@ fun PrivacySettingsScreen(
             },
             icon = Icons.Outlined.Dns
         )
+        ListDivider()
+
+        SectionHeader("Gecko × Blink Privacy Capability Matrix")
+        val capItems = remember(settings) { com.fable.browser.engine.FablePrivacyPolicy.capabilityMatrix(settings) }
+        capItems.forEach { item ->
+            SettingRow(
+                title = item.label,
+                subtitle = "Gecko: ${item.geckoStatus.name} · Blink: ${item.blinkStatus.name}" +
+                    if (item.note.isNotBlank()) " — ${item.note}" else ""
+            )
+        }
         ListDivider()
 
         SectionHeader("Clear on exit")

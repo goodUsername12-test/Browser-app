@@ -49,3 +49,8 @@
 -keep class com.fable.browser.engine.NativeFastEngine { *; }
 -keep class com.fable.browser.engine.FableWebGpuManager { *; }
 -keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }
+
+-keep class com.fable.browser.engine.PerformanceTelemetry { *; }
+-keep class com.fable.browser.engine.FablePrivacyPolicy { *; }
+-keep class com.fable.browser.engine.CaptureUiState { *; }
+-keep class com.fable.browser.engine.CapturePhase { *; }

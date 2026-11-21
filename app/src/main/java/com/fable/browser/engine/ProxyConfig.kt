@@ -45,6 +45,15 @@ class ProxyConfig @Inject constructor(
 
     init {
         superIncognito.addListener { push() }
+        pageArchiver.onControlSignal = { action, id ->
+            scope.launch {
+                port?.postMessage(JSONObject().apply {
+                    put("type", "capture-control")
+                    put("action", action)
+                    put("id", id)
+                })
+            }
+        }
     }
 
     fun push() {
@@ -75,20 +84,50 @@ class ProxyConfig @Inject constructor(
         return contentBlocker.shouldBlock(url, docHost)
     }
 
-    fun newHybridArchiveRequest(): String? = pageArchiver.newRequest()
+    val captureState: kotlinx.coroutines.flow.StateFlow<CaptureUiState> = pageArchiver.state
+
+    fun pauseCapture() = pageArchiver.pause()
+    fun resumeCapture() = pageArchiver.resume()
+    fun stopAndSaveCapture() = pageArchiver.stopAndSave(partial = true)
+    fun cancelCapture() = pageArchiver.cancelAndDelete()
+
+    fun newHybridArchiveRequest(mode: String = "all", continuous: Boolean = false): String? {
+        val s = current
+        return pageArchiver.newRequest(
+            mode = mode,
+            continuous = continuous,
+            readOnly = s?.archiveReadOnly ?: true,
+            includeCookies = s?.archiveIncludeCookies ?: false,
+            maxFiles = s?.archiveMaxFiles ?: 4000,
+            maxTotalMb = s?.archiveMaxTotalMb ?: 600
+        )
+    }
+
+    fun enqueueBlinkObservedUrls(urls: Collection<String>, pageUrl: String, userAgent: String) {
+        pageArchiver.enqueueObservedUrls(urls, pageUrl, userAgent)
+    }
 
     fun onHybridArchiveMessage(rawJson: String) {
         runCatching { pageArchiver.onMessage(JSONObject(rawJson)) }
     }
 
-    fun savePageCode(url: String, mode: String = "all"): Boolean {
+    fun savePageCode(url: String, mode: String = "all", continuous: Boolean = false): Boolean {
         val p = port ?: return false
-        val id = pageArchiver.newRequest() ?: return true
+        val s = current
+        val id = pageArchiver.newRequest(
+            mode = mode,
+            continuous = continuous,
+            readOnly = s?.archiveReadOnly ?: true,
+            includeCookies = s?.archiveIncludeCookies ?: false,
+            maxFiles = s?.archiveMaxFiles ?: 4000,
+            maxTotalMb = s?.archiveMaxTotalMb ?: 600
+        ) ?: return true
         p.postMessage(JSONObject().apply {
             put("type", "save-page")
             put("id", id)
             put("url", url)
             put("mode", mode)
+            put("continuous", continuous)
         })
         return true
     }
@@ -220,6 +259,11 @@ class ProxyConfig @Inject constructor(
             put("archiveMaxTotalMb", s?.archiveMaxTotalMb ?: 600)
             put("archiveMaxFileMb", s?.archiveMaxFileMb ?: 120)
             put("archiveStreamBufferMb", s?.archiveStreamBufferMb ?: 160)
+            put("archiveIncludeCookies", s?.archiveIncludeCookies ?: false)
+            put("archiveContinuousCapture", s?.archiveContinuousCapture ?: true)
+            put("proxyStripLeakHeaders", s?.proxyStripLeakHeaders ?: true)
+            put("stealthLowDetectability", s?.stealthLowDetectability ?: true)
+            put("etpEnabled", s?.etpEnabled ?: true)
         }
     }
 

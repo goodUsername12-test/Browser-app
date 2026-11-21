@@ -79,7 +79,9 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
 
         FableBatteryGovernor.init(this)
-        com.fable.browser.engine.FableProxyProfileManager.ensureLoaded(this)
+        lifecycleScope.launch(Dispatchers.IO) {
+            com.fable.browser.engine.FableProxyProfileManager.ensureLoaded(applicationContext)
+        }
         activityBridge.bind(this)
 
         if (tabManager.tabs.value.isEmpty()) tabManager.restoreOrCreate()
@@ -126,6 +128,14 @@ class MainActivity : FragmentActivity() {
         setContent {
             FableApp()
             CrashReportDialog()
+        }
+        Choreographer.getInstance().postFrameCallback {
+            val hz = HighRefreshRateEnforcer.resolveMaxRefreshRate(this@MainActivity)
+            com.fable.browser.engine.PerformanceTelemetry.markFirstFrame(hz)
+            runCatching { reportFullyDrawn() }
+            if (!com.fable.browser.engine.MemoryPolicy.isWeakDevice(applicationContext)) {
+                com.fable.browser.engine.FableUnifiedEngine.prewarmBlinkPostFrame(applicationContext)
+            }
         }
     }
 
@@ -312,8 +322,35 @@ class MainActivity : FragmentActivity() {
             Intent.ACTION_WEB_SEARCH -> intent.getStringExtra("query")?.let { q ->
                 tabManager.openExternalSearch(q)
             }
-            else -> if (BuildConfig.DEBUG && intent?.getBooleanExtra("fable_save_page_code", false) == true) {
-                tabManager.savePageCode()
+            else -> if (BuildConfig.DEBUG && intent != null) {
+                when {
+                    intent.getBooleanExtra("fable_save_page_code", false) -> tabManager.savePageCode("all", continuous = false)
+                    intent.getBooleanExtra("fable_start_snapshot", false) -> tabManager.savePageCode("memory", continuous = true)
+                    intent.getBooleanExtra("fable_pause_capture", false) -> tabManager.pauseCapture()
+                    intent.getBooleanExtra("fable_resume_capture", false) -> tabManager.resumeCapture()
+                    intent.getBooleanExtra("fable_stop_capture", false) -> tabManager.stopAndSaveCapture()
+                    intent.getBooleanExtra("fable_cancel_capture", false) -> tabManager.cancelCapture()
+                    intent.getBooleanExtra("fable_perf_dump", false) -> {
+                        com.fable.browser.engine.PerformanceTelemetry.dumpSummary("debug_intent")
+                    }
+                    intent.hasExtra("fable_test_adblock") -> {
+                        val on = intent.getBooleanExtra("fable_test_adblock", true)
+                        lifecycleScope.launch {
+                            settingsStore.setAdBlockEnabled(on)
+                            settingsStore.setStripTrackingParams(on)
+                            settingsStore.setSendGpc(on)
+                            settingsStore.setBlockThirdPartyCookies(on)
+                            settingsStore.setBlinkPrivacyParity(on)
+                            settingsStore.setIsolateNativeBridge(on)
+                            android.util.Log.i("FABLE-PRIVACY-TEST", "toggled all_privacy=$on")
+                        }
+                    }
+                    intent.hasExtra("fable_test_perf_hud") -> {
+                        val on = intent.getBooleanExtra("fable_test_perf_hud", false)
+                        com.fable.browser.engine.PerformanceTelemetry.hudEnabled = on
+                        lifecycleScope.launch { settingsStore.setPerfHudEnabled(on) }
+                    }
+                }
             }
         }
     }
@@ -378,12 +415,14 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onPause() {
+        com.fable.browser.engine.FableUnifiedEngine.scheduleCookieFlush(immediate = false)
         tabManager.onAppPaused()
         super.onPause()
     }
 
     override fun onStop() {
         super.onStop()
+        com.fable.browser.engine.FableUnifiedEngine.scheduleCookieFlush(immediate = true)
         tabManager.onAppBackgrounded(temporary = activityBridge.externalPickerOpen)
         if (!activityBridge.externalPickerOpen) cacheCleaner.onAppBackgrounded()
         FreezeWatchdog.onBackground()

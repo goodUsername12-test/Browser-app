@@ -132,15 +132,27 @@ private class FableHybridJsBridge(
         return FableUnifiedEngine.recordFrameDeltaNs(deltaNs)
     }
 
+    private fun bridgeAuthorized(token: String?): Boolean {
+        val isolate = tab.hybridSettingsProvider?.invoke()?.isolateNativeBridge ?: true
+        if (!isolate) return true
+        return !token.isNullOrEmpty() && token == tab.bridgeToken
+    }
+
     @JavascriptInterface
-    fun readAccountVault(host: String?): String {
-        if (tab.isIncognito || host.isNullOrBlank()) return ""
+    fun readAccountVault(host: String?): String = readAccountVault(host, null)
+
+    @JavascriptInterface
+    fun readAccountVault(host: String?, token: String?): String {
+        if (tab.isIncognito || host.isNullOrBlank() || !bridgeAuthorized(token)) return ""
         return runCatching { tab.hybridStorageVaultRead?.invoke(host).orEmpty() }.getOrDefault("")
     }
 
     @JavascriptInterface
-    fun writeAccountVault(host: String?, jsonStr: String?) {
-        if (tab.isIncognito || host.isNullOrBlank() || jsonStr.isNullOrBlank()) return
+    fun writeAccountVault(host: String?, jsonStr: String?) = writeAccountVault(host, jsonStr, null)
+
+    @JavascriptInterface
+    fun writeAccountVault(host: String?, jsonStr: String?, token: String?) {
+        if (tab.isIncognito || host.isNullOrBlank() || jsonStr.isNullOrBlank() || !bridgeAuthorized(token)) return
         runCatching { tab.hybridStorageVaultWrite?.invoke(host, jsonStr) }
     }
 
@@ -230,7 +242,11 @@ private class FableHybridJsBridge(
     }
 
     @JavascriptInterface
-    fun getClipboardText(): String {
+    fun getClipboardText(): String = getClipboardText(null)
+
+    @JavascriptInterface
+    fun getClipboardText(token: String?): String {
+        if (!bridgeAuthorized(token)) return ""
         return runCatching {
             val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             val clip = cm?.primaryClip
@@ -243,7 +259,11 @@ private class FableHybridJsBridge(
     }
 
     @JavascriptInterface
-    fun setClipboardText(text: String) {
+    fun setClipboardText(text: String) = setClipboardText(text, null)
+
+    @JavascriptInterface
+    fun setClipboardText(text: String, token: String?) {
+        if (!bridgeAuthorized(token)) return
         runCatching {
             val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             cm?.setPrimaryClip(ClipData.newPlainText("Fable", text))
@@ -571,7 +591,13 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             runCatching {
                 val cm = CookieManager.getInstance()
                 cm.setAcceptCookie(true)
-                cm.setAcceptThirdPartyCookies(this, !tab.isIncognito)
+                val decision = tab.hybridPrivacyProvider?.invoke(tab.url.value)
+                val allow3p = if (decision != null && decision.blinkPrivacyParity) {
+                    !decision.blockThirdPartyCookies
+                } else {
+                    !tab.isIncognito
+                }
+                cm.setAcceptThirdPartyCookies(this, allow3p)
             }
             addJavascriptInterface(FableHybridJsBridge(context.applicationContext, tab), "FableHybridBridge")
             val initBoot = tab.hybridBootstrapProvider?.invoke(tab.url.value).orEmpty()
@@ -651,8 +677,11 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                             )
                         }.getOrNull()
                     }
-                    if (request.isForMainFrame) return null
                     val reqUrl = request.url?.toString() ?: return null
+                    if (reqUrl.startsWith("http://", true) || reqUrl.startsWith("https://", true)) {
+                        tab.recordObservedBlinkUrl(reqUrl, request.method ?: "GET")
+                    }
+                    if (request.isForMainFrame) return null
                     val docHost = cachedDocHost
                         ?: UrlUtils.host(tab.url.value)
                         ?: UrlUtils.host(tab.lastLoadedBlinkUrl)
@@ -696,7 +725,18 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                         tab.hybridExternalUrlHandler?.invoke(target)
                         return true
                     }
-                    if (!request.isRedirect) {
+                    val decision = tab.hybridPrivacyProvider?.invoke(target)
+                    if (decision != null && decision.blinkPrivacyParity && decision.httpsOnly &&
+                        request.isForMainFrame && UrlUtils.isInsecure(target) &&
+                        !UrlUtils.isLoopback(target) &&
+                        !tab.isHttpAllowed(UrlUtils.host(target))
+                    ) {
+                        tab.updateInterstitial(com.fable.browser.engine.Interstitial.HttpsOnly(target))
+                        tab.updateLoading(false)
+                        return true
+                    }
+                    val stripOn = decision != null && decision.blinkPrivacyParity && decision.stripTrackingParams
+                    if (!request.isRedirect && stripOn) {
                         val cleaned = UrlUtils.stripTrackingParams(target)
                         if (cleaned != target && request.isForMainFrame && request.method.equals("GET", ignoreCase = true)) {
                             val extraHeaders = tab.hybridExtraHeadersProvider?.invoke(cleaned).orEmpty()
@@ -713,6 +753,14 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     if (!url.isNullOrBlank()) {
+                        com.fable.browser.engine.PerformanceTelemetry.markNavigationStart(url, "Blink")
+                        runCatching {
+                            val dec = tab.hybridPrivacyProvider?.invoke(url)
+                            val allow3p = if (dec != null && dec.blinkPrivacyParity) !dec.blockThirdPartyCookies else !tab.isIncognito
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(view, allow3p)
+                        }
+                        tab.observedBlinkUrls.clear()
+                        tab.recordObservedBlinkUrl(url, "GET")
                         tab.lastLoadedBlinkUrl = url
                         cachedDocHost = UrlUtils.host(url)
                         tab.updateUrl(url)
@@ -771,7 +819,10 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                             )
                         }
                     }
-                    FableUnifiedEngine.flushBlinkCookies()
+                    if (!url.isNullOrBlank()) {
+                        com.fable.browser.engine.PerformanceTelemetry.markPageLoaded(url, "Blink")
+                    }
+                    FableUnifiedEngine.scheduleCookieFlush(immediate = false)
                     if (!url.isNullOrBlank()) tab.hybridCookieSyncHandler?.invoke(url)
                 }
             }
@@ -1022,8 +1073,8 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 }
             }
 
-            override fun savePageCode(mode: String, reqId: String): Boolean {
-                val script = tab.hybridArchiveScriptProvider?.invoke(reqId, mode) ?: return false
+            override fun savePageCode(mode: String, reqId: String, continuous: Boolean): Boolean {
+                val script = tab.hybridArchiveScriptProvider?.invoke(reqId, mode, continuous) ?: return false
                 wv.post {
                     runCatching { wv.evaluateJavascript(script, null) }
                 }

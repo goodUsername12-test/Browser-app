@@ -38,10 +38,24 @@ fun DownloadSettingsScreen(
         )
         SwitchRow(
             title = "Passive network stream capture",
-            subtitle = "Capture loaded scripts, WASM, JSON, XHR/fetch responses and game assets directly from Gecko's network layer as the page loads.",
+            subtitle = "Capture ALL loaded HTML, JS, CSS, WASM, fonts, images, media, and JSON/API responses at the browser network layer without touching page code.",
             checked = s.archiveNetworkStream,
             icon = Icons.Outlined.Code,
             onCheckedChange = viewModel::setArchiveNetworkStream
+        )
+        SwitchRow(
+            title = "Live continuous memory snapshot (Stop when ready)",
+            subtitle = "Keep recording newly loaded resources to disk while you browse until you press Stop & Save (with Pause/Resume/Cancel controls).",
+            checked = s.archiveContinuousCapture,
+            icon = Icons.Outlined.Memory,
+            onCheckedChange = viewModel::setArchiveContinuousCapture
+        )
+        SwitchRow(
+            title = "Include cookies & auth headers (sensitive)",
+            subtitle = "Off by default for privacy: redacts Authorization/Cookie headers in HAR and omits cookies.json unless explicitly enabled.",
+            checked = s.archiveIncludeCookies,
+            icon = Icons.Outlined.Shield,
+            onCheckedChange = viewModel::setArchiveIncludeCookies
         )
         SwitchRow(
             title = "Include memory snapshot in Page Code (.zip)",

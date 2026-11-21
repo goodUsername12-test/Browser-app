@@ -208,6 +208,15 @@ fun PerformanceSettingsScreen(
         )
         ListDivider()
 
+        SectionHeader("Live Performance Diagnostics")
+        SwitchRow(
+            title = "Live Performance HUD overlay",
+            subtitle = "Shows cold launch ms, page load ms, live FPS, p95/p99 frame times, jank %, display Hz, memory MB, and active engine",
+            checked = settings.perfHudEnabled,
+            onCheckedChange = viewModel::setPerfHudEnabled
+        )
+        ListDivider()
+
         SectionHeader("Stability")
         SwitchRow(
             title = "Separate graphics process",

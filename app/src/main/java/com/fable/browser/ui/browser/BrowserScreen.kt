@@ -122,6 +122,8 @@ fun BrowserScreen(
     val context = LocalContext.current
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     val isScreenRecording by ScreenRecorderManager.isRecording.collectAsStateWithLifecycle()
+    val captureState by viewModel.captureState.collectAsStateWithLifecycle()
+    val perfSnap by viewModel.perfSnapshot.collectAsStateWithLifecycle()
     val recElapsedSec by ScreenRecorderManager.elapsedSeconds.collectAsStateWithLifecycle()
     val lastButtonPress by ScreenRecorderManager.lastButtonPress.collectAsStateWithLifecycle()
 
@@ -507,6 +509,37 @@ fun BrowserScreen(
             modifier = Modifier.fillMaxSize()
         )
 
+        if (captureState.phase == com.fable.browser.engine.CapturePhase.CAPTURING ||
+            captureState.phase == com.fable.browser.engine.CapturePhase.PAUSED ||
+            captureState.phase == com.fable.browser.engine.CapturePhase.FINALIZING
+        ) {
+            CaptureControlHud(
+                state = captureState,
+                onPause = viewModel::pauseCapture,
+                onResume = viewModel::resumeCapture,
+                onStopAndSave = viewModel::stopAndSaveCapture,
+                onCancel = viewModel::cancelCapture,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = if (toolbarAtTop || !showToolbar) 14.dp else 68.dp)
+            )
+        }
+
+        if (settings.perfHudEnabled) {
+            PerfOverlayHud(
+                snap = perfSnap,
+                onClick = {
+                    val line = com.fable.browser.engine.PerformanceTelemetry.dumpSummary("hud_tap")
+                    viewModel.toast(line.take(120))
+                },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(top = if (toolbarAtTop && showToolbar) 68.dp else 8.dp, start = 8.dp)
+            )
+        }
+
         com.fable.browser.ui.components.UndoCloseBar(
             closed = recentlyClosed,
             onUndo = { viewModel.undoClose() },
@@ -686,5 +719,134 @@ private fun McpLiveBrowserHud(
                 }
             }
         }
+    }
+}
+
+
+@Composable
+private fun CaptureControlHud(
+    state: com.fable.browser.engine.CaptureUiState,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onStopAndSave: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isPaused = state.phase == com.fable.browser.engine.CapturePhase.PAUSED
+    val isFinalizing = state.phase == com.fable.browser.engine.CapturePhase.FINALIZING
+    val badgeColor = when (state.phase) {
+        com.fable.browser.engine.CapturePhase.PAUSED -> Color(0xFFD97706)
+        com.fable.browser.engine.CapturePhase.FINALIZING -> Color(0xFF2563EB)
+        else -> Color(0xFF16A34A)
+    }
+    val mbText = String.format(java.util.Locale.US, "%.2f MB", state.bytesCaptured / (1024.0 * 1024.0))
+    val mm = state.elapsedSec / 60
+    val ss = state.elapsedSec % 60
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xEE0F172A),
+        shadowElevation = 8.dp,
+        modifier = modifier
+            .fillMaxWidth()
+            .border(1.dp, badgeColor, RoundedCornerShape(16.dp))
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(badgeColor, CircleShape)
+                )
+                Spacer(Modifier.width(8.dp))
+                val label = when {
+                    isFinalizing -> "Saving ZIP..."
+                    isPaused -> "Capture Paused"
+                    state.continuous -> "Live Snapshot"
+                    else -> "Capturing Page ZIP"
+                }
+                Text(
+                    text = "$label · ${state.filesCaptured} files · $mbText · %02d:%02d".format(mm, ss),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+            if (state.currentResource.isNotBlank() || state.statusMessage.isNotBlank()) {
+                Text(
+                    text = state.currentResource.ifBlank { state.statusMessage },
+                    color = Color(0xFF94A3B8),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+            if (!isFinalizing) {
+                Row(
+                    modifier = Modifier.padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isPaused) Color(0xFF16A34A) else Color(0xFFD97706),
+                        modifier = Modifier.clickable { if (isPaused) onResume() else onPause() }
+                    ) {
+                        Text(
+                            text = if (isPaused) "Resume" else "Pause",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF2563EB),
+                        modifier = Modifier.clickable(onClick = onStopAndSave)
+                    ) {
+                        Text(
+                            text = "Stop & Save",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF475569),
+                        modifier = Modifier.clickable(onClick = onCancel)
+                    ) {
+                        Text(
+                            text = "Cancel",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PerfOverlayHud(
+    snap: com.fable.browser.engine.PerfSnapshot,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0xCC0F172A),
+        modifier = modifier
+            .border(1.dp, Color(0xFF334155), RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Text(
+            text = "${snap.fps} FPS (${snap.displayHz.toInt()}Hz) · p95 ${"%.1f".format(snap.frameP95Ms)}ms · jank ${"%.1f".format(snap.jankPercent)}%\n" +
+                "boot ${snap.coldStartMs}ms · load ${snap.lastPageLoadMs}ms · ${snap.heapUsedMb}MB · ${snap.activeEngine}",
+            color = Color(0xFF86EFAC),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+        )
     }
 }

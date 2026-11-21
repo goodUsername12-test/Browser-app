@@ -73,6 +73,7 @@ object FableUnifiedEngine {
                 val delta = frameTimeNanos - prev
                 if (delta in 1_000_000L..500_000_000L) {
                     val fps = NativeFastEngine.recordFrameDeltaNs(delta, frameTimeNanos)
+                    PerformanceTelemetry.recordFrameDeltaNs(delta, fps)
                     uiPublishCounter++
                     if ((uiPublishCounter and 15) == 0 && _estimatedFps.value != fps) {
                         _estimatedFps.value = fps
@@ -146,18 +147,49 @@ object FableUnifiedEngine {
         return HybridEngineBridge.isHeavy3dGameUrl(url, settings.hybridCustomDomains)
     }
 
+    private val blinkPostFrameWarmed = AtomicBoolean(false)
+    @Volatile private var pendingCookieFlushJob: kotlinx.coroutines.Job? = null
+
+    fun prewarmBlinkPostFrame(context: Context) {
+        if (!blinkPostFrameWarmed.compareAndSet(false, true)) return
+        val appCtx = context.applicationContext
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                CookieManager.getInstance().setAcceptCookie(true)
+            }
+            if (defaultBlinkUserAgent.isBlank()) {
+                val ua = runCatching {
+                    WebSettings.getDefaultUserAgent(appCtx)
+                        .replace("; wv)", ")")
+                        .replace("Version/4.0 ", "")
+                }.getOrDefault("")
+                if (ua.isNotBlank()) defaultBlinkUserAgent = ua
+            }
+        }
+    }
+
     fun recordFrameDeltaNs(deltaNs: Long, nowNs: Long = System.nanoTime()): Int {
         val fps = NativeFastEngine.recordFrameDeltaNs(deltaNs, nowNs)
+        PerformanceTelemetry.recordFrameDeltaNs(deltaNs, fps)
         if (_estimatedFps.value != fps) {
             _estimatedFps.value = fps
         }
         return fps
     }
 
-    fun flushBlinkCookies() {
-        scope.launch(Dispatchers.IO) {
-            runCatching { CookieManager.getInstance().flush() }
+    fun scheduleCookieFlush(immediate: Boolean = false) {
+        pendingCookieFlushJob?.cancel()
+        pendingCookieFlushJob = scope.launch(Dispatchers.IO) {
+            if (!immediate) kotlinx.coroutines.delay(400L)
+            runCatching {
+                CookieManager.getInstance().flush()
+                PerformanceTelemetry.recordCookieFlush()
+            }
         }
+    }
+
+    fun flushBlinkCookies() {
+        scheduleCookieFlush(immediate = true)
     }
 
     fun clearBlinkData(incognitoOnly: Boolean) {

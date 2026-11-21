@@ -15,7 +15,7 @@ interface HybridBlinkController {
     fun setTextZoom(percent: Int)
     fun findInPage(query: String, forward: Boolean)
     fun clearFind()
-    fun savePageCode(mode: String, reqId: String): Boolean
+    fun savePageCode(mode: String, reqId: String, continuous: Boolean = false): Boolean
     fun exitFullScreen()
 }
 
@@ -70,24 +70,43 @@ object HybridEngineBridge {
         isSuper: Boolean,
         superIdentity: SuperIdentity?,
         pageUrl: String,
-        isDesktopMode: Boolean = false
+        isDesktopMode: Boolean = false,
+        bridgeToken: String = ""
     ): String {
         val isPureGame = isPure3dGameUrl(pageUrl, settings.hybridCustomDomains)
         val isGameOrBench = isHeavy3dGameUrl(pageUrl, settings.hybridCustomDomains)
         val plan = FableBatteryGovernor.evaluatePlan(settings, isPureGame)
-        val hideLocalIp = settings.hybridHideLocalIp && (settings.hideLocalIp || isIncognito || isSuper)
-        val gpc = if (isIncognito) settings.incognitoGpc else settings.sendGpc
-        val dnt = if (isIncognito) settings.incognitoSendDnt else settings.sendGpc
-        val blockBattery = !settings.featureBatteryApi
+        val decision = FablePrivacyPolicy.evaluate(settings, pageUrl, isIncognito, isSuper)
+        val bp = settings.blinkPrivacyParity
+        val hideLocalIp = bp && settings.hybridHideLocalIp && (decision.hideLocalIp || isIncognito || isSuper)
+        val gpc = bp && decision.sendGpc
+        val dnt = bp && decision.sendDnt
+        val blockBattery = bp && decision.blockBatteryApi
+        val blockNetInfo = bp && decision.blockNetworkInfoApi
         val touchFix = settings.gameTouchFix && settings.hybridCameraAntiShutter && isPureGame
-        val applyIdentity = (isSuper || (isIncognito && settings.incognitoFingerprintProtection) || settings.normalTabShield) && !isGameOrBench
+        val applyIdentity = bp && decision.fingerprintProtectionActive && !isGameOrBench
 
         val cfg = JSONObject().apply {
             put("hideLocalIp", hideLocalIp)
-            put("webRtcDisabled", settings.webRtcDisabled)
+            put("webRtcDisabled", bp && decision.webRtcDisabled)
             put("gpc", gpc)
             put("dnt", dnt)
             put("blockBattery", blockBattery)
+            put("blockNetInfo", blockNetInfo)
+            put("stealthLowDetect", decision.stealthLowDetectability)
+            put("isolateBridge", settings.isolateNativeBridge)
+            put("bridgeToken", bridgeToken)
+            put("fpCanvas", applyIdentity && decision.fpCanvas)
+            put("fpWebGlVendor", applyIdentity && decision.fpWebGlVendor)
+            put("fpWebGlLimits", applyIdentity && decision.fpWebGlLimits)
+            put("fpAudio", applyIdentity && decision.fpAudio)
+            put("fpHardware", applyIdentity && decision.fpHardware)
+            put("fpScreen", applyIdentity && decision.fpScreen)
+            put("fpTimezone", applyIdentity && decision.fpTimezone)
+            put("fpLanguage", applyIdentity && decision.fpLanguage)
+            put("fpMedia", applyIdentity && decision.fpMedia)
+            put("fpSensors", applyIdentity && decision.fpSensors)
+            put("fpTimers", applyIdentity && decision.fpTimers)
             put("touchFix", touchFix)
             put("isGame", isPureGame)
             put("gameMaxFps", plan.targetGameFps)
@@ -134,6 +153,7 @@ object HybridEngineBridge {
             if (window.__fableHybridBootstrapped) return;
             window.__fableHybridBootstrapped = true;
             const CFG = ${cfg.toString()};
+            const __fableTok = CFG.bridgeToken || "";
             if (!CFG.isGame && dynHost) {
                 if (/(?:^|\.)(bloxd\.io|staging\.bloxd\.io|miniblox\.io|krunker\.io|1v1\.lol|voxiom\.io|kirka\.io|kour\.io|poki\.com|crazygames\.com)$/i.test(dynHost)) {
                     CFG.isGame = true;
@@ -155,7 +175,7 @@ object HybridEngineBridge {
                 }
                 return wrappedFn;
             };
-            if (__fableNativeToStringMap && Function.prototype && !Function.prototype.__fableToStringCloaked) {
+            if (!CFG.stealthLowDetect && __fableNativeToStringMap && Function.prototype && !Function.prototype.__fableToStringCloaked) {
                 try {
                     const origFnToString = Function.prototype.toString;
                     const wrappedToString = function() {
@@ -180,7 +200,7 @@ object HybridEngineBridge {
             if (CFG.isGame && !CFG.isIncognito && !CFG.isSuper) try {
                 const vHost = (location.hostname || "").toLowerCase();
                 if (vHost && window.FableHybridBridge && typeof window.FableHybridBridge.readAccountVault === "function") {
-                    const rawVault = window.FableHybridBridge.readAccountVault(vHost);
+                    const rawVault = window.FableHybridBridge.readAccountVault(vHost, __fableTok);
                     if (rawVault && rawVault.length > 2) {
                         const savedMap = JSON.parse(rawVault);
                         const keys = Object.keys(savedMap);
@@ -209,7 +229,7 @@ object HybridEngineBridge {
                                 }
                             }
                             if (count > 0) {
-                                window.FableHybridBridge.writeAccountVault(vHost, JSON.stringify(dump));
+                                window.FableHybridBridge.writeAccountVault(vHost, JSON.stringify(dump), __fableTok);
                             }
                         } catch (_) {}
                     };
@@ -316,14 +336,16 @@ object HybridEngineBridge {
                     }
                 }
             } catch (_) {}
-            window.__fableHybridEngine = {
-                active: true,
-                beta: true,
-                privacyEngine: "GeckoView-144",
-                renderEngine: "Blink-Chromium",
-                hideLocalIp: !!CFG.hideLocalIp,
-                isGame: !!CFG.isGame
-            };
+            if (!CFG.isolateBridge) {
+                window.__fableHybridEngine = {
+                    active: true,
+                    beta: true,
+                    privacyEngine: "GeckoView-144",
+                    renderEngine: "Blink-Chromium",
+                    hideLocalIp: !!CFG.hideLocalIp,
+                    isGame: !!CFG.isGame
+                };
+            }
             try {
                 if (window.FableHybridBridge && window.FableHybridBridge.logDiagnostic) {
                     window.FableHybridBridge.logDiagnostic(
@@ -434,6 +456,12 @@ object HybridEngineBridge {
                 if (CFG.blockBattery && Navigator.prototype.getBattery) {
                     delete Navigator.prototype.getBattery;
                 }
+                if (CFG.blockNetInfo && "connection" in Navigator.prototype) {
+                    Object.defineProperty(Navigator.prototype, "connection", {
+                        get: function() { return undefined; },
+                        configurable: true
+                    });
+                }
             } catch (_) {}
 
             const host = (location.hostname || "").toLowerCase();
@@ -454,19 +482,22 @@ object HybridEngineBridge {
                 const shieldTouch = (typeof id.touchPoints === "number") ? id.touchPoints : 5;
                 const noiseDelta = ((id.seed ? Number(id.seed & 7) : 3) % 5) + 1;
 
-                try {
+                if (CFG.fpHardware) try {
                     Object.defineProperty(Navigator.prototype, "hardwareConcurrency", { get: function() { return shieldCores; }, configurable: true });
                     Object.defineProperty(Navigator.prototype, "deviceMemory", { get: function() { return 8; }, configurable: true });
                     Object.defineProperty(Navigator.prototype, "platform", { get: function() { return shieldPlatform; }, configurable: true });
-                    Object.defineProperty(Navigator.prototype, "language", { get: function() { return shieldLang; }, configurable: true });
-                    Object.defineProperty(Navigator.prototype, "languages", { get: function() { return shieldLangs.slice(); }, configurable: true });
                     Object.defineProperty(Navigator.prototype, "maxTouchPoints", { get: function() { return shieldTouch; }, configurable: true });
                     if ("userAgentData" in Navigator.prototype) {
                         Object.defineProperty(Navigator.prototype, "userAgentData", { get: function() { return undefined; }, configurable: true });
                     }
                 } catch (_) {}
 
-                try {
+                if (CFG.fpLanguage) try {
+                    Object.defineProperty(Navigator.prototype, "language", { get: function() { return shieldLang; }, configurable: true });
+                    Object.defineProperty(Navigator.prototype, "languages", { get: function() { return shieldLangs.slice(); }, configurable: true });
+                } catch (_) {}
+
+                if (CFG.fpScreen) try {
                     Object.defineProperty(Screen.prototype, "width", { get: function() { return shieldW; }, configurable: true });
                     Object.defineProperty(Screen.prototype, "height", { get: function() { return shieldH; }, configurable: true });
                     Object.defineProperty(Screen.prototype, "availWidth", { get: function() { return shieldW; }, configurable: true });
@@ -475,7 +506,7 @@ object HybridEngineBridge {
                     Object.defineProperty(Screen.prototype, "pixelDepth", { get: function() { return shieldDepth; }, configurable: true });
                 } catch (_) {}
 
-                try {
+                if (CFG.fpTimezone) try {
                     if (shieldTz === "UTC") {
                         Date.prototype.getTimezoneOffset = function() { return 0; };
                     }
@@ -489,13 +520,15 @@ object HybridEngineBridge {
                     }
                 } catch (_) {}
 
-                try {
+                if (CFG.fpWebGlVendor || CFG.fpWebGlLimits) try {
                     const patchWebGl = function(Proto) {
                         if (!Proto || !Proto.getParameter) return;
                         const origGetParam = Proto.getParameter;
                         Proto.getParameter = function(p) {
-                            if (p === 37445) return shieldGlVendor;
-                            if (p === 37446) return shieldGlRenderer;
+                            if (CFG.fpWebGlVendor && p === 37445) return shieldGlVendor;
+                            if (CFG.fpWebGlVendor && p === 37446) return shieldGlRenderer;
+                            if (CFG.fpWebGlLimits && p === 3379) return 4096;
+                            if (CFG.fpWebGlLimits && p === 34076) return 4096;
                             return origGetParam.apply(this, arguments);
                         };
                     };
@@ -503,7 +536,7 @@ object HybridEngineBridge {
                     if (window.WebGL2RenderingContext) patchWebGl(WebGL2RenderingContext.prototype);
                 } catch (_) {}
 
-                try {
+                if (CFG.fpCanvas) try {
                     const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
                     CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {
                         const img = origGetImageData.apply(this, arguments);
@@ -529,7 +562,7 @@ object HybridEngineBridge {
                     };
                 } catch (_) {}
 
-                try {
+                if (CFG.fpAudio) try {
                     if (window.AudioBuffer && AudioBuffer.prototype.getChannelData) {
                         const origChannel = AudioBuffer.prototype.getChannelData;
                         AudioBuffer.prototype.getChannelData = function() {
@@ -541,9 +574,24 @@ object HybridEngineBridge {
                             return data;
                         };
                     }
+                } catch (_) {}
+
+                if (CFG.fpMedia) try {
                     if (window.speechSynthesis) {
                         window.speechSynthesis.getVoices = function() { return []; };
                     }
+                } catch (_) {}
+
+                if (CFG.fpTimers) try {
+                    if (window.performance && typeof performance.now === "function") {
+                        const origNow = performance.now.bind(performance);
+                        performance.now = function() { return Math.floor(origNow() * 10) / 10; };
+                    }
+                } catch (_) {}
+
+                if (CFG.fpSensors) try {
+                    if ("DeviceOrientationEvent" in window) window.ondeviceorientation = null;
+                    if ("DeviceMotionEvent" in window) window.ondevicemotion = null;
                 } catch (_) {}
             }
 
@@ -1118,7 +1166,7 @@ object HybridEngineBridge {
                 const readNativeClip = function() {
                     try {
                         if (window.FableHybridBridge && typeof window.FableHybridBridge.getClipboardText === "function") {
-                            return String(window.FableHybridBridge.getClipboardText() || "");
+                            return String(window.FableHybridBridge.getClipboardText(__fableTok) || "");
                         }
                     } catch (_) {}
                     return "";
@@ -1126,7 +1174,7 @@ object HybridEngineBridge {
                 const writeNativeClip = function(txt) {
                     try {
                         if (window.FableHybridBridge && typeof window.FableHybridBridge.setClipboardText === "function") {
-                            window.FableHybridBridge.setClipboardText(String(txt || ""));
+                            window.FableHybridBridge.setClipboardText(String(txt || ""), __fableTok);
                             return true;
                         }
                     } catch (_) {}
@@ -1931,7 +1979,9 @@ object HybridEngineBridge {
         reqId: String,
         mode: String,
         incognito: Boolean,
-        settings: Settings
+        settings: Settings,
+        continuous: Boolean = false,
+        extraObservedUrls: Collection<String> = emptyList()
     ): String {
         val maxFiles = settings.archiveMaxFiles.coerceIn(500, 10000)
         val maxTotalMb = settings.archiveMaxTotalMb.coerceIn(100, 2000)
@@ -1941,6 +1991,9 @@ object HybridEngineBridge {
         val includeStorage = settings.archiveIncludeStorage
         val includeMemory = settings.archiveIncludeMemory || mode == "memory"
         val guessAssets = settings.archiveGuessAssets
+        val includeCookies = settings.archiveIncludeCookies
+        val readOnly = settings.archiveReadOnly
+        val extraJson = JSONArray().apply { extraObservedUrls.take(2500).forEach { put(it) } }.toString()
         return """
         (async function() {
             const bridge = window.FableHybridBridge;
@@ -1948,6 +2001,10 @@ object HybridEngineBridge {
             const ID = ${JSONObject.quote(reqId)};
             const MODE = ${JSONObject.quote(mode)};
             const INCOG = $incognito;
+            const CONTINUOUS = $continuous;
+            const READ_ONLY = $readOnly;
+            const INC_COOKIES = $includeCookies;
+            const EXTRA_URLS = $extraJson;
             const MAX_FILES = $maxFiles;
             const MAX_TOTAL_MB = $maxTotalMb;
             const MAX_FILE_MB = $maxFileMb;
@@ -2000,9 +2057,12 @@ object HybridEngineBridge {
                     page: location.href,
                     incognito: INCOG,
                     mode: MODE,
+                    continuous: CONTINUOUS,
+                    readOnly: READ_ONLY,
+                    includeCookies: INC_COOKIES,
                     engine: "Blink-Chromium + GeckoView-144",
                     splitPartMb: SPLIT_PART_MB,
-                    observedResources: resEntries.length
+                    observedResources: resEntries.length + EXTRA_URLS.length
                 });
 
                 const renderedHtml = "<!DOCTYPE html>\n" + (document.documentElement ? document.documentElement.outerHTML : "");
@@ -2294,6 +2354,29 @@ object HybridEngineBridge {
                     });
                 });
                 resEntries.forEach(function(r) { addUrl(r.name); });
+                if (Array.isArray(EXTRA_URLS)) EXTRA_URLS.forEach(function(u) { addUrl(u); });
+                try {
+                    if (document.fonts && typeof document.fonts.forEach === "function") {
+                        const flist = [];
+                        document.fonts.forEach(function(f) {
+                            flist.push({ family: f.family, status: f.status, style: f.style, weight: f.weight, display: f.display || "" });
+                        });
+                        if (flist.length > 0) sendText("memory/fonts.json", JSON.stringify(flist, null, 2));
+                    }
+                } catch (_) {}
+                try {
+                    if (navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === "function") {
+                        const regs = await navigator.serviceWorker.getRegistrations();
+                        if (regs && regs.length > 0) {
+                            const swDump = regs.map(function(r) {
+                                const sc = (r.active && r.active.scriptURL) || (r.waiting && r.waiting.scriptURL) || (r.installing && r.installing.scriptURL) || "";
+                                if (sc) addUrl(sc);
+                                return { scope: r.scope, scriptURL: sc, updateViaCache: r.updateViaCache || "" };
+                            });
+                            sendText("memory/service-workers.json", JSON.stringify(swDump, null, 2));
+                        }
+                    }
+                } catch (_) {}
 
                 // Scan CSSOM rules for url(...) fonts, icons, skyboxes, backgrounds
                 try {
@@ -2322,9 +2405,23 @@ object HybridEngineBridge {
                         for (let c = 0; c < Math.min(cacheNames.length, 10); c++) {
                             const cObj = await caches.open(cacheNames[c]);
                             const reqs = await cObj.keys();
+                            let cachedBodyTotal = 0;
                             for (let r = 0; r < Math.min(reqs.length, 400); r++) {
                                 addUrl(reqs[r].url);
                                 cacheIndex.push({ cache: cacheNames[c], url: reqs[r].url });
+                                if (cachedBodyTotal < 24 * 1024 * 1024) {
+                                    try {
+                                        const cResp = await cObj.match(reqs[r]);
+                                        if (cResp && cResp.ok) {
+                                            const ab = await cResp.arrayBuffer();
+                                            if (ab && ab.byteLength > 0 && ab.byteLength <= 4 * 1024 * 1024) {
+                                                cachedBodyTotal += ab.byteLength;
+                                                const cSafe = String(cacheNames[c]).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 40);
+                                                sendFileB64("memory/cache-storage/" + cSafe + "/item_" + r + ".bin", bytesToB64(new Uint8Array(ab)));
+                                            }
+                                        }
+                                    } catch (_) {}
+                                }
                             }
                         }
                         if (cacheIndex.length > 0) {
@@ -2373,7 +2470,7 @@ object HybridEngineBridge {
                     });
                 }
 
-                send({ op: "end" });
+                send({ op: CONTINUOUS ? "phase_snapshot_ready" : "end" });
             } catch (err) {
                 send({ op: "error", message: String(err) });
             }

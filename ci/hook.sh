@@ -162,6 +162,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             print(f"REQ_PRIVACY path={self.path} gpc={hdrs.get('sec-gpc','')} dnt={hdrs.get('dnt','')} xff={hdrs.get('x-forwarded-for','')}", flush=True)
             self._send(200, "text/html; charset=utf-8", PRIVACY_HTML.encode())
         elif p == "/cookie-set":
+            print("REQ_COOKIE_SET", flush=True)
             body = b"<html><body>Cookie set</body></html>"
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -383,8 +384,8 @@ step "controllable live snapshot Pause/Resume/Stop ($SNAP_ZIP_REPORT)"
 
 log "Phase 6: Cookie Persistence across Force-Stop"
 timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/cookie-set" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
-sleep 6
-adb shell input keyevent KEYCODE_HOME; sleep 3
+sleep 10
+adb shell input keyevent KEYCODE_HOME; sleep 4
 adb shell am force-stop "$PKG"; sleep 2
 timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/cookie-check" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
 sleep 8; step "cookie persistence after force-stop"
@@ -420,8 +421,9 @@ FAIL_REASONS=""
 echo "$CODE_ZIP_REPORT" | grep -q "^OK " || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} page-code-zip"; }
 echo "$SNAP_ZIP_REPORT" | grep -q "^OK " || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} snapshot-zip"; }
 grep -q "REQ_COOKIE_CHECK ok=True" "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} cookie-persist"; }
-grep -q "REQ_PRIVACY path=/privacy.html?keep=2 gpc=1" "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-on"; }
-grep -q "REQ_PRIVACY path=/privacy.html?utm_source=ci_off&keep=3 gpc= " "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-off"; }
+grep -q "REQ_PRIVACY path=/privacy.html?keep=2 gpc=1" "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-on-hdr"; }
+grep -q 'FABLE-PRIVACY-PROBE.*"gpc":true.*"hasHybridMarker":false.*"hasBattery":false' "$ART/logcat.txt" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-on-js"; }
+grep -q 'FABLE-PRIVACY-PROBE.*"gpc":false.*"hasHybridMarker":true.*"hasBattery":true' "$ART/logcat.txt" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-off-js"; }
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"

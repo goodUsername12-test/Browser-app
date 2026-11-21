@@ -302,6 +302,9 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        if (BuildConfig.DEBUG && intent != null) {
+            android.util.Log.i("FABLE-INTENT", "action=${intent.action} data=${intent.dataString} hybrid=${intent.getBooleanExtra("fable_hybrid", false)}")
+        }
         when (intent?.action) {
             Intent.ACTION_VIEW -> intent.dataString?.let { url ->
                 val data = intent.data

@@ -167,4 +167,4 @@ jobs:
             done
           } > "$OUT"
           head -c 60000 "$OUT" > "$OUT.cut"
-          gh issue comment 2 --repo "$GITHUB_REPOSITORY" --body-file "$OUT.cut"
+          gh issue comment 4 --repo "$GITHUB_REPOSITORY" --body-file "$OUT.cut"

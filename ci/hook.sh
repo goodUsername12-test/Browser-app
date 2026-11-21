@@ -306,6 +306,7 @@ adb shell settings put global transition_animation_scale 0 || true
 adb shell settings put global animator_duration_scale 0 || true
 adb shell input keyevent 82 || true
 adb reverse tcp:18080 tcp:18080 || true
+sleep 6
 
 if ! timeout 240 adb install -r -g "$APK_X86_DBG" > "$ART/install.log" 2>&1; then
   { echo "HOOK-RESULT $VERSION FAILED: adb install"; cat "$ART/install.log"; } > "$REPORT"
@@ -580,6 +581,7 @@ VERDICT="PASS"
   echo "### Freeze / Crash Check"
   echo '```'
   echo "AppCrashEvents: $APP_CRASHES | FreezeReport: ${FREEZE:-none}"
+  [ -s "$ART/events.txt" ] && head -n 20 "$ART/events.txt"
   [ -n "$FATAL_JAVA" ] && printf '%s\n' "$FATAL_JAVA" | head -n 60
   [ -n "$FATAL_NATIVE" ] && printf '%s\n' "$FATAL_NATIVE" | head -n 40
   echo '```'

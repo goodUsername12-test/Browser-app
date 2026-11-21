@@ -86,7 +86,7 @@ class ProxyConfig @Inject constructor(
                 p.postMessage(JSONObject().apply {
                     put("type", "time-scale-update")
                     put("enabled", s.timeScaleEnabled)
-                    put("rate", s.timeScaleRate.toDouble())
+                    put("rate", s.timeScaleMultiplierTenths.coerceIn(1, 1000) / 10.0)
                     put("css", s.timeScaleCssAnimations)
                     put("media", s.timeScaleMedia)
                     put("workers", s.timeScaleWorkers)
@@ -281,7 +281,7 @@ class ProxyConfig @Inject constructor(
             put("stealthLowDetectability", s?.stealthLowDetectability ?: true)
             put("etpEnabled", s?.etpEnabled ?: true)
             put("timeScaleEnabled", s?.timeScaleEnabled ?: false)
-            put("timeScaleRate", (s?.timeScaleRate ?: 1.0f).toDouble())
+            put("timeScaleRate", (s?.timeScaleMultiplierTenths ?: 10).coerceIn(1, 1000) / 10.0)
             put("timeScaleCss", s?.timeScaleCssAnimations ?: true)
             put("timeScaleMedia", s?.timeScaleMedia ?: true)
             put("timeScaleWorkers", s?.timeScaleWorkers ?: true)

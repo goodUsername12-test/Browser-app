@@ -303,14 +303,14 @@ sleep 2
 adb shell dumpsys gfxinfo "$PKG" > "$ART/gfxinfo.txt" 2>/dev/null || true
 
 log "Phase 3: Privacy ON vs OFF Verification"
-timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/privacy.html?utm_source=ci_on&fbclid=abc123&keep=1" -n "$ACT" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/privacy.html?utm_source=ci_on&fbclid=abc123&keep=1' -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 12; step "privacy ON probe (GeckoView)"
-timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/privacy.html?utm_source=ci_blink_on&fbclid=xyz&keep=2" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/privacy.html?utm_source=ci_blink_on&fbclid=xyz&keep=2' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 12; step "privacy ON probe (Blink Combined)"; shot 4-privacy-on
 
 adb shell am start -n "$ACT" --ez fable_test_adblock false >/dev/null 2>&1 || true
 sleep 3
-timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/privacy.html?utm_source=ci_off&keep=3" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/privacy.html?utm_source=ci_off&keep=3' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 12; step "privacy OFF probe (verifying optional toggles)"
 adb shell am start -n "$ACT" --ez fable_test_adblock true >/dev/null 2>&1 || true
 sleep 2

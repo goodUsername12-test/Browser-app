@@ -313,6 +313,7 @@ class MainActivity : FragmentActivity() {
                     tabManager.openTab(url, incognito = true)
                 } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_hybrid", false)) {
                     val tab = tabManager.openTab(incognito = false)
+                    tab.manualHybridOverride = true
                     tabManager.setHybridBlinkMode(tab, true)
                     tabManager.load(tab, url)
                 } else {

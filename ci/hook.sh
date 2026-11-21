@@ -445,6 +445,8 @@ sleep 7; step "speed 0.1x slow (Blink)"; shot 8b-speed-01x
 
 adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 100 >/dev/null 2>&1 || true
 sleep 3
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=fast10_gecko&ms=2000' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 5; step "speed 10x fast (GeckoView)"
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=fast10_blink&ms=2000' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 5; step "speed 10x fast (Blink)"
 
@@ -524,13 +526,14 @@ def check(tag, expect_installed, min_dt, max_dt, rate_sub=None):
 check("off_blink", False, 0.15, 3.0)
 check("slow_gecko", True, 1.3, 6.5, "rate=0.1")
 check("slow_blink", True, 1.3, 6.5, "rate=0.1")
+check("fast10_gecko", True, 0.05, 2.5, "rate=10")
 check("fast10_blink", True, 0.05, 2.5, "rate=10")
 check("turbo100_blink", True, 0.01, 2.0, "rate=100")
 check("off_after_gecko", False, 0.05, 3.0)
 if errs:
     print("FAIL " + " ".join(errs))
 else:
-    parts = [f"{k}={dones[k][0]-starts[k]:.2f}s" for k in ["off_blink","slow_gecko","slow_blink","fast10_blink","turbo100_blink","off_after_gecko"]]
+    parts = [f"{k}={dones[k][0]-starts[k]:.2f}s" for k in ["off_blink","slow_gecko","slow_blink","fast10_gecko","fast10_blink","turbo100_blink","off_after_gecko"]]
     print("OK " + " ".join(parts))
 PYSPEED
 )"

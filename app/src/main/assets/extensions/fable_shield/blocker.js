@@ -50,12 +50,20 @@ let config = {
   proxyStripLeakHeaders: true,
   stealthLowDetectability: true,
   etpEnabled: true,
+  timeScaleEnabled: false,
+  timeScaleRate: 1.0,
+  timeScaleCss: true,
+  timeScaleMedia: true,
+  timeScaleWorkers: true,
 };
 
 let superByUa = new Map();
 let registered = null;
 let registerSeq = 0;
 let lastContentConfig = "";
+let timeScaleRegistered = null;
+let timeScaleSeq = 0;
+let lastTimeScaleConfig = "";
 
 function postNative(message) {
   try {
@@ -118,6 +126,91 @@ async function applyContentScripts(force) {
     }
   }
   postNative({ type: "applied", superIds: superIds(), ok });
+}
+
+function timeScaleConfig() {
+  return {
+    enabled: config.timeScaleEnabled === true,
+    rate: Math.max(0.1, Math.min(100.0, Number(config.timeScaleRate) || 1.0)),
+    css: config.timeScaleCss !== false,
+    media: config.timeScaleMedia !== false,
+    workers: config.timeScaleWorkers !== false,
+  };
+}
+
+async function applyTimeScaleScript(force) {
+  const cfgObj = timeScaleConfig();
+  if (!cfgObj.enabled) {
+    lastTimeScaleConfig = "";
+    ++timeScaleSeq;
+    const old = timeScaleRegistered;
+    timeScaleRegistered = null;
+    if (old) {
+      try { await old.unregister(); } catch (_) {}
+    }
+    return;
+  }
+  const cfgStr = JSON.stringify(cfgObj);
+  if (!force && cfgStr === lastTimeScaleConfig && timeScaleRegistered) return;
+  lastTimeScaleConfig = cfgStr;
+  const seq = ++timeScaleSeq;
+  let next = null;
+  try {
+    if (browser.contentScripts && browser.contentScripts.register) {
+      next = await browser.contentScripts.register({
+        matches: ["<all_urls>"],
+        js: [{ code: "var FABLE_TIME_CFG = " + cfgStr + ";" }, { file: "time_scale.js" }],
+        runAt: "document_start",
+        allFrames: true,
+        matchAboutBlank: true,
+      });
+    }
+  } catch (e) {
+    postNative({ type: "diag", text: "time_scale register failed: " + e });
+  }
+  if (seq !== timeScaleSeq) {
+    if (next) next.unregister().catch(() => {});
+    return;
+  }
+  const old = timeScaleRegistered;
+  timeScaleRegistered = next;
+  if (old) {
+    try { await old.unregister(); } catch (_) {}
+  }
+}
+
+async function broadcastTimeScaleLive(msg) {
+  const enabled = msg.enabled === true;
+  const cfgObj = {
+    enabled,
+    rate: Math.max(0.1, Math.min(100.0, Number(msg.rate) || 1.0)),
+    css: msg.css !== false,
+    media: msg.media !== false,
+    workers: msg.workers !== false,
+  };
+  config.timeScaleEnabled = enabled;
+  config.timeScaleRate = cfgObj.rate;
+  config.timeScaleCss = cfgObj.css;
+  config.timeScaleMedia = cfgObj.media;
+  config.timeScaleWorkers = cfgObj.workers;
+  await applyTimeScaleScript(false);
+  try {
+    const tabs = await browser.tabs.query({});
+    for (const tab of tabs) {
+      if (!tab || tab.id === undefined) continue;
+      let delivered = false;
+      try {
+        await browser.tabs.sendMessage(tab.id, Object.assign({ type: "fable-time-scale-update" }, cfgObj));
+        delivered = true;
+      } catch (_) {}
+      if (!delivered && enabled && browser.tabs.executeScript) {
+        try {
+          await browser.tabs.executeScript(tab.id, { code: "var FABLE_TIME_CFG = " + JSON.stringify(cfgObj) + ";", allFrames: true });
+          await browser.tabs.executeScript(tab.id, { file: "time_scale.js", allFrames: true });
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
 }
 
 function rebuildSupers() {
@@ -508,6 +601,9 @@ function onNativeMessage(msg) {
     rebuildSupers();
     registerListeners();
     applyContentScripts(false);
+    applyTimeScaleScript(false);
+  } else if (msg.type === "time-scale-update") {
+    broadcastTimeScaleLive(msg);
   } else if (msg.type === "sync-cookies-to-gecko") {
     syncCookiesToGecko(msg.url, msg.cookieHeader);
   } else if (msg.type === "pull-gecko-cookies") {
@@ -1335,6 +1431,7 @@ function registerListeners() {
 
 registerListeners();
 applyContentScripts(true);
+applyTimeScaleScript(true);
 
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === "fable-icon") {

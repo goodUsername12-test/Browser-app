@@ -135,6 +135,44 @@ PRIVACY_HTML = """<!DOCTYPE html>
 <script src="/dynamic/extra.json"></script>
 </body></html>"""
 
+SPEED_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Fable Speed Test</title>
+<style>
+@keyframes cubeMove { from { transform: translateX(0px); } to { transform: translateX(300px); } }
+#cube { width: 48px; height: 48px; background: #38bdf8; animation: cubeMove 1s linear infinite; }
+</style></head>
+<body>
+<div id="cube"></div>
+<pre id="out">running</pre>
+<script>
+(function() {
+  const qs = new URLSearchParams(location.search);
+  const tag = qs.get("tag") || "run";
+  const timerMs = Number(qs.get("ms") || "250");
+  const installed = !!(window.__fableTimeScale && window.__fableTimeScale.__installed);
+  const rate = installed ? window.__fableTimeScale.getRate() : 1.0;
+  let animRate = 1.0;
+  try {
+    const anims = document.getAnimations ? document.getAnimations() : [];
+    if (anims.length > 0) animRate = anims[0].playbackRate;
+  } catch (_) {}
+  const tStartPerf = performance.now();
+  const tStartDate = Date.now();
+  setTimeout(function() {
+    const vPerfDelta = Math.round(performance.now() - tStartPerf);
+    const vDateDelta = Math.round(Date.now() - tStartDate);
+    try {
+      const anims2 = document.getAnimations ? document.getAnimations() : [];
+      if (anims2.length > 0) animRate = anims2[0].playbackRate;
+    } catch (_) {}
+    const res = { tag, installed, rate, animRate, timerMs, vPerfDelta, vDateDelta };
+    document.getElementById("out").textContent = JSON.stringify(res);
+    console.log("FABLE-SPEED-PROBE " + JSON.stringify(res));
+    fetch("/speed-done?tag=" + encodeURIComponent(tag) + "&installed=" + installed + "&rate=" + rate + "&anim=" + animRate + "&ms=" + timerMs).catch(() => {});
+  }, timerMs);
+})();
+</script></body></html>"""
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -170,6 +208,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif p == "/speed.html":
+            qs = urllib.parse.parse_qs(parsed.query)
+            tag = qs.get("tag", ["run"])[0]
+            import time
+            print(f"SPEED_START tag={tag} ts={time.monotonic():.3f}", flush=True)
+            self._send(200, "text/html; charset=utf-8", SPEED_HTML.encode())
+        elif p == "/speed-done":
+            qs = urllib.parse.parse_qs(parsed.query)
+            tag = qs.get("tag", ["run"])[0]
+            import time
+            print(f"SPEED_DONE tag={tag} ts={time.monotonic():.3f} q={parsed.query}", flush=True)
+            self._send(200, "application/json", b'{"ok":true}')
         elif p == "/cookie-check":
             ck = self.headers.get("Cookie", "")
             ok = "fable_persist=ok_v56" in ck
@@ -181,7 +231,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "public, max-age=60")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -382,7 +432,35 @@ PYSNAP
 fi
 step "controllable live snapshot Pause/Resume/Stop ($SNAP_ZIP_REPORT)"
 
-log "Phase 6: Cookie Persistence across Force-Stop"
+log "Phase 6: Website Speed Control (OFF zero-load -> 0.1x slow -> 10x fast -> 100x turbo -> OFF unloaded)"
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=off_blink&ms=300' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 5; step "speed OFF zero-load (Blink)"
+
+adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 1 >/dev/null 2>&1 || true
+sleep 3
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=slow_gecko&ms=200' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 7; step "speed 0.1x slow (GeckoView)"
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=slow_blink&ms=200' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 7; step "speed 0.1x slow (Blink)"; shot 8b-speed-01x
+
+adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 100 >/dev/null 2>&1 || true
+sleep 3
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=fast10_blink&ms=2000' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 5; step "speed 10x fast (Blink)"
+
+adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 1000 >/dev/null 2>&1 || true
+sleep 3
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=turbo100_blink&ms=5000' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 5; step "speed 100x turbo 5s timer (Blink)"
+
+adb shell am start -n "$ACT" --ez fable_test_timescale false --ei fable_test_timescale_tenths 10 >/dev/null 2>&1 || true
+sleep 3
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=off_after_gecko&ms=200' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 5; step "speed back OFF unloaded (GeckoView)"
+
+log "Phase 7: Cookie Persistence across Force-Stop"
+timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/cookie-set" -n "$ACT" >> "$ART/nav.txt" 2>&1
+sleep 8
 timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/cookie-set" --ez fable_hybrid true -n "$ACT" >> "$ART/nav.txt" 2>&1
 sleep 10
 adb shell input keyevent KEYCODE_HOME; sleep 4
@@ -408,7 +486,7 @@ FATAL_JAVA="$(awk '/FATAL EXCEPTION/{flag=1; buf=$0"\n"; next} flag{buf=buf $0"\
 FATAL_NATIVE="$(grep -E "Fatal signal.*fable|Abort message.*fable" "$ART/logcat.txt" || true)"
 PERF_LINES="$(grep -E "FABLE-PERF" "$ART/logcat.txt" | tail -n 25)"
 CAPTURE_LINES="$(grep -E "FABLE-CAPTURE" "$ART/logcat.txt" | tail -n 20)"
-PRIVACY_LINES="$(grep -E "FABLE-PRIVACY-PROBE|FABLE-PRIVACY-TEST|FABLE-PAGE-READY" "$ART/logcat.txt" | tail -n 20)"
+PRIVACY_LINES="$(grep -E "FABLE-PRIVACY-PROBE|FABLE-PRIVACY-TEST|FABLE-PAGE-READY|FABLE-SPEED-PROBE|FABLE-SPEED-TEST|FABLE-INTENT" "$ART/logcat.txt" | tail -n 55)"
 GFX_SUMMARY="$(grep -E "Total frames rendered|Janky frames|50th percentile|90th percentile|95th percentile|99th percentile" "$ART/gfxinfo.txt" | head -n 12)"
 
 OVERALL_FAIL=0
@@ -424,6 +502,39 @@ grep -q "REQ_COOKIE_CHECK ok=True" "$ART/server.log" || { OVERALL_FAIL=1; FAIL_R
 grep -q "REQ_PRIVACY path=/privacy.html?keep=2 gpc=1" "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-on-hdr"; }
 grep -q 'FABLE-PRIVACY-PROBE.*"gpc":true.*"hasHybridMarker":false.*"hasBattery":false' "$ART/logcat.txt" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-on-js"; }
 grep -q 'FABLE-PRIVACY-PROBE.*"gpc":false.*"hasHybridMarker":true.*"hasBattery":true' "$ART/logcat.txt" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} blink-privacy-off-js"; }
+SPEED_CHECK="$(python3 - "$ART/server.log" <<'PYSPEED'
+import re, sys
+txt = open(sys.argv[1]).read()
+starts = {m.group(1): float(m.group(2)) for m in re.finditer(r'SPEED_START tag=(\S+) ts=([0-9.]+)', txt)}
+dones = {m.group(1): (float(m.group(2)), m.group(3)) for m in re.finditer(r'SPEED_DONE tag=(\S+) ts=([0-9.]+) q=(\S+)', txt)}
+errs = []
+def check(tag, expect_installed, min_dt, max_dt, rate_sub=None):
+    if tag not in dones or tag not in starts:
+        errs.append(f"missing:{tag}")
+        return
+    dt = dones[tag][0] - starts[tag]
+    q = dones[tag][1]
+    want = f"installed={'true' if expect_installed else 'false'}"
+    if want not in q:
+        errs.append(f"{tag}:{want}_not_in_{q}")
+    if rate_sub and rate_sub not in q:
+        errs.append(f"{tag}:{rate_sub}_not_in_{q}")
+    if not (min_dt <= dt <= max_dt):
+        errs.append(f"{tag}:dt={dt:.2f}s_out_of_[{min_dt},{max_dt}]")
+check("off_blink", False, 0.15, 3.0)
+check("slow_gecko", True, 1.3, 6.5, "rate=0.1")
+check("slow_blink", True, 1.3, 6.5, "rate=0.1")
+check("fast10_blink", True, 0.05, 2.5, "rate=10")
+check("turbo100_blink", True, 0.01, 2.0, "rate=100")
+check("off_after_gecko", False, 0.05, 3.0)
+if errs:
+    print("FAIL " + " ".join(errs))
+else:
+    parts = [f"{k}={dones[k][0]-starts[k]:.2f}s" for k in ["off_blink","slow_gecko","slow_blink","fast10_blink","turbo100_blink","off_after_gecko"]]
+    print("OK " + " ".join(parts))
+PYSPEED
+)"
+echo "$SPEED_CHECK" | grep -q "^OK " || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} speed-control(${SPEED_CHECK})"; }
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
@@ -446,6 +557,10 @@ VERDICT="PASS"
   echo "${PERF_LINES:-(none)}"
   echo "--- gfxinfo ---"
   echo "${GFX_SUMMARY:-(none)}"
+  echo '```'
+  echo "### Website Speed Control Verification"
+  echo '```'
+  echo "Speed Check: $SPEED_CHECK"
   echo '```'
   echo "### Privacy ON/OFF & Server Verification"
   echo '```'

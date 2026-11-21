@@ -214,7 +214,15 @@ data class Settings(
     val perfHudEnabled: Boolean = false,
     val archiveIncludeCookies: Boolean = false,
     val archiveContinuousCapture: Boolean = true,
+    val timeScaleEnabled: Boolean = false,
+    val timeScaleMultiplierTenths: Int = 10,
+    val timeScaleCssAnimations: Boolean = true,
+    val timeScaleMedia: Boolean = true,
+    val timeScaleWorkers: Boolean = true,
+    val timeScaleShowHud: Boolean = true,
 ) {
+    val timeScaleRate: Float
+        get() = com.fable.browser.engine.WebsiteSpeedEngine.rateFromTenths(timeScaleMultiplierTenths)
     fun toRecorderConfig(): RecorderConfig = RecorderConfig(
         resolution = recResolution,
         bitrate = recBitrate,
@@ -420,6 +428,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val PERF_HUD_ENABLED = booleanPreferencesKey("perf_hud_enabled")
         val ARCHIVE_INCLUDE_COOKIES = booleanPreferencesKey("archive_include_cookies")
         val ARCHIVE_CONTINUOUS_CAPTURE = booleanPreferencesKey("archive_continuous_capture")
+        val TIME_SCALE_ENABLED = booleanPreferencesKey("time_scale_enabled")
+        val TIME_SCALE_TENTHS = intPreferencesKey("time_scale_tenths")
+        val TIME_SCALE_CSS = booleanPreferencesKey("time_scale_css")
+        val TIME_SCALE_MEDIA = booleanPreferencesKey("time_scale_media")
+        val TIME_SCALE_WORKERS = booleanPreferencesKey("time_scale_workers")
+        val TIME_SCALE_HUD = booleanPreferencesKey("time_scale_hud")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -600,6 +614,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             perfHudEnabled = p[Keys.PERF_HUD_ENABLED] ?: false,
             archiveIncludeCookies = p[Keys.ARCHIVE_INCLUDE_COOKIES] ?: false,
             archiveContinuousCapture = p[Keys.ARCHIVE_CONTINUOUS_CAPTURE] ?: true,
+            timeScaleEnabled = p[Keys.TIME_SCALE_ENABLED] ?: false,
+            timeScaleMultiplierTenths = (p[Keys.TIME_SCALE_TENTHS] ?: 10).coerceIn(1, 1000),
+            timeScaleCssAnimations = p[Keys.TIME_SCALE_CSS] ?: true,
+            timeScaleMedia = p[Keys.TIME_SCALE_MEDIA] ?: true,
+            timeScaleWorkers = p[Keys.TIME_SCALE_WORKERS] ?: true,
+            timeScaleShowHud = p[Keys.TIME_SCALE_HUD] ?: true,
         )
     }.distinctUntilChanged()
 
@@ -859,6 +879,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setPerfHudEnabled(v: Boolean) = set(Keys.PERF_HUD_ENABLED, v)
     suspend fun setArchiveIncludeCookies(v: Boolean) = set(Keys.ARCHIVE_INCLUDE_COOKIES, v)
     suspend fun setArchiveContinuousCapture(v: Boolean) = set(Keys.ARCHIVE_CONTINUOUS_CAPTURE, v)
+    suspend fun setTimeScaleEnabled(v: Boolean) = set(Keys.TIME_SCALE_ENABLED, v)
+    suspend fun setTimeScaleMultiplierTenths(v: Int) = set(Keys.TIME_SCALE_TENTHS, v.coerceIn(1, 1000))
+    suspend fun setTimeScaleCssAnimations(v: Boolean) = set(Keys.TIME_SCALE_CSS, v)
+    suspend fun setTimeScaleMedia(v: Boolean) = set(Keys.TIME_SCALE_MEDIA, v)
+    suspend fun setTimeScaleWorkers(v: Boolean) = set(Keys.TIME_SCALE_WORKERS, v)
+    suspend fun setTimeScaleShowHud(v: Boolean) = set(Keys.TIME_SCALE_HUD, v)
     suspend fun applyEcoGamingPreset() {
         context.dataStore.edit {
             it[Keys.BAT_SAVER_MASTER] = true

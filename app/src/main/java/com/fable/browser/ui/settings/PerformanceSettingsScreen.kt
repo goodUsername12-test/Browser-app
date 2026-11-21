@@ -208,6 +208,62 @@ fun PerformanceSettingsScreen(
         )
         ListDivider()
 
+        SectionHeader("Website Speed Control (0.1x to 100x)")
+        SwitchRow(
+            title = "Enable website speed multiplier",
+            subtitle = "Slow down (0.1x) or speed up (up to 100x) timers, animations, media, and scripts without modifying page source. Completely unloaded when OFF.",
+            checked = settings.timeScaleEnabled,
+            onCheckedChange = viewModel::setTimeScaleEnabled
+        )
+        if (settings.timeScaleEnabled) {
+            val curLabel = com.fable.browser.engine.WebsiteSpeedEngine.formatRate(settings.timeScaleRate)
+            SettingRow(
+                title = "Current speed: $curLabel",
+                subtitle = "0.1x = 10x slower, 1x = normal, 10x = 10x faster, 100x = maximum best-effort"
+            )
+            SliderRow(
+                title = "Fine multiplier (0.1x to 10.0x in 0.1x steps)",
+                value = settings.timeScaleMultiplierTenths.coerceIn(1, 100),
+                range = 1f..100f,
+                steps = 98,
+                suffix = " /10x",
+                onValueChange = viewModel::setTimeScaleMultiplierTenths
+            )
+            SliderRow(
+                title = "Turbo multiplier (1x to 100x)",
+                value = (settings.timeScaleMultiplierTenths / 10).coerceIn(1, 100),
+                range = 1f..100f,
+                steps = 98,
+                suffix = "x",
+                onValueChange = { x -> viewModel.setTimeScaleMultiplierTenths((x * 10).coerceIn(10, 1000)) }
+            )
+            SwitchRow(
+                title = "Scale CSS & Web Animations",
+                subtitle = "Slows or speeds up moving CSS elements, keyframes, and transitions together with click hit-boxes",
+                checked = settings.timeScaleCssAnimations,
+                onCheckedChange = viewModel::setTimeScaleCssAnimations
+            )
+            SwitchRow(
+                title = "Scale video & audio playback",
+                subtitle = "Adjusts HTML5 media playbackRate within safe browser limits",
+                checked = settings.timeScaleMedia,
+                onCheckedChange = viewModel::setTimeScaleMedia
+            )
+            SwitchRow(
+                title = "Scale Web Workers (best-effort)",
+                subtitle = "Propagates virtual clock to same-origin classic Web Workers",
+                checked = settings.timeScaleWorkers,
+                onCheckedChange = viewModel::setTimeScaleWorkers
+            )
+            SwitchRow(
+                title = "Show floating Speed HUD while ON",
+                subtitle = "Quick 0.1x / 0.5x / 1x / 2x / 10x / 100x and instant OFF pill on screen (hidden when OFF)",
+                checked = settings.timeScaleShowHud,
+                onCheckedChange = viewModel::setTimeScaleShowHud
+            )
+        }
+        ListDivider()
+
         SectionHeader("Live Performance Diagnostics")
         SwitchRow(
             title = "Live Performance HUD overlay",

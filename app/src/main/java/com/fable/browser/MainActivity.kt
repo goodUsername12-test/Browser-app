@@ -354,6 +354,15 @@ class MainActivity : FragmentActivity() {
                         com.fable.browser.engine.PerformanceTelemetry.hudEnabled = on
                         lifecycleScope.launch { settingsStore.setPerfHudEnabled(on) }
                     }
+                    intent.hasExtra("fable_test_timescale") -> {
+                        val on = intent.getBooleanExtra("fable_test_timescale", false)
+                        val tenths = intent.getIntExtra("fable_test_timescale_tenths", 10).coerceIn(1, 1000)
+                        lifecycleScope.launch {
+                            settingsStore.setTimeScaleMultiplierTenths(tenths)
+                            settingsStore.setTimeScaleEnabled(on)
+                            android.util.Log.i("FABLE-SPEED-TEST", "set enabled=$on tenths=$tenths")
+                        }
+                    }
                 }
             }
         }

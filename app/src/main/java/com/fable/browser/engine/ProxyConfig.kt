@@ -79,6 +79,22 @@ class ProxyConfig @Inject constructor(
         port?.postMessage(JSONObject().apply { put("type", "reader-toggle") })
     }
 
+    fun broadcastTimeScaleUpdate(s: Settings) {
+        val p = port ?: return
+        scope.launch {
+            runCatching {
+                p.postMessage(JSONObject().apply {
+                    put("type", "time-scale-update")
+                    put("enabled", s.timeScaleEnabled)
+                    put("rate", s.timeScaleRate.toDouble())
+                    put("css", s.timeScaleCssAnimations)
+                    put("media", s.timeScaleMedia)
+                    put("workers", s.timeScaleWorkers)
+                })
+            }
+        }
+    }
+
     fun shouldBlockHybrid(url: String, docHost: String?, adBlockActive: Boolean): Boolean {
         if (!adBlockActive) return false
         return contentBlocker.shouldBlock(url, docHost)
@@ -264,6 +280,11 @@ class ProxyConfig @Inject constructor(
             put("proxyStripLeakHeaders", s?.proxyStripLeakHeaders ?: true)
             put("stealthLowDetectability", s?.stealthLowDetectability ?: true)
             put("etpEnabled", s?.etpEnabled ?: true)
+            put("timeScaleEnabled", s?.timeScaleEnabled ?: false)
+            put("timeScaleRate", (s?.timeScaleRate ?: 1.0f).toDouble())
+            put("timeScaleCss", s?.timeScaleCssAnimations ?: true)
+            put("timeScaleMedia", s?.timeScaleMedia ?: true)
+            put("timeScaleWorkers", s?.timeScaleWorkers ?: true)
         }
     }
 

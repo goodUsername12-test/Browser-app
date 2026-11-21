@@ -131,7 +131,26 @@ class TabManager @Inject constructor(
                     updated.hybridAutoForGames != settings.hybridAutoForGames
                 val mirrorChanged = updated.hybridMirrorInputToGecko != settings.hybridMirrorInputToGecko ||
                     updated.hybridHibernateGecko != settings.hybridHibernateGecko
+                val timeScaleChanged = updated.timeScaleEnabled != settings.timeScaleEnabled ||
+                    updated.timeScaleMultiplierTenths != settings.timeScaleMultiplierTenths ||
+                    updated.timeScaleCssAnimations != settings.timeScaleCssAnimations ||
+                    updated.timeScaleMedia != settings.timeScaleMedia ||
+                    updated.timeScaleWorkers != settings.timeScaleWorkers
                 settings = updated
+                if (timeScaleChanged) {
+                    proxyConfig.broadcastTimeScaleUpdate(updated)
+                    _tabs.value.forEach { t ->
+                        if (t.isHybridBlink.value) {
+                            t.hybridController?.applyTimeScale(
+                                enabled = updated.timeScaleEnabled,
+                                rate = updated.timeScaleRate,
+                                css = updated.timeScaleCssAnimations,
+                                media = updated.timeScaleMedia,
+                                workers = updated.timeScaleWorkers
+                            )
+                        }
+                    }
+                }
                 if (engineModeChanged) {
                     _tabs.value.forEach { t ->
                         if (t.manualHybridOverride == null && !t.isEvicted) {

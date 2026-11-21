@@ -283,6 +283,21 @@ class BrowserViewModel @Inject constructor(
     fun stopAndSaveCapture() = tabManager.stopAndSaveCapture()
     fun cancelCapture() = tabManager.cancelCapture()
 
+    fun setTimeScaleEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsStore.setTimeScaleEnabled(enabled)
+        }
+        toast(if (enabled) "Website speed control ON (${com.fable.browser.engine.WebsiteSpeedEngine.formatRate(settings.value.timeScaleRate)})" else "Website speed control OFF")
+    }
+
+    fun setTimeScaleTenths(tenths: Int) {
+        val clamped = tenths.coerceIn(1, 1000)
+        viewModelScope.launch {
+            settingsStore.setTimeScaleMultiplierTenths(clamped)
+            if (!settings.value.timeScaleEnabled) settingsStore.setTimeScaleEnabled(true)
+        }
+    }
+
 
     fun saveAsPdf() {
         val tab = activeTab ?: return

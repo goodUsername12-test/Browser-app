@@ -81,7 +81,10 @@ fun MenuSheet(
     onOpenBlinkGaming: () -> Unit = {},
     isScreenRecording: Boolean = false,
     onToggleScreenRecording: () -> Unit = {},
-    onOpenRecorderSettings: () -> Unit = {}
+    onOpenRecorderSettings: () -> Unit = {},
+    timeScaleEnabled: Boolean = false,
+    timeScaleRateLabel: String = "1x",
+    onToggleTimeScale: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -108,6 +111,12 @@ fun MenuSheet(
                 label = "Gecko + Blink Combined (Beta)",
                 checked = hybridBlinkMode,
                 onCheckedChange = { onToggleHybridBlink() }
+            )
+            MenuToggle(
+                icon = Icons.Outlined.Speed,
+                label = if (timeScaleEnabled) "Website speed ($timeScaleRateLabel)" else "Website speed control (OFF)",
+                checked = timeScaleEnabled,
+                onCheckedChange = { onToggleTimeScale() }
             )
             MenuItem(
                 icon = if (isScreenRecording) Icons.Outlined.Stop else Icons.Outlined.FiberManualRecord,

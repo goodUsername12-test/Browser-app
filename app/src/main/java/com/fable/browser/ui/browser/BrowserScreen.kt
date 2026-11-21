@@ -540,6 +540,18 @@ fun BrowserScreen(
             )
         }
 
+        if (settings.timeScaleEnabled && settings.timeScaleShowHud) {
+            WebsiteSpeedHud(
+                tenths = settings.timeScaleMultiplierTenths,
+                onSelectTenths = viewModel::setTimeScaleTenths,
+                onTurnOff = { viewModel.setTimeScaleEnabled(false) },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = if (toolbarAtTop && showToolbar) 68.dp else 8.dp, end = 8.dp)
+            )
+        }
+
         com.fable.browser.ui.components.UndoCloseBar(
             closed = recentlyClosed,
             onUndo = { viewModel.undoClose() },
@@ -589,7 +601,10 @@ fun BrowserScreen(
             },
             isScreenRecording = isScreenRecording,
             onToggleScreenRecording = toggleScreenRecording,
-            onOpenRecorderSettings = onOpenRecorderSettings
+            onOpenRecorderSettings = onOpenRecorderSettings,
+            timeScaleEnabled = settings.timeScaleEnabled,
+            timeScaleRateLabel = com.fable.browser.engine.WebsiteSpeedEngine.formatRate(settings.timeScaleRate),
+            onToggleTimeScale = { viewModel.setTimeScaleEnabled(!settings.timeScaleEnabled) }
         )
     }
 
@@ -848,5 +863,64 @@ private fun PerfOverlayHud(
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
         )
+    }
+}
+
+
+@Composable
+private fun WebsiteSpeedHud(
+    tenths: Int,
+    onSelectTenths: (Int) -> Unit,
+    onTurnOff: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val label = com.fable.browser.engine.WebsiteSpeedEngine.formatRate(tenths / 10f)
+    val presets = listOf(1 to "0.1x", 5 to "0.5x", 10 to "1x", 20 to "2x", 100 to "10x", 1000 to "100x")
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = Color(0xEE0F172A),
+        shadowElevation = 6.dp,
+        modifier = modifier.border(1.dp, Color(0xFF38BDF8), RoundedCornerShape(14.dp))
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Speed $label",
+                    color = Color(0xFF38BDF8),
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFFDC2626),
+                    modifier = Modifier.clickable(onClick = onTurnOff)
+                ) {
+                    Text(
+                        text = "OFF",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+            Row(modifier = Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                presets.forEachIndexed { idx, (tVal, txt) ->
+                    if (idx > 0) Spacer(Modifier.width(4.dp))
+                    val active = tenths == tVal
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (active) Color(0xFF0284C7) else Color(0xFF1E293B),
+                        modifier = Modifier.clickable { onSelectTenths(tVal) }
+                    ) {
+                        Text(
+                            text = txt,
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
+        }
     }
 }

@@ -54,3 +54,5 @@
 -keep class com.fable.browser.engine.FablePrivacyPolicy { *; }
 -keep class com.fable.browser.engine.CaptureUiState { *; }
 -keep class com.fable.browser.engine.CapturePhase { *; }
+
+-keep class com.fable.browser.engine.WebsiteSpeedEngine { *; }

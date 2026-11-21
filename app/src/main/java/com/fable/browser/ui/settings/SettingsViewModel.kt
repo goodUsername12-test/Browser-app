@@ -200,6 +200,12 @@ class SettingsViewModel @Inject constructor(
     }
     fun setArchiveIncludeCookies(v: Boolean) = edit { store.setArchiveIncludeCookies(v) }
     fun setArchiveContinuousCapture(v: Boolean) = edit { store.setArchiveContinuousCapture(v) }
+    fun setTimeScaleEnabled(v: Boolean) = edit { store.setTimeScaleEnabled(v) }
+    fun setTimeScaleMultiplierTenths(v: Int) = edit { store.setTimeScaleMultiplierTenths(v) }
+    fun setTimeScaleCssAnimations(v: Boolean) = edit { store.setTimeScaleCssAnimations(v) }
+    fun setTimeScaleMedia(v: Boolean) = edit { store.setTimeScaleMedia(v) }
+    fun setTimeScaleWorkers(v: Boolean) = edit { store.setTimeScaleWorkers(v) }
+    fun setTimeScaleShowHud(v: Boolean) = edit { store.setTimeScaleShowHud(v) }
 
     fun applyPreset(preset: PrivacyPreset) = edit {
         val stealth = preset == PrivacyPreset.STEALTH

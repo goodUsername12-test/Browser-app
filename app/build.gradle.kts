@@ -28,8 +28,8 @@ android {
         applicationId = "com.fable.browser"
         minSdk = 26
         targetSdk = 35
-        versionCode = 47
-        versionName = "1.56.0"
+        versionCode = 48
+        versionName = "1.57.0"
 
         externalNativeBuild {
             cmake {
@@ -120,6 +120,9 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
     lint {
         checkReleaseBuilds = false
         abortOnError = false
@@ -181,6 +184,7 @@ dependencies {
     implementation(libs.androidx.webkit)
 
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
     testImplementation(libs.mockk)
     testImplementation(libs.kotlinx.coroutines.test)
 

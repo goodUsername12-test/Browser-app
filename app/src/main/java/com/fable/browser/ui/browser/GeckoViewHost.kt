@@ -1081,6 +1081,19 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 return true
             }
 
+            override fun applyTimeScale(enabled: Boolean, rate: Float, css: Boolean, media: Boolean, workers: Boolean) {
+                val script = com.fable.browser.engine.WebsiteSpeedEngine.buildLiveUpdateScript(
+                    enabled = enabled,
+                    rate = rate,
+                    applyCss = css,
+                    applyMedia = media,
+                    applyWorkers = workers
+                )
+                if (script.isNotBlank()) {
+                    wv.post { runCatching { wv.evaluateJavascript(script, null) } }
+                }
+            }
+
             override fun exitFullScreen() {
                 wv.post {
                     if (customFullScreenView != null) {
@@ -1215,7 +1228,7 @@ fun GeckoViewHost(
                         currentUrl
                     }
                     val currentWvUrl = wv.url
-                    if (tab.lastLoadedBlinkUrl.isBlank() && currentWvUrl.isNullOrBlank()) {
+                    if (tab.lastLoadedBlinkUrl.isBlank() && (currentWvUrl.isNullOrBlank() || currentWvUrl == "about:blank")) {
                         tab.hybridCookiePullHandler?.invoke(mappedUrl)
                         tab.lastLoadedBlinkUrl = mappedUrl
                         val headers = tab.hybridExtraHeadersProvider?.invoke(mappedUrl).orEmpty()

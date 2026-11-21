@@ -1139,13 +1139,22 @@ fun GeckoViewHost(
     showRecorderTouches: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val session by tab.sessionFlow.collectAsStateWithLifecycle()
-    val hybridBlink by tab.isHybridBlink.collectAsStateWithLifecycle()
-    val mirrorInput by tab.mirrorInputToGecko.collectAsStateWithLifecycle()
-    val currentUrl by tab.url.collectAsStateWithLifecycle()
-    var attachTick by remember { mutableIntStateOf(0) }
+    val sessionState by tab.sessionFlow.collectAsStateWithLifecycle()
+    val hybridBlinkState by tab.isHybridBlink.collectAsStateWithLifecycle()
+    val mirrorInputState by tab.mirrorInputToGecko.collectAsStateWithLifecycle()
+    val currentUrlState by tab.url.collectAsStateWithLifecycle()
+    var attachTick by remember(tab.id) { mutableIntStateOf(0) }
 
-    LaunchedEffect(session) {
+    // Always use tab's synchronous current state to prevent 1-frame stale StateFlow leak across tab switches
+    val session = tab.session
+    val hybridBlink = tab.isHybridBlink.value
+    val mirrorInput = tab.mirrorInputToGecko.value
+    val currentUrl = tab.url.value
+    // Reference collected states so Compose subscribes to updates on the current tab
+    @Suppress("UNUSED_EXPRESSION")
+    if (sessionState !== session && hybridBlinkState != hybridBlink && mirrorInputState != mirrorInput && currentUrlState != currentUrl) Unit
+
+    LaunchedEffect(tab.id, session) {
         var attempts = 0
         while (!session.isOpen && attempts < 40) {
             delay(50)

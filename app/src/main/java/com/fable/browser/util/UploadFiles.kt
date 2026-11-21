@@ -83,7 +83,7 @@ object UploadFiles {
                 } else {
                     sawDotExtension = true
                     val ext = t.removePrefix(".")
-                    val resolved = EXTRA_EXTENSION_MIMES[ext] ?: map.getMimeTypeFromExtension(ext)
+                    val resolved = EXTRA_EXTENSION_MIMES[ext] ?: map?.getMimeTypeFromExtension(ext)
                     if (resolved != null) {
                         out += resolved
                         // Broaden video/audio/image extension requests so sibling containers in Downloads stay selectable

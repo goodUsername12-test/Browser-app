@@ -62,26 +62,28 @@
     }
   } catch (_) {}
 
-  // 2. Date & Date.now (using page-realm Proxy for zero-CSP-violation constructor override)
+  // 2. Date & Date.now (Xray-safe: override Date.now + non-Xray Proxy when same-compartment)
   try {
     const PageDate = W.Date;
-    const handler = {
-      construct(target, args, newTarget) {
-        if (!args || args.length === 0) {
-          return W.Reflect.construct(target, useXray ? cloneInto([virtDateNow()], window) : [virtDateNow()], newTarget);
+    if (useXray) {
+      PageDate.now = exportFn(() => virtDateNow());
+    } else {
+      W.Date = new W.Proxy(PageDate, {
+        construct(target, args, newTarget) {
+          if (!args || args.length === 0) {
+            return Reflect.construct(target, [virtDateNow()], newTarget);
+          }
+          return Reflect.construct(target, args, newTarget);
+        },
+        apply() {
+          return new PageDate(virtDateNow()).toString();
+        },
+        get(target, prop) {
+          if (prop === "now") return () => virtDateNow();
+          return Reflect.get(target, prop, target);
         }
-        return W.Reflect.construct(target, args, newTarget);
-      },
-      apply() {
-        return new PageDate(virtDateNow()).toString();
-      },
-      get(target, prop) {
-        if (prop === "now") return exportFn(() => virtDateNow());
-        return W.Reflect.get(target, prop, target);
-      }
-    };
-    const proxyHandler = useXray ? cloneInto(handler, window, { cloneFunctions: true }) : handler;
-    W.Date = new W.Proxy(PageDate, proxyHandler);
+      });
+    }
   } catch (_) {
     try { W.Date.now = exportFn(() => virtDateNow()); } catch (__) {}
   }
@@ -94,7 +96,11 @@
   function invokePageFn(fn, args) {
     try {
       if (typeof fn === "function") {
-        W.Function.prototype.apply.call(fn, W, args);
+        if (!args || args.length === 0) {
+          fn.call(W);
+        } else {
+          fn.apply(W, useXray ? cloneInto(args, window, { cloneFunctions: true, wrapReflectors: true }) : args);
+        }
       } else if (typeof fn === "string") {
         W.eval(fn);
       }
@@ -152,7 +158,7 @@
 
   try {
     W.setTimeout = exportFn(function(fn, delay) {
-      const args = W.Array.prototype.slice.call(arguments, 2);
+      const args = Array.prototype.slice.call(arguments, 2);
       const d = Math.max(0, Number(delay) || 0);
       const id = nextTimerId++;
       const entry = { id, fn, args, virtFire: virtPerfNow() + d, nativeId: null };
@@ -170,7 +176,7 @@
       }
     });
     W.setInterval = exportFn(function(fn, delay) {
-      const args = W.Array.prototype.slice.call(arguments, 2);
+      const args = Array.prototype.slice.call(arguments, 2);
       const d = Math.max(4, Number(delay) || 4);
       const id = nextTimerId++;
       const entry = { id, fn, args, intervalVirt: d, virtNext: virtPerfNow() + d, nativeId: null };
@@ -201,7 +207,7 @@
           if (!rafMap.has(id)) return;
           rafMap.delete(id);
           try {
-            W.Function.prototype.call.call(cb, W, virtPerfNow());
+            cb.call(W, virtPerfNow());
           } catch (_) {}
         });
         rafMap.set(id, nativeId);

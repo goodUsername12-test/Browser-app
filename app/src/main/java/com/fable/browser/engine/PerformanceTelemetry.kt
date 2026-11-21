@@ -61,7 +61,7 @@ object PerformanceTelemetry {
 
     private fun nowElapsedMs(): Long = runCatching {
         SystemClock.elapsedRealtime()
-    }.getOrElse { System.nanoTime() / 1_000_000L }
+    }.getOrDefault(0L).let { if (it > 0L) it else (System.nanoTime() / 1_000_000L).coerceAtLeast(1L) }
 
     private fun logInfo(msg: String) {
         runCatching { Log.i(TAG, msg) }

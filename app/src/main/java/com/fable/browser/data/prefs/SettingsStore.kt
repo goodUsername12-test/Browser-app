@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -220,6 +221,10 @@ data class Settings(
     val timeScaleMedia: Boolean = true,
     val timeScaleWorkers: Boolean = true,
     val timeScaleShowHud: Boolean = true,
+    val timeScalePanelScalePct: Int = com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_SCALE_PCT,
+    val timeScalePanelPosX: Float = com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_X,
+    val timeScalePanelPosY: Float = com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_Y,
+    val timeScalePanelExpanded: Boolean = true,
 ) {
     val timeScaleRate: Float
         get() = com.fable.browser.engine.WebsiteSpeedEngine.rateFromTenths(timeScaleMultiplierTenths)
@@ -434,6 +439,10 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val TIME_SCALE_MEDIA = booleanPreferencesKey("time_scale_media")
         val TIME_SCALE_WORKERS = booleanPreferencesKey("time_scale_workers")
         val TIME_SCALE_HUD = booleanPreferencesKey("time_scale_hud")
+        val TIME_SCALE_PANEL_SCALE = intPreferencesKey("time_scale_panel_scale_pct")
+        val TIME_SCALE_PANEL_X = floatPreferencesKey("time_scale_panel_pos_x")
+        val TIME_SCALE_PANEL_Y = floatPreferencesKey("time_scale_panel_pos_y")
+        val TIME_SCALE_PANEL_EXPANDED = booleanPreferencesKey("time_scale_panel_expanded")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -615,11 +624,15 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             archiveIncludeCookies = p[Keys.ARCHIVE_INCLUDE_COOKIES] ?: false,
             archiveContinuousCapture = p[Keys.ARCHIVE_CONTINUOUS_CAPTURE] ?: true,
             timeScaleEnabled = p[Keys.TIME_SCALE_ENABLED] ?: false,
-            timeScaleMultiplierTenths = (p[Keys.TIME_SCALE_TENTHS] ?: 10).coerceIn(1, 1000),
+            timeScaleMultiplierTenths = (p[Keys.TIME_SCALE_TENTHS] ?: 10).coerceIn(1, com.fable.browser.engine.WebsiteSpeedEngine.MAX_TENTHS),
             timeScaleCssAnimations = p[Keys.TIME_SCALE_CSS] ?: true,
             timeScaleMedia = p[Keys.TIME_SCALE_MEDIA] ?: true,
             timeScaleWorkers = p[Keys.TIME_SCALE_WORKERS] ?: true,
             timeScaleShowHud = p[Keys.TIME_SCALE_HUD] ?: true,
+            timeScalePanelScalePct = com.fable.browser.engine.WebsiteSpeedEngine.clampPanelScalePct(p[Keys.TIME_SCALE_PANEL_SCALE] ?: com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_SCALE_PCT),
+            timeScalePanelPosX = (p[Keys.TIME_SCALE_PANEL_X] ?: com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_X).coerceIn(0f, 1f),
+            timeScalePanelPosY = (p[Keys.TIME_SCALE_PANEL_Y] ?: com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_Y).coerceIn(0f, 1f),
+            timeScalePanelExpanded = p[Keys.TIME_SCALE_PANEL_EXPANDED] ?: true,
         )
     }.distinctUntilChanged()
 
@@ -880,11 +893,27 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setArchiveIncludeCookies(v: Boolean) = set(Keys.ARCHIVE_INCLUDE_COOKIES, v)
     suspend fun setArchiveContinuousCapture(v: Boolean) = set(Keys.ARCHIVE_CONTINUOUS_CAPTURE, v)
     suspend fun setTimeScaleEnabled(v: Boolean) = set(Keys.TIME_SCALE_ENABLED, v)
-    suspend fun setTimeScaleMultiplierTenths(v: Int) = set(Keys.TIME_SCALE_TENTHS, v.coerceIn(1, 1000))
+    suspend fun setTimeScaleMultiplierTenths(v: Int) = set(Keys.TIME_SCALE_TENTHS, v.coerceIn(1, com.fable.browser.engine.WebsiteSpeedEngine.MAX_TENTHS))
     suspend fun setTimeScaleCssAnimations(v: Boolean) = set(Keys.TIME_SCALE_CSS, v)
     suspend fun setTimeScaleMedia(v: Boolean) = set(Keys.TIME_SCALE_MEDIA, v)
     suspend fun setTimeScaleWorkers(v: Boolean) = set(Keys.TIME_SCALE_WORKERS, v)
     suspend fun setTimeScaleShowHud(v: Boolean) = set(Keys.TIME_SCALE_HUD, v)
+    suspend fun setTimeScalePanelScalePct(v: Int) = set(Keys.TIME_SCALE_PANEL_SCALE, com.fable.browser.engine.WebsiteSpeedEngine.clampPanelScalePct(v))
+    suspend fun setTimeScalePanelExpanded(v: Boolean) = set(Keys.TIME_SCALE_PANEL_EXPANDED, v)
+    suspend fun setTimeScalePanelPosition(x: Float, y: Float) {
+        context.dataStore.edit {
+            it[Keys.TIME_SCALE_PANEL_X] = x.coerceIn(0f, 1f)
+            it[Keys.TIME_SCALE_PANEL_Y] = y.coerceIn(0f, 1f)
+        }
+    }
+    suspend fun resetTimeScalePanelLayout() {
+        context.dataStore.edit {
+            it[Keys.TIME_SCALE_PANEL_SCALE] = com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_SCALE_PCT
+            it[Keys.TIME_SCALE_PANEL_X] = com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_X
+            it[Keys.TIME_SCALE_PANEL_Y] = com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_Y
+            it[Keys.TIME_SCALE_PANEL_EXPANDED] = true
+        }
+    }
     suspend fun applyEcoGamingPreset() {
         context.dataStore.edit {
             it[Keys.BAT_SAVER_MASTER] = true

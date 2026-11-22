@@ -45,7 +45,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.io.BufferedOutputStream
 import java.io.File
@@ -307,26 +309,61 @@ class BlinkGamingActivity : ComponentActivity() {
                     }
                 }
             }
-            val bootScript = HybridEngineBridge.buildCombinedBootstrapScript(
-                settings = Settings(),
+            val settingsStore = com.fable.browser.data.prefs.SettingsStore(applicationContext)
+            var currentSettings = runCatching {
+                runBlocking { settingsStore.settings.first() }
+            }.getOrDefault(Settings())
+            fun buildCurrentBoot(pageUrl: String): String = HybridEngineBridge.buildCombinedBootstrapScript(
+                settings = currentSettings,
                 isIncognito = false,
                 isSuper = false,
                 superIdentity = null,
-                pageUrl = intent.getStringExtra(EXTRA_URL).orEmpty(),
+                pageUrl = pageUrl,
                 bridgeToken = activityBridgeToken
             )
-            com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(this, bootScript)
+            val initBoot = buildCurrentBoot(intent.getStringExtra(EXTRA_URL).orEmpty())
+            com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(this, initBoot)
+            val mainH = android.os.Handler(android.os.Looper.getMainLooper())
+            ioScope.launch {
+                settingsStore.settings.collect { updated ->
+                    val tsChanged = updated.timeScaleEnabled != currentSettings.timeScaleEnabled ||
+                        updated.timeScaleMultiplierTenths != currentSettings.timeScaleMultiplierTenths ||
+                        updated.timeScaleCssAnimations != currentSettings.timeScaleCssAnimations ||
+                        updated.timeScaleMedia != currentSettings.timeScaleMedia ||
+                        updated.timeScaleWorkers != currentSettings.timeScaleWorkers
+                    currentSettings = updated
+                    if (tsChanged) {
+                        val liveJs = com.fable.browser.engine.WebsiteSpeedEngine.buildLiveUpdateScript(
+                            enabled = updated.timeScaleEnabled,
+                            rate = updated.timeScaleRate,
+                            applyCss = updated.timeScaleCssAnimations,
+                            applyMedia = updated.timeScaleMedia,
+                            applyWorkers = updated.timeScaleWorkers
+                        )
+                        mainH.post {
+                            webView?.let { wv ->
+                                val freshBoot = buildCurrentBoot(wv.url.orEmpty())
+                                com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(wv, freshBoot)
+                                if (liveJs.isNotBlank()) runCatching { wv.evaluateJavascript(liveJs, null) }
+                            }
+                        }
+                    }
+                }
+            }
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = false
 
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
-                    runCatching { view.evaluateJavascript(bootScript, null) }
+                    val boot = buildCurrentBoot(url.orEmpty())
+                    com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(view, boot)
+                    runCatching { view.evaluateJavascript(boot, null) }
                 }
 
                 override fun onPageFinished(view: WebView, url: String?) {
                     super.onPageFinished(view, url)
-                    runCatching { view.evaluateJavascript(bootScript, null) }
+                    val boot = buildCurrentBoot(url.orEmpty())
+                    runCatching { view.evaluateJavascript(boot, null) }
                 }
             }
             webChromeClient = object : WebChromeClient() {

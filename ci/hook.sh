@@ -149,27 +149,55 @@ SPEED_HTML = """<!DOCTYPE html>
   const qs = new URLSearchParams(location.search);
   const tag = qs.get("tag") || "run";
   const timerMs = Number(qs.get("ms") || "250");
-  const installed = !!(window.__fableTimeScale && window.__fableTimeScale.__installed);
-  const rate = installed ? window.__fableTimeScale.getRate() : 1.0;
   let animRate = 1.0;
-  try {
-    const anims = document.getAnimations ? document.getAnimations() : [];
-    if (anims.length > 0) animRate = anims[0].playbackRate;
-  } catch (_) {}
+  function readAnimRate() {
+    try {
+      const anims = document.getAnimations ? document.getAnimations() : [];
+      if (anims.length > 0) return Number(anims[0].playbackRate.toFixed(2));
+    } catch (_) {}
+    return 1.0;
+  }
+  function checkStealth() {
+    try {
+      const noMarker = typeof window.__fableTimeScale === "undefined";
+      const noOwnPerf = Object.getOwnPropertyDescriptor(performance, "now") === undefined;
+      const stNat = Function.prototype.toString.call(setTimeout).indexOf("[native code]") !== -1;
+      const dnNat = Function.prototype.toString.call(Date.now).indexOf("[native code]") !== -1;
+      const pnNat = Function.prototype.toString.call(performance.now).indexOf("[native code]") !== -1;
+      const rafNat = Function.prototype.toString.call(requestAnimationFrame).indexOf("[native code]") !== -1;
+      const dateOk = (new Date() instanceof Date) && (new Date().constructor === Date);
+      return noMarker && noOwnPerf && stNat && dnNat && pnNat && rafNat && dateOk;
+    } catch (_) {
+      return false;
+    }
+  }
+  animRate = readAnimRate();
   const tStartPerf = performance.now();
   const tStartDate = Date.now();
-  setTimeout(function() {
+  const afterOff = qs.get("after_off") === "1";
+  function finish() {
     const vPerfDelta = Math.round(performance.now() - tStartPerf);
     const vDateDelta = Math.round(Date.now() - tStartDate);
-    try {
-      const anims2 = document.getAnimations ? document.getAnimations() : [];
-      if (anims2.length > 0) animRate = anims2[0].playbackRate;
-    } catch (_) {}
-    const res = { tag, installed, rate, animRate, timerMs, vPerfDelta, vDateDelta };
+    animRate = readAnimRate();
+    const stealth = checkStealth();
+    const res = { tag, stealth, animRate, timerMs, vPerfDelta, vDateDelta };
     document.getElementById("out").textContent = JSON.stringify(res);
     console.log("FABLE-SPEED-PROBE " + JSON.stringify(res));
-    fetch("/speed-done?tag=" + encodeURIComponent(tag) + "&installed=" + installed + "&rate=" + rate + "&anim=" + animRate + "&ms=" + timerMs).catch(() => {});
-  }, timerMs);
+    fetch("/speed-done?tag=" + encodeURIComponent(tag) + "&stealth=" + stealth + "&anim=" + animRate + "&ms=" + timerMs).catch(() => {});
+  }
+  if (afterOff) {
+    // Wait until live injection turns speed ON without refreshing, then run a timer under the live engine
+    let tries = 0;
+    const iv = setInterval(function() {
+      tries++;
+      if (readAnimRate() !== 1.0 || tries >= 35) {
+        clearInterval(iv);
+        setTimeout(finish, timerMs);
+      }
+    }, 150);
+  } else {
+    setTimeout(finish, timerMs);
+  }
 })();
 </script></body></html>"""
 
@@ -433,9 +461,15 @@ PYSNAP
 fi
 step "controllable live snapshot Pause/Resume/Stop ($SNAP_ZIP_REPORT)"
 
-log "Phase 6: Website Speed Control (OFF zero-load -> 0.1x slow -> 10x fast -> 100x turbo -> OFF unloaded)"
+log "Phase 6: Website Speed Control v58 (OFF -> 0.1x -> 3.5x -> Live Blink no-refresh -> 300x -> OFF + stealth)"
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=off_blink&ms=300' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 5; step "speed OFF zero-load (Blink)"
+
+# Start Blink page while speed is OFF, then turn ON 10x LIVE without refreshing!
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=off_to_live_blink&ms=2000&after_off=1' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 100 >/dev/null 2>&1 || true
+sleep 4; step "speed OFF->10x LIVE no-refresh (Blink)"
 
 adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 1 >/dev/null 2>&1 || true
 sleep 3
@@ -444,17 +478,25 @@ sleep 7; step "speed 0.1x slow (GeckoView)"
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=slow_blink&ms=200' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 7; step "speed 0.1x slow (Blink)"; shot 8b-speed-01x
 
-adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 100 >/dev/null 2>&1 || true
+# Exact fractional 3.5x (35 tenths) in Blink Combined
+adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 35 >/dev/null 2>&1 || true
 sleep 3
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=fast10_gecko&ms=2000' -n '$ACT'" >> "$ART/nav.txt" 2>&1
-sleep 5; step "speed 10x fast (GeckoView)"
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=fast10_blink&ms=2000' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
-sleep 5; step "speed 10x fast (Blink)"
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=exact35_blink&ms=3500' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 5; step "speed 3.5x exact (Blink)"
 
-adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 1000 >/dev/null 2>&1 || true
-sleep 3
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=turbo100_blink&ms=5000' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
-sleep 5; step "speed 100x turbo 5s timer (Blink)"
+# LIVE no-refresh test in Blink x Gecko: load 8000ms timer at 0.1x (would take 80s!), then switch LIVE to 300x WITHOUT reloading!
+adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 1 >/dev/null 2>&1 || true
+sleep 2
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=live_blink_noreload&ms=8000' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --ez fable_test_timescale true --ei fable_test_timescale_tenths 3000 >/dev/null 2>&1 || true
+sleep 4; step "speed LIVE 0.1x->300x no-refresh (Blink)"
+
+# Max 300x on fresh GeckoView & Blink pages
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=turbo300_gecko&ms=5000' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 5; step "speed 300x max 5s timer (GeckoView)"
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=turbo300_blink&ms=5000' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 5; step "speed 300x max 5s timer (Blink)"
 
 adb shell am start -n "$ACT" --ez fable_test_timescale false --ei fable_test_timescale_tenths 10 >/dev/null 2>&1 || true
 sleep 3
@@ -511,30 +553,32 @@ txt = open(sys.argv[1]).read()
 starts = {m.group(1): float(m.group(2)) for m in re.finditer(r'SPEED_START tag=(\S+) ts=([0-9.]+)', txt)}
 dones = {m.group(1): (float(m.group(2)), m.group(3)) for m in re.finditer(r'SPEED_DONE tag=(\S+) ts=([0-9.]+) q=(\S+)', txt)}
 errs = []
-def check(tag, expect_installed, min_dt, max_dt, rate_sub=None):
+def check(tag, min_dt, max_dt, anim_sub=None, require_stealth=True):
     if tag not in dones or tag not in starts:
         errs.append(f"missing:{tag}")
         return
     dt = dones[tag][0] - starts[tag]
     q = dones[tag][1]
-    want = f"installed={'true' if expect_installed else 'false'}"
-    if want not in q:
-        errs.append(f"{tag}:{want}_not_in_{q}")
-    if rate_sub and rate_sub not in q:
-        errs.append(f"{tag}:{rate_sub}_not_in_{q}")
+    if require_stealth and "stealth=true" not in q:
+        errs.append(f"{tag}:stealth_failed:{q}")
+    if anim_sub and anim_sub not in q:
+        errs.append(f"{tag}:{anim_sub}_not_in_{q}")
     if not (min_dt <= dt <= max_dt):
         errs.append(f"{tag}:dt={dt:.2f}s_out_of_[{min_dt},{max_dt}]")
-check("off_blink", False, 0.15, 3.0)
-check("slow_gecko", True, 1.3, 6.5, "rate=0.1")
-check("slow_blink", True, 1.3, 6.5, "rate=0.1")
-check("fast10_gecko", True, 0.05, 2.5, "rate=10")
-check("fast10_blink", True, 0.05, 2.5, "rate=10")
-check("turbo100_blink", True, 0.01, 2.0, "rate=100")
-check("off_after_gecko", False, 0.05, 3.0)
+check("off_blink", 0.15, 3.0, "anim=1&")
+check("off_to_live_blink", 0.5, 5.5, "anim=10&")
+check("slow_gecko", 1.3, 6.5, "anim=0.1&")
+check("slow_blink", 1.3, 6.5, "anim=0.1&")
+check("exact35_blink", 0.5, 3.0, "anim=3.5&")
+check("live_blink_noreload", 0.8, 6.0, "anim=300&")
+check("turbo300_gecko", 0.005, 2.0, "anim=300&")
+check("turbo300_blink", 0.005, 2.0, "anim=300&")
+check("off_after_gecko", 0.05, 3.0, "anim=1&")
 if errs:
     print("FAIL " + " ".join(errs))
 else:
-    parts = [f"{k}={dones[k][0]-starts[k]:.2f}s" for k in ["off_blink","slow_gecko","slow_blink","fast10_gecko","fast10_blink","turbo100_blink","off_after_gecko"]]
+    keys = ["off_blink","off_to_live_blink","slow_gecko","slow_blink","exact35_blink","live_blink_noreload","turbo300_gecko","turbo300_blink","off_after_gecko"]
+    parts = [f"{k}={dones[k][0]-starts[k]:.2f}s" for k in keys]
     print("OK " + " ".join(parts))
 PYSPEED
 )"

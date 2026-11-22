@@ -68,6 +68,9 @@ class TabManager @Inject constructor(
     val incognitoLocked: StateFlow<Boolean> = _incognitoLocked.asStateFlow()
 
     @Volatile private var settings: Settings = Settings()
+    @Volatile private var lastAppliedTimeScaleKey: String = ""
+    @Volatile private var timeScaleEverEnabled: Boolean = false
+    private val mainLooperHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     private var sharedIncognitoContext: String? = null
 
@@ -138,18 +141,7 @@ class TabManager @Inject constructor(
                     updated.timeScaleWorkers != settings.timeScaleWorkers
                 settings = updated
                 if (timeScaleChanged) {
-                    proxyConfig.broadcastTimeScaleUpdate(updated)
-                    _tabs.value.forEach { t ->
-                        if (t.isHybridBlink.value) {
-                            t.hybridController?.applyTimeScale(
-                                enabled = updated.timeScaleEnabled,
-                                rate = updated.timeScaleRate,
-                                css = updated.timeScaleCssAnimations,
-                                media = updated.timeScaleMedia,
-                                workers = updated.timeScaleWorkers
-                            )
-                        }
-                    }
+                    pushTimeScaleToAllTabs(updated)
                 }
                 if (engineModeChanged) {
                     _tabs.value.forEach { t ->
@@ -206,6 +198,61 @@ class TabManager @Inject constructor(
                     if (appVisible) restartIdleSweep()
                 }
                 if (keepChanged) persist()
+            }
+        }
+    }
+
+    fun applyTimeScaleLive(
+        enabled: Boolean,
+        tenths: Int,
+        css: Boolean = settings.timeScaleCssAnimations,
+        media: Boolean = settings.timeScaleMedia,
+        workers: Boolean = settings.timeScaleWorkers
+    ) {
+        val clampedTenths = WebsiteSpeedEngine.clampTenths(tenths)
+        val next = settings.copy(
+            timeScaleEnabled = enabled,
+            timeScaleMultiplierTenths = clampedTenths,
+            timeScaleCssAnimations = css,
+            timeScaleMedia = media,
+            timeScaleWorkers = workers
+        )
+        settings = next
+        pushTimeScaleToAllTabs(next, force = true)
+    }
+
+    private fun pushTimeScaleToAllTabs(updated: Settings, force: Boolean = false) {
+        val key = "${updated.timeScaleEnabled}:${updated.timeScaleMultiplierTenths}:${updated.timeScaleCssAnimations}:${updated.timeScaleMedia}:${updated.timeScaleWorkers}"
+        if (!force && key == lastAppliedTimeScaleKey) return
+        lastAppliedTimeScaleKey = key
+        if (updated.timeScaleEnabled) timeScaleEverEnabled = true
+        proxyConfig.broadcastTimeScaleUpdate(updated)
+        val rate = updated.timeScaleRate
+        _tabs.value.forEach { t ->
+            if (t.isHybridBlink.value || t.retainedBlinkView != null) {
+                val ctrl = t.hybridController
+                if (ctrl != null) {
+                    ctrl.applyTimeScale(
+                        enabled = updated.timeScaleEnabled,
+                        rate = rate,
+                        css = updated.timeScaleCssAnimations,
+                        media = updated.timeScaleMedia,
+                        workers = updated.timeScaleWorkers
+                    )
+                } else {
+                    t.retainedBlinkView?.let { wv ->
+                        val script = WebsiteSpeedEngine.buildLiveUpdateScript(
+                            enabled = updated.timeScaleEnabled,
+                            rate = rate,
+                            applyCss = updated.timeScaleCssAnimations,
+                            applyMedia = updated.timeScaleMedia,
+                            applyWorkers = updated.timeScaleWorkers
+                        )
+                        if (script.isNotBlank()) {
+                            mainLooperHandler.post { runCatching { wv.evaluateJavascript(script, null) } }
+                        }
+                    }
+                }
             }
         }
     }
@@ -662,6 +709,18 @@ class TabManager @Inject constructor(
                 val canonical = UrlUtils.registrableDomain(originHost) ?: originHost.lowercase().removePrefix("www.")
                 val key = if (originHost.startsWith("staging.", ignoreCase = true)) "staging.$canonical" else canonical
                 gameAccountVaultPrefs.edit().putString("ls_$key", jsonPayload).apply()
+            }
+        }
+        tab.hybridTimeScaleSyncHandler = {
+            val s = settings
+            if (s.timeScaleEnabled || timeScaleEverEnabled) {
+                tab.hybridController?.applyTimeScale(
+                    enabled = s.timeScaleEnabled,
+                    rate = s.timeScaleRate,
+                    css = s.timeScaleCssAnimations,
+                    media = s.timeScaleMedia,
+                    workers = s.timeScaleWorkers
+                )
             }
         }
     }

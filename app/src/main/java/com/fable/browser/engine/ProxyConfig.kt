@@ -80,16 +80,33 @@ class ProxyConfig @Inject constructor(
     }
 
     fun broadcastTimeScaleUpdate(s: Settings) {
+        broadcastTimeScaleLiveValues(
+            enabled = s.timeScaleEnabled,
+            tenths = s.timeScaleMultiplierTenths,
+            css = s.timeScaleCssAnimations,
+            media = s.timeScaleMedia,
+            workers = s.timeScaleWorkers
+        )
+    }
+
+    fun broadcastTimeScaleLiveValues(
+        enabled: Boolean,
+        tenths: Int,
+        css: Boolean,
+        media: Boolean,
+        workers: Boolean
+    ) {
         val p = port ?: return
+        val exactRate = WebsiteSpeedEngine.exactRateDoubleFromTenths(tenths)
         scope.launch {
             runCatching {
                 p.postMessage(JSONObject().apply {
                     put("type", "time-scale-update")
-                    put("enabled", s.timeScaleEnabled)
-                    put("rate", s.timeScaleMultiplierTenths.coerceIn(1, 1000) / 10.0)
-                    put("css", s.timeScaleCssAnimations)
-                    put("media", s.timeScaleMedia)
-                    put("workers", s.timeScaleWorkers)
+                    put("enabled", enabled)
+                    put("rate", exactRate)
+                    put("css", css)
+                    put("media", media)
+                    put("workers", workers)
                 })
             }
         }
@@ -281,7 +298,7 @@ class ProxyConfig @Inject constructor(
             put("stealthLowDetectability", s?.stealthLowDetectability ?: true)
             put("etpEnabled", s?.etpEnabled ?: true)
             put("timeScaleEnabled", s?.timeScaleEnabled ?: false)
-            put("timeScaleRate", (s?.timeScaleMultiplierTenths ?: 10).coerceIn(1, 1000) / 10.0)
+            put("timeScaleRate", WebsiteSpeedEngine.exactRateDoubleFromTenths(s?.timeScaleMultiplierTenths ?: 10))
             put("timeScaleCss", s?.timeScaleCssAnimations ?: true)
             put("timeScaleMedia", s?.timeScaleMedia ?: true)
             put("timeScaleWorkers", s?.timeScaleWorkers ?: true)

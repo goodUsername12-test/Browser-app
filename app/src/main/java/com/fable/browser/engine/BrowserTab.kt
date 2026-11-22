@@ -119,6 +119,7 @@ class BrowserTab(
     @Volatile var hybridStorageVaultWrite: ((String, String) -> Unit)? = null
     @Volatile var hybridCookieSyncHandler: ((String) -> Unit)? = null
     @Volatile var hybridCookiePullHandler: ((String) -> Unit)? = null
+    @Volatile var hybridTimeScaleSyncHandler: (() -> Unit)? = null
     @Volatile var hybridPrivacyProvider: ((String) -> EffectivePrivacyDecision)? = null
     @Volatile var hybridSettingsProvider: (() -> com.fable.browser.data.prefs.Settings)? = null
     val bridgeToken: String = UUID.randomUUID().toString()

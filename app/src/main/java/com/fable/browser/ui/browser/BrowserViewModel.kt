@@ -284,17 +284,57 @@ class BrowserViewModel @Inject constructor(
     fun cancelCapture() = tabManager.cancelCapture()
 
     fun setTimeScaleEnabled(enabled: Boolean) {
+        val cur = settings.value
+        tabManager.applyTimeScaleLive(
+            enabled = enabled,
+            tenths = cur.timeScaleMultiplierTenths,
+            css = cur.timeScaleCssAnimations,
+            media = cur.timeScaleMedia,
+            workers = cur.timeScaleWorkers
+        )
         viewModelScope.launch {
             settingsStore.setTimeScaleEnabled(enabled)
         }
-        toast(if (enabled) "Website speed control ON (${com.fable.browser.engine.WebsiteSpeedEngine.formatRate(settings.value.timeScaleRate)})" else "Website speed control OFF")
+        toast(if (enabled) "Website speed control ON (${com.fable.browser.engine.WebsiteSpeedEngine.formatTenths(cur.timeScaleMultiplierTenths)})" else "Website speed control OFF")
+    }
+
+    fun previewTimeScaleLive(tenths: Int) {
+        val clamped = com.fable.browser.engine.WebsiteSpeedEngine.clampTenths(tenths)
+        val cur = settings.value
+        tabManager.applyTimeScaleLive(
+            enabled = true,
+            tenths = clamped,
+            css = cur.timeScaleCssAnimations,
+            media = cur.timeScaleMedia,
+            workers = cur.timeScaleWorkers
+        )
     }
 
     fun setTimeScaleTenths(tenths: Int) {
-        val clamped = tenths.coerceIn(1, 1000)
+        val clamped = com.fable.browser.engine.WebsiteSpeedEngine.clampTenths(tenths)
+        val cur = settings.value
+        tabManager.applyTimeScaleLive(
+            enabled = true,
+            tenths = clamped,
+            css = cur.timeScaleCssAnimations,
+            media = cur.timeScaleMedia,
+            workers = cur.timeScaleWorkers
+        )
         viewModelScope.launch {
             settingsStore.setTimeScaleMultiplierTenths(clamped)
-            if (!settings.value.timeScaleEnabled) settingsStore.setTimeScaleEnabled(true)
+            if (!cur.timeScaleEnabled) settingsStore.setTimeScaleEnabled(true)
+        }
+    }
+
+    fun setTimeScalePanelPosition(x: Float, y: Float) {
+        viewModelScope.launch {
+            settingsStore.setTimeScalePanelPosition(x, y)
+        }
+    }
+
+    fun setTimeScalePanelExpanded(expanded: Boolean) {
+        viewModelScope.launch {
+            settingsStore.setTimeScalePanelExpanded(expanded)
         }
     }
 

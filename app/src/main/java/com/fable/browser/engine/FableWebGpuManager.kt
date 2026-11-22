@@ -143,13 +143,16 @@ object FableWebGpuManager {
 
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface", "RequiresFeature")
     fun installDocumentStartBootstrap(webView: WebView, script: String) {
-        if (script.isBlank()) return
         runCatching {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 val existing = webView.getTag(DOC_START_HANDLE_TAG) as? androidx.webkit.ScriptHandler
                 existing?.remove()
-                val handle = WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
-                webView.setTag(DOC_START_HANDLE_TAG, handle)
+                if (script.isBlank()) {
+                    webView.setTag(DOC_START_HANDLE_TAG, null)
+                } else {
+                    val handle = WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
+                    webView.setTag(DOC_START_HANDLE_TAG, handle)
+                }
             }
         }
     }

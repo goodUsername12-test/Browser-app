@@ -206,6 +206,10 @@ class SettingsViewModel @Inject constructor(
     fun setTimeScaleMedia(v: Boolean) = edit { store.setTimeScaleMedia(v) }
     fun setTimeScaleWorkers(v: Boolean) = edit { store.setTimeScaleWorkers(v) }
     fun setTimeScaleShowHud(v: Boolean) = edit { store.setTimeScaleShowHud(v) }
+    fun setTimeScalePanelScalePct(v: Int) = edit { store.setTimeScalePanelScalePct(v) }
+    fun setTimeScalePanelPosition(x: Float, y: Float) = edit { store.setTimeScalePanelPosition(x, y) }
+    fun setTimeScalePanelExpanded(v: Boolean) = edit { store.setTimeScalePanelExpanded(v) }
+    fun resetTimeScalePanelLayout() = edit { store.resetTimeScalePanelLayout() }
 
     fun applyPreset(preset: PrivacyPreset) = edit {
         val stealth = preset == PrivacyPreset.STEALTH

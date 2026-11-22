@@ -459,7 +459,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             addView(retained, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             HighRefreshRateEnforcer.applyToViewTree(retained)
             val pct = tab.currentTextZoomPercent.coerceIn(50, 200)
-            retained.post {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
                 runCatching {
                     val zVal = if (pct == 100) "" else "${pct / 100.0}"
                     retained.evaluateJavascript(
@@ -467,6 +467,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                         null
                     )
                 }
+                tab.hybridTimeScaleSyncHandler?.invoke()
             }
             return retained
         }
@@ -1089,8 +1090,14 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     applyMedia = media,
                     applyWorkers = workers
                 )
-                if (script.isNotBlank()) {
-                    wv.post { runCatching { wv.evaluateJavascript(script, null) } }
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    runCatching {
+                        val freshBoot = tab.hybridBootstrapProvider?.invoke(wv.url ?: tab.url.value).orEmpty()
+                        com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(wv, freshBoot)
+                    }
+                    if (script.isNotBlank()) {
+                        runCatching { wv.evaluateJavascript(script, null) }
+                    }
                 }
             }
 

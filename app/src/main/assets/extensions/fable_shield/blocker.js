@@ -64,6 +64,7 @@ let lastContentConfig = "";
 let timeScaleRegistered = null;
 let timeScaleSeq = 0;
 let lastTimeScaleConfig = "";
+const timeScaleChannel = "_ev_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 8);
 
 function postNative(message) {
   try {
@@ -131,10 +132,11 @@ async function applyContentScripts(force) {
 function timeScaleConfig() {
   return {
     enabled: config.timeScaleEnabled === true,
-    rate: Math.max(0.1, Math.min(100.0, Number(config.timeScaleRate) || 1.0)),
+    rate: Math.max(0.1, Math.min(300.0, Number(config.timeScaleRate) || 1.0)),
     css: config.timeScaleCss !== false,
     media: config.timeScaleMedia !== false,
     workers: config.timeScaleWorkers !== false,
+    ch: timeScaleChannel,
   };
 }
 
@@ -159,7 +161,7 @@ async function applyTimeScaleScript(force) {
     if (browser.contentScripts && browser.contentScripts.register) {
       next = await browser.contentScripts.register({
         matches: ["<all_urls>"],
-        js: [{ code: "var FABLE_TIME_CFG = " + cfgStr + ";" }, { file: "time_scale.js" }],
+        js: [{ code: "var __TS_CFG = " + cfgStr + ";" }, { file: "time_scale.js" }],
         runAt: "document_start",
         allFrames: true,
         matchAboutBlank: true,
@@ -183,10 +185,11 @@ async function broadcastTimeScaleLive(msg) {
   const enabled = msg.enabled === true;
   const cfgObj = {
     enabled,
-    rate: Math.max(0.1, Math.min(100.0, Number(msg.rate) || 1.0)),
+    rate: Math.max(0.1, Math.min(300.0, Number(msg.rate) || 1.0)),
     css: msg.css !== false,
     media: msg.media !== false,
     workers: msg.workers !== false,
+    ch: timeScaleChannel,
   };
   config.timeScaleEnabled = enabled;
   config.timeScaleRate = cfgObj.rate;
@@ -205,7 +208,7 @@ async function broadcastTimeScaleLive(msg) {
       } catch (_) {}
       if (!delivered && enabled && browser.tabs.executeScript) {
         try {
-          await browser.tabs.executeScript(tab.id, { code: "var FABLE_TIME_CFG = " + JSON.stringify(cfgObj) + ";", allFrames: true });
+          await browser.tabs.executeScript(tab.id, { code: "var __TS_CFG = " + JSON.stringify(cfgObj) + ";", allFrames: true });
           await browser.tabs.executeScript(tab.id, { file: "time_scale.js", allFrames: true });
         } catch (_) {}
       }

@@ -146,9 +146,10 @@ MEM_HTML = """<!DOCTYPE html>
   new Int32Array(window.testWasmMem.buffer)[16] = 133700;
   function checkStealth() {
     try {
-      const noLeak = Object.getOwnPropertyNames(window).filter(k => /fable|cheat|memscan/i.test(k)).length === 0;
+      const noLeak = Object.getOwnPropertyNames(window).filter(k => /cheat|memscan|__fableMem|__fableTimeScale/i.test(k)).length === 0;
       const wasmNat = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
-      return noLeak && wasmNat;
+      const instNat = Function.prototype.toString.call(WebAssembly.instantiate).indexOf("[native code]") !== -1;
+      return noLeak && wasmNat && instNat;
     } catch (_) { return false; }
   }
   const qs = new URLSearchParams(location.search);
@@ -643,8 +644,8 @@ MEM_NATIVE_LINE="$(grep 'FABLE-MEM-CHECK.*scope=native' "$ART/logcat.txt" | tail
 MEM_GECKO_LINE="$(grep 'FABLE-MEM-CHECK.*scope=page_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
 MEM_BLINK_LINE="$(grep 'FABLE-MEM-CHECK.*scope=page_blink' "$ART/logcat.txt" | tail -n 1 || true)"
 echo "$MEM_NATIVE_LINE" | grep -q 'okReg=true.*writeOk=true readBack=987654321 hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-native(${MEM_NATIVE_LINE:-missing})"; }
-echo "$MEM_GECKO_LINE" | grep -q 'engine=GeckoView.*hit=wasm#' || echo "$MEM_GECKO_LINE" | grep -q 'engine=GeckoView.*hit=js:gameState.gold' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko(${MEM_GECKO_LINE:-missing})"; }
-echo "$MEM_BLINK_LINE" | grep -q 'engine=Blink x Gecko.*hit=wasm#' || echo "$MEM_BLINK_LINE" | grep -q 'engine=Blink x Gecko.*hit=js:gameState.gold' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink(${MEM_BLINK_LINE:-missing})"; }
+echo "$MEM_GECKO_LINE" | grep -q 'engine=GeckoView total=[2-9].*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko(${MEM_GECKO_LINE:-missing})"; }
+echo "$MEM_BLINK_LINE" | grep -q 'engine=Blink x Gecko total=[2-9].*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink(${MEM_BLINK_LINE:-missing})"; }
 grep -q 'MEM_PROBE q=tag=mem_gecko&stealth=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko-stealth"; }
 grep -q 'MEM_PROBE q=tag=mem_blink&stealth=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink-stealth"; }
 

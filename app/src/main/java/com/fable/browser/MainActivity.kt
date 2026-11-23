@@ -427,7 +427,7 @@ class MainActivity : FragmentActivity() {
                                 memoryEngineManager.firstScan("133700")
                                 kotlinx.coroutines.delay(1500)
                                 val st1 = memoryEngineManager.state.value
-                                val hit = st1.results.firstOrNull { it.addr.contains("wasm#") || it.addr.contains("gold") }
+                                val hit = st1.results.firstOrNull { it.addr.contains("wasm#") } ?: st1.results.firstOrNull { it.addr.contains("gold") }
                                 if (hit != null) {
                                     memoryEngineManager.addToWatch(hit)
                                     val w = memoryEngineManager.state.value.watchList.lastOrNull()

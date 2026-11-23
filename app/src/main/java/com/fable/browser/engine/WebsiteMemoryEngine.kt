@@ -424,10 +424,10 @@ object WebsiteMemoryEngine {
 
                     var keys;
                     try { keys = Object.keys(obj); } catch (_) { continue; }
-                    var maxKeys = Math.min(keys.length, 160);
+                    var maxKeys = cur.depth === 0 ? keys.length : Math.min(keys.length, 200);
                     for (var i = 0; i < maxKeys && out.length < cap; i++) {
                         var k = keys[i];
-                        if (cur.depth === 0 && SKIP_KEYS.has(k)) continue;
+                        if (cur.depth === 0 && (SKIP_KEYS.has(k) || (k.length > 2 && k[0] === "o" && k[1] === "n"))) continue;
                         if (SENSITIVE_KEY_RE.test(k)) continue;
                         var val;
                         try { val = obj[k]; } catch (_) { continue; }

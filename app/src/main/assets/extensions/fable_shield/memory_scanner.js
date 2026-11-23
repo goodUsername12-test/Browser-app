@@ -8,7 +8,624 @@
   let injectedInPage = false;
   function injectPageEngine() {
     if (injectedInPage) return true;
-    const code = '(function() {\n            var CH = __CH_ARG__;\n            function ping() {\n                var box = { ok: false, out: null };\n                try { window.dispatchEvent(new CustomEvent(CH, { detail: { op: "ping", box: box } })); } catch (_) {}\n                return box.ok;\n            }\n            if (ping()) return;\n\n            // Stealth Function.prototype.toString masking (preserve existing chain!)\n            var origToStr = Function.prototype.toString;\n            var sigMap = new WeakMap();\n            function mask(fn, orig, fallback) {\n                if (typeof fn !== "function") return fn;\n                var sig = "function " + (fallback || "") + "() { [native code] }";\n                if (typeof orig === "function") {\n                    try { sig = origToStr.call(orig); } catch (_) {}\n                    try { Object.defineProperty(fn, "name", { value: orig.name, configurable: true }); } catch (_) {}\n                    try { Object.defineProperty(fn, "length", { value: orig.length, configurable: true }); } catch (_) {}\n                }\n                sigMap.set(fn, sig);\n                return fn;\n            }\n            try {\n                var maskedTs = function toString() {\n                    if (sigMap.has(this)) return sigMap.get(this);\n                    return origToStr.call(this);\n                };\n                mask(maskedTs, origToStr, "toString");\n                Object.defineProperty(Function.prototype, "toString", {\n                    value: maskedTs,\n                    configurable: true,\n                    writable: true\n                });\n            } catch (_) {}\n\n            // Passively track WebAssembly.Memory instances (WeakRef-based so GC is never blocked)\n            var wasmRefs = [];\n            var wasmSeen = new WeakSet();\n            function trackWasmMem(mem) {\n                try {\n                    if (!mem || !(mem.buffer instanceof ArrayBuffer) || wasmSeen.has(mem)) return;\n                    wasmSeen.add(mem);\n                    wasmRefs.push(typeof WeakRef === "function" ? new WeakRef(mem) : { deref: function() { return mem; } });\n                } catch (_) {}\n            }\n            function scanExportsForMem(inst) {\n                try {\n                    var ex = inst && inst.exports ? inst.exports : (inst && inst.instance && inst.instance.exports ? inst.instance.exports : null);\n                    if (!ex) return;\n                    var keys = Object.keys(ex);\n                    for (var i = 0; i < keys.length; i++) {\n                        var v = ex[keys[i]];\n                        if (v && typeof WebAssembly === "object" && v instanceof WebAssembly.Memory) trackWasmMem(v);\n                    }\n                } catch (_) {}\n            }\n            try {\n                if (typeof WebAssembly === "object" && WebAssembly) {\n                    if (typeof WebAssembly.Memory === "function") {\n                        var OrigMem = WebAssembly.Memory;\n                        var ProxMem = new Proxy(OrigMem, {\n                            construct: function(target, args, newTarget) {\n                                var m = Reflect.construct(target, args, newTarget);\n                                trackWasmMem(m);\n                                return m;\n                            }\n                        });\n                        sigMap.set(ProxMem, origToStr.call(OrigMem));\n                        WebAssembly.Memory = ProxMem;\n                    }\n                    if (typeof WebAssembly.instantiate === "function") {\n                        var origInst = WebAssembly.instantiate;\n                        WebAssembly.instantiate = mask(function instantiate() {\n                            var p = origInst.apply(WebAssembly, arguments);\n                            if (p && typeof p.then === "function") {\n                                p.then(function(r) { scanExportsForMem(r); }, function() {});\n                            }\n                            return p;\n                        }, origInst, "instantiate");\n                    }\n                    if (typeof WebAssembly.instantiateStreaming === "function") {\n                        var origInstS = WebAssembly.instantiateStreaming;\n                        WebAssembly.instantiateStreaming = mask(function instantiateStreaming() {\n                            var p = origInstS.apply(WebAssembly, arguments);\n                            if (p && typeof p.then === "function") {\n                                p.then(function(r) { scanExportsForMem(r); }, function() {});\n                            }\n                            return p;\n                        }, origInstS, "instantiateStreaming");\n                    }\n                    if (typeof WebAssembly.Instance === "function") {\n                        var OrigInstance = WebAssembly.Instance;\n                        var ProxInstance = new Proxy(OrigInstance, {\n                            construct: function(target, args, newTarget) {\n                                var inst = Reflect.construct(target, args, newTarget);\n                                scanExportsForMem(inst);\n                                return inst;\n                            }\n                        });\n                        sigMap.set(ProxInstance, origToStr.call(OrigInstance));\n                        WebAssembly.Instance = ProxInstance;\n                    }\n                }\n            } catch (_) {}\n\n            function liveWasmMemories() {\n                var live = [];\n                var kept = [];\n                for (var i = 0; i < wasmRefs.length; i++) {\n                    var m = wasmRefs[i].deref();\n                    if (m && m.buffer && m.buffer.byteLength > 0) {\n                        kept.push(wasmRefs[i]);\n                        live.push(m);\n                    }\n                }\n                wasmRefs = kept;\n                return live;\n            }\n\n            // State for Cheat Engine sessions\n            var hits = [];\n            var prevHits = [];\n            var lastType = "auto";\n            var taRegistry = [];\n            var jsIdCounter = 1;\n            var watchRefs = new Map(); // id -> hit record for fast read/write even after scan reset!\n\n            var SKIP_KEYS = new Set([\n                "window", "self", "globalThis", "document", "location", "navigator", "history",\n                "screen", "performance", "crypto", "caches", "indexedDB", "localStorage", "sessionStorage",\n                "chrome", "webkit", "frames", "top", "parent", "opener", "styleMedia", "visualViewport",\n                "customElements", "speechSynthesis", "FableHybridBridge", "external", "console"\n            ]);\n            var SENSITIVE_KEY_RE = /(password|passwd|secret|token|jwt|auth|session_?id|csrf|cookie|api_?key|credit|card)/i;\n\n            function parseAob(txt) {\n                var parts = String(txt || "").trim().split(/[\\s,\\-]+/).filter(Boolean);\n                var bytes = [], mask = [];\n                for (var i = 0; i < parts.length; i++) {\n                    var p = parts[i];\n                    if (p === "?" || p === "??" || p === "*" || p === "**") {\n                        bytes.push(0); mask.push(0);\n                    } else {\n                        var v = parseInt(p, 16);\n                        if (!Number.isNaN(v) && v >= 0 && v <= 255) { bytes.push(v); mask.push(1); }\n                    }\n                }\n                return { bytes: bytes, mask: mask };\n            }\n\n            function numEps(dt) {\n                if (dt === "f32") return 0.01;\n                if (dt === "f64" || dt === "auto") return 0.001;\n                return 0.0;\n            }\n\n            function matchNum(cur, prev, hasPrev, dt, sc, v1, v2) {\n                if (typeof cur !== "number" || !Number.isFinite(cur)) return false;\n                var eps = numEps(dt);\n                switch (sc) {\n                    case "exact":        return Math.abs(cur - v1) <= eps;\n                    case "bigger":       return cur > v1;\n                    case "smaller":      return cur < v1;\n                    case "between":      return cur >= v1 && cur <= v2;\n                    case "unknown":      return true;\n                    case "increased":    return hasPrev && cur > prev + eps;\n                    case "decreased":    return hasPrev && cur < prev - eps;\n                    case "increased_by": return hasPrev && Math.abs((cur - prev) - v1) <= (eps > 0 ? eps : 1e-6);\n                    case "decreased_by": return hasPrev && Math.abs((prev - cur) - v1) <= (eps > 0 ? eps : 1e-6);\n                    case "changed":      return hasPrev && Math.abs(cur - prev) > eps;\n                    case "unchanged":    return hasPrev && Math.abs(cur - prev) <= eps;\n                    default:             return false;\n                }\n            }\n\n            function readViewVal(dv, off, dt) {\n                try {\n                    if (dt === "i8")  return dv.getInt8(off);\n                    if (dt === "i16") return dv.getInt16(off, true);\n                    if (dt === "i32") return dv.getInt32(off, true);\n                    if (dt === "i64") return Number(dv.getBigInt64(off, true));\n                    if (dt === "f32") return dv.getFloat32(off, true);\n                    if (dt === "f64") return dv.getFloat64(off, true);\n                } catch (_) {}\n                return NaN;\n            }\n\n            function writeViewVal(dv, off, dt, valStr) {\n                try {\n                    if (dt === "str") {\n                        var enc = new TextEncoder().encode(String(valStr));\n                        var u8 = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);\n                        for (var i = 0; i < enc.length && (off + i) < u8.length; i++) u8[off + i] = enc[i];\n                        return true;\n                    }\n                    if (dt === "aob") {\n                        var pat = parseAob(valStr);\n                        var u8b = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);\n                        for (var j = 0; j < pat.bytes.length && (off + j) < u8b.length; j++) {\n                            if (pat.mask[j]) u8b[off + j] = pat.bytes[j];\n                        }\n                        return true;\n                    }\n                    var num = Number(valStr);\n                    if (!Number.isFinite(num)) return false;\n                    if (dt === "i8")  { dv.setInt8(off, num | 0); return true; }\n                    if (dt === "i16") { dv.setInt16(off, num | 0, true); return true; }\n                    if (dt === "i32") { dv.setInt32(off, num | 0, true); return true; }\n                    if (dt === "i64") { dv.setBigInt64(off, BigInt(Math.round(num)), true); return true; }\n                    if (dt === "f32") { dv.setFloat32(off, num, true); return true; }\n                    if (dt === "f64") { dv.setFloat64(off, num, true); return true; }\n                } catch (_) {}\n                return false;\n            }\n\n            function formatVal(v, dt) {\n                if (v === undefined || v === null) return String(v);\n                if (typeof v === "number") {\n                    if (!Number.isFinite(v)) return String(v);\n                    if (dt === "f32" || dt === "f64" || !Number.isInteger(v)) return Number(v.toPrecision(6)).toString();\n                    return String(v);\n                }\n                return String(v).slice(0, 64);\n            }\n\n            function getBufferForHit(h) {\n                if (h.kind === "wasm") {\n                    var mems = liveWasmMemories();\n                    var m = mems[h.bufIdx];\n                    if (m && m.buffer && h.off < m.buffer.byteLength) return { buf: m.buffer, byteOff: 0, byteLen: m.buffer.byteLength };\n                    return null;\n                }\n                if (h.kind === "ta") {\n                    var ref = taRegistry[h.bufIdx];\n                    var ta = ref ? ref.deref() : null;\n                    if (ta && ta.buffer && h.off < ta.byteLength) return { buf: ta.buffer, byteOff: ta.byteOffset, byteLen: ta.byteLength };\n                    return null;\n                }\n                return null;\n            }\n\n            function readHitCurrent(h) {\n                try {\n                    if (h.kind === "js") {\n                        var obj = h.objRef.deref();\n                        if (!obj) return { ok: false, val: "<gc>" };\n                        return { ok: true, val: obj[h.key] };\n                    }\n                    if (h.kind === "ls" || h.kind === "ss") {\n                        var st = h.kind === "ls" ? window.localStorage : window.sessionStorage;\n                        var raw = st.getItem(h.key);\n                        if (raw === null) return { ok: false, val: "<removed>" };\n                        var num = Number(raw);\n                        return { ok: true, val: (h.dt !== "str" && raw.trim() !== "" && Number.isFinite(num)) ? num : raw };\n                    }\n                    if (h.kind === "wasm" || h.kind === "ta") {\n                        var bi = getBufferForHit(h);\n                        if (!bi) return { ok: false, val: "<detached>" };\n                        if (h.dt === "str") {\n                            var u8 = new Uint8Array(bi.buf, bi.byteOff + h.off, Math.min(h.len || 16, bi.byteLen - h.off));\n                            return { ok: true, val: new TextDecoder().decode(u8).replace(/\\0.*/, "") };\n                        }\n                        if (h.dt === "aob") {\n                            var u8a = new Uint8Array(bi.buf, bi.byteOff + h.off, Math.min(h.len || 8, bi.byteLen - h.off));\n                            var parts = [];\n                            for (var i = 0; i < u8a.length; i++) parts.push(u8a[i].toString(16).toUpperCase().padStart(2, "0"));\n                            return { ok: true, val: parts.join(" ") };\n                        }\n                        var dv = new DataView(bi.buf, bi.byteOff, bi.byteLen);\n                        return { ok: true, val: readViewVal(dv, h.off, h.dt) };\n                    }\n                } catch (_) {}\n                return { ok: false, val: "<err>" };\n            }\n\n            function writeHitValue(h, valStr) {\n                try {\n                    if (h.kind === "js") {\n                        var obj = h.objRef.deref();\n                        if (!obj) return false;\n                        var cur = obj[h.key];\n                        if (typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(valStr)) && String(valStr).trim() !== "")) {\n                            obj[h.key] = Number(valStr);\n                        } else if (typeof cur === "boolean") {\n                            obj[h.key] = (valStr === "true" || valStr === "1");\n                        } else {\n                            obj[h.key] = String(valStr);\n                        }\n                        return true;\n                    }\n                    if (h.kind === "ls" || h.kind === "ss") {\n                        var st = h.kind === "ls" ? window.localStorage : window.sessionStorage;\n                        st.setItem(h.key, String(valStr));\n                        return true;\n                    }\n                    if (h.kind === "wasm" || h.kind === "ta") {\n                        var bi = getBufferForHit(h);\n                        if (!bi) return false;\n                        var dv = new DataView(bi.buf, bi.byteOff, bi.byteLen);\n                        return writeViewVal(dv, h.off, h.dt, valStr);\n                    }\n                } catch (_) {}\n                return false;\n            }\n\n            function scanBuffer(buf, byteOff, byteLen, kind, bufIdx, labelPrefix, dt, sc, v1, v2, s1, aob, out, cap) {\n                if (!buf || byteLen <= 0 || out.length >= cap) return;\n                var scanLen = Math.min(byteLen, 32 * 1024 * 1024); // cap 32MB per buffer\n                var dv = new DataView(buf, byteOff, scanLen);\n                if (dt === "str") {\n                    var enc = new TextEncoder().encode(s1);\n                    if (!enc.length) return;\n                    var u8 = new Uint8Array(buf, byteOff, scanLen);\n                    var lim = scanLen - enc.length;\n                    for (var o = 0; o <= lim && out.length < cap; o++) {\n                        if (u8[o] !== enc[0]) continue;\n                        var ok = true;\n                        for (var k = 1; k < enc.length; k++) { if (u8[o + k] !== enc[k]) { ok = false; break; } }\n                        if (ok) {\n                            var id = labelPrefix + "+0x" + o.toString(16).toUpperCase();\n                            out.push({ id: id, kind: kind, bufIdx: bufIdx, off: o, dt: "str", len: enc.length, prev: s1 });\n                        }\n                    }\n                    return;\n                }\n                if (dt === "aob") {\n                    if (!aob.bytes.length) return;\n                    var u8b = new Uint8Array(buf, byteOff, scanLen);\n                    var lim2 = scanLen - aob.bytes.length;\n                    for (var o2 = 0; o2 <= lim2 && out.length < cap; o2++) {\n                        var ok2 = true;\n                        for (var k2 = 0; k2 < aob.bytes.length; k2++) {\n                            if (aob.mask[k2] && u8b[o2 + k2] !== aob.bytes[k2]) { ok2 = false; break; }\n                        }\n                        if (ok2) {\n                            var id2 = labelPrefix + "+0x" + o2.toString(16).toUpperCase();\n                            out.push({ id: id2, kind: kind, bufIdx: bufIdx, off: o2, dt: "aob", len: aob.bytes.length, prev: s1 });\n                        }\n                    }\n                    return;\n                }\n                var types = dt === "auto" ? ["i32", "f32", "f64"] : [dt];\n                for (var ti = 0; ti < types.length && out.length < cap; ti++) {\n                    var t = types[ti];\n                    var sz = t === "i8" ? 1 : (t === "i16" ? 2 : ((t === "i32" || t === "f32") ? 4 : 8));\n                    var endOff = scanLen - sz;\n                    for (var off = 0; off <= endOff && out.length < cap; off += sz) {\n                        var val = readViewVal(dv, off, t);\n                        if (matchNum(val, 0, false, t, sc, v1, v2)) {\n                            var idn = labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":" + t;\n                            out.push({ id: idn, kind: kind, bufIdx: bufIdx, off: off, dt: t, len: sz, prev: val });\n                        }\n                    }\n                }\n            }\n\n            function collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap) {\n                var visited = new WeakSet();\n                var queue = [{ obj: window, path: "window", depth: 0 }];\n                var maxNodes = 2500;\n                var nodesVisited = 0;\n                var taSeen = new WeakSet();\n                taRegistry = [];\n\n                while (queue.length > 0 && nodesVisited < maxNodes && out.length < cap) {\n                    var cur = queue.shift();\n                    var obj = cur.obj;\n                    if (!obj || (typeof obj !== "object" && typeof obj !== "function")) continue;\n                    if (visited.has(obj)) continue;\n                    visited.add(obj);\n                    nodesVisited++;\n\n                    // Detect TypedArrays / DataViews / ArrayBuffers owned by page scripts\n                    if (ArrayBuffer.isView(obj) && obj.byteLength >= 4 && obj.byteLength <= 16 * 1024 * 1024 && !taSeen.has(obj)) {\n                        taSeen.add(obj);\n                        var taIdx = taRegistry.length;\n                        taRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });\n                        scanBuffer(obj.buffer, obj.byteOffset, obj.byteLength, "ta", taIdx, "ta#" + taIdx + "(" + cur.path.slice(-24) + ")", dt, sc, v1, v2, s1, aob, out, cap);\n                        continue;\n                    }\n                    if (typeof WebAssembly === "object" && obj instanceof WebAssembly.Memory) {\n                        trackWasmMem(obj);\n                        continue;\n                    }\n                    // Skip DOM nodes to stay super fast and never touch layout\n                    if (typeof Node === "function" && obj instanceof Node) continue;\n\n                    var keys;\n                    try { keys = Object.keys(obj); } catch (_) { continue; }\n                    var maxKeys = Math.min(keys.length, 160);\n                    for (var i = 0; i < maxKeys && out.length < cap; i++) {\n                        var k = keys[i];\n                        if (cur.depth === 0 && SKIP_KEYS.has(k)) continue;\n                        if (SENSITIVE_KEY_RE.test(k)) continue;\n                        var val;\n                        try { val = obj[k]; } catch (_) { continue; }\n                        var nextPath = cur.depth === 0 ? k : (cur.path + "." + k);\n                        if (typeof val === "number") {\n                            if (dt !== "str" && dt !== "aob" && matchNum(val, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {\n                                var ref = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };\n                                out.push({ id: "js:" + nextPath, kind: "js", objRef: ref, key: k, dt: Number.isInteger(val) ? "i32" : "f64", prev: val });\n                            }\n                        } else if (typeof val === "string") {\n                            if ((dt === "str" || dt === "auto") && s1 && val.indexOf(s1) !== -1 && val.length <= 256) {\n                                var refS = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };\n                                out.push({ id: "js:" + nextPath, kind: "js", objRef: refS, key: k, dt: "str", prev: val });\n                            }\n                        } else if (val && typeof val === "object" && cur.depth < 4) {\n                            if (!visited.has(val)) queue.push({ obj: val, path: nextPath, depth: cur.depth + 1 });\n                        }\n                    }\n                }\n            }\n\n            function scanStorage(dt, sc, v1, v2, s1, out, cap) {\n                var stores = [["ls", window.localStorage], ["ss", window.sessionStorage]];\n                for (var si = 0; si < stores.length; si++) {\n                    var tag = stores[si][0], st = stores[si][1];\n                    if (!st) continue;\n                    try {\n                        for (var i = 0; i < st.length && out.length < cap; i++) {\n                            var k = st.key(i);\n                            if (!k || SENSITIVE_KEY_RE.test(k)) continue;\n                            var raw = st.getItem(k);\n                            if (raw === null || raw.length > 256) continue;\n                            if (dt === "str") {\n                                if (s1 && raw.indexOf(s1) !== -1) out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "str", prev: raw });\n                            } else if (dt !== "aob") {\n                                var num = Number(raw);\n                                if (raw.trim() !== "" && Number.isFinite(num) && matchNum(num, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {\n                                    out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "f64", prev: num });\n                                } else if (dt === "auto" && s1 && raw.indexOf(s1) !== -1) {\n                                    out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "str", prev: raw });\n                                }\n                            }\n                        }\n                    } catch (_) {}\n                }\n            }\n\n            function formatHitsResult(maxRet) {\n                var lim = Math.min(hits.length, maxRet || 150);\n                var items = [];\n                for (var i = 0; i < lim; i++) {\n                    var h = hits[i];\n                    watchRefs.set(h.id, h);\n                    var rd = readHitCurrent(h);\n                    items.push({ addr: h.id, val: formatVal(rd.val, h.dt), type: h.dt, kind: h.kind });\n                }\n                return { ok: true, total: hits.length, canUndo: prevHits.length > 0, items: items };\n            }\n\n            function handleCmd(cmd) {\n                try {\n                    if (cmd.op === "ping") return { ok: true };\n                    if (cmd.op === "reset") {\n                        hits = []; prevHits = [];\n                        return { ok: true, total: 0, canUndo: false, items: [] };\n                    }\n                    if (cmd.op === "undo") {\n                        if (!prevHits.length) return { ok: false, error: "Nothing to undo" };\n                        hits = prevHits; prevHits = [];\n                        return formatHitsResult(cmd.maxReturn || 150);\n                    }\n                    if (cmd.op === "firstScan") {\n                        prevHits = []; hits = [];\n                        var dt = cmd.dtype || "auto";\n                        var sc = cmd.scanType || "exact";\n                        lastType = dt;\n                        var s1 = String(cmd.val1 || "");\n                        var s2 = String(cmd.val2 || "");\n                        var v1 = Number(s1), v2 = Number(s2);\n                        var aob = dt === "aob" ? parseAob(s1) : { bytes: [], mask: [] };\n                        if (dt === "str" && !s1) return { ok: false, error: "Enter text to search" };\n                        if (dt === "aob" && !aob.bytes.length) return { ok: false, error: "Enter hex bytes (e.g. 48 8B ?? 01)" };\n                        if (dt !== "str" && dt !== "aob" && sc !== "unknown") {\n                            if (dt === "auto" && (!s1.trim() || !Number.isFinite(v1))) {\n                                // Auto string fallback when non-numeric text entered\n                                dt = "str"; lastType = "str";\n                            } else if (!s1.trim() || !Number.isFinite(v1)) {\n                                return { ok: false, error: "Enter a valid number" };\n                            }\n                            if (sc === "between") {\n                                if (!s2.trim() || !Number.isFinite(v2)) return { ok: false, error: "Enter max value" };\n                                if (v2 < v1) { var tmp = v1; v1 = v2; v2 = tmp; }\n                            }\n                        }\n                        var cap = sc === "unknown" ? 60000 : 120000;\n                        var out = [];\n                        // 1. Scan JS heap objects + TypedArrays (also discovers any WebAssembly.Memory reachable from JS!)\n                        collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap);\n                        // 2. Scan all tracked WebAssembly linear memory buffers\n                        var mems = liveWasmMemories();\n                        for (var mi = 0; mi < mems.length && out.length < cap; mi++) {\n                            var mb = mems[mi].buffer;\n                            scanBuffer(mb, 0, mb.byteLength, "wasm", mi, "wasm#" + mi, dt, sc, v1, v2, s1, aob, out, cap);\n                        }\n                        // 3. Scan Web Storage (excluding auth/token keys)\n                        scanStorage(dt, sc, v1, v2, s1, out, cap);\n                        hits = out;\n                        return formatHitsResult(cmd.maxReturn || 150);\n                    }\n                    if (cmd.op === "nextScan") {\n                        if (!hits.length) return { ok: false, error: "Run First Scan first" };\n                        var sc2 = cmd.scanType || "exact";\n                        var s1n = String(cmd.val1 || "");\n                        var s2n = String(cmd.val2 || "");\n                        var v1n = Number(s1n), v2n = Number(s2n);\n                        var needsV1 = (sc2 === "exact" || sc2 === "bigger" || sc2 === "smaller" || sc2 === "between" || sc2 === "increased_by" || sc2 === "decreased_by");\n                        if (lastType !== "str" && lastType !== "aob" && needsV1 && (!s1n.trim() || !Number.isFinite(v1n))) {\n                            return { ok: false, error: "Enter a valid number" };\n                        }\n                        if (sc2 === "between" && (!s2n.trim() || !Number.isFinite(v2n))) {\n                            return { ok: false, error: "Enter max value" };\n                        }\n                        if (sc2 === "between" && v2n < v1n) { var t2 = v1n; v1n = v2n; v2n = t2; }\n                        prevHits = hits;\n                        var next = [];\n                        for (var i = 0; i < hits.length; i++) {\n                            var h = hits[i];\n                            var rd = readHitCurrent(h);\n                            if (!rd.ok) continue;\n                            if (h.dt === "str") {\n                                if (sc2 === "changed" ? (rd.val !== h.prev) : (sc2 === "unchanged" ? (rd.val === h.prev) : String(rd.val).indexOf(s1n) !== -1)) {\n                                    h.prev = rd.val; next.push(h);\n                                }\n                            } else if (h.dt === "aob") {\n                                if (sc2 === "changed" ? (rd.val !== h.prev) : (sc2 === "unchanged" ? (rd.val === h.prev) : true)) {\n                                    h.prev = rd.val; next.push(h);\n                                }\n                            } else {\n                                if (matchNum(rd.val, h.prev, true, h.dt, sc2, v1n, v2n)) {\n                                    h.prev = rd.val; next.push(h);\n                                }\n                            }\n                        }\n                        hits = next;\n                        return formatHitsResult(cmd.maxReturn || 150);\n                    }\n                    if (cmd.op === "readBatch") {\n                        var ids = Array.isArray(cmd.ids) ? cmd.ids : [];\n                        var vals = {};\n                        for (var ri = 0; ri < ids.length; ri++) {\n                            var id = ids[ri];\n                            var rec = watchRefs.get(id);\n                            if (rec) {\n                                var r = readHitCurrent(rec);\n                                vals[id] = r.ok ? formatVal(r.val, rec.dt) : String(r.val);\n                            } else {\n                                vals[id] = "<expired>";\n                            }\n                        }\n                        return { ok: true, values: vals };\n                    }\n                    if (cmd.op === "write") {\n                        var recW = watchRefs.get(cmd.id);\n                        if (!recW) return { ok: false, error: "Entry not found in page" };\n                        var okW = writeHitValue(recW, cmd.val);\n                        var rdW = readHitCurrent(recW);\n                        return { ok: okW, val: formatVal(rdW.val, recW.dt) };\n                    }\n                    if (cmd.op === "hexDump") {\n                        var recH = watchRefs.get(cmd.id);\n                        if (!recH || (recH.kind !== "wasm" && recH.kind !== "ta")) {\n                            return { ok: false, error: "Hex view supports WASM / TypedArray buffers" };\n                        }\n                        var bi = getBufferForHit(recH);\n                        if (!bi) return { ok: false, error: "Buffer detached" };\n                        var baseOff = Math.max(0, Math.min(bi.byteLen - 16, (typeof cmd.offset === "number" ? cmd.offset : recH.off)));\n                        var len = Math.min(256, Math.max(16, Math.min(cmd.len || 128, bi.byteLen - baseOff)));\n                        var u8h = new Uint8Array(bi.buf, bi.byteOff + baseOff, len);\n                        var hex = "";\n                        for (var hi = 0; hi < u8h.length; hi++) hex += u8h[hi].toString(16).toUpperCase().padStart(2, "0");\n                        return { ok: true, addr: "0x" + baseOff.toString(16).toUpperCase(), offset: baseOff, len: len, hex: hex };\n                    }\n                    if (cmd.op === "regions") {\n                        var memsR = liveWasmMemories();\n                        var regs = [];\n                        var totalKb = 0;\n                        for (var rmi = 0; rmi < memsR.length; rmi++) {\n                            var kb = Math.round(memsR[rmi].buffer.byteLength / 1024);\n                            totalKb += kb;\n                            regs.push({ start: "wasm#" + rmi, end: "0x" + memsR[rmi].buffer.byteLength.toString(16).toUpperCase(), kb: kb, perms: "rw-wasm", label: "WebAssembly.Memory #" + rmi });\n                        }\n                        for (var tai = 0; tai < Math.min(taRegistry.length, 40); tai++) {\n                            var taObj = taRegistry[tai].deref();\n                            if (taObj) {\n                                var tkb = Math.max(1, Math.round(taObj.byteLength / 1024));\n                                totalKb += tkb;\n                                regs.push({ start: "ta#" + tai, end: "0x" + taObj.byteLength.toString(16).toUpperCase(), kb: tkb, perms: "rw-ta", label: taObj.constructor ? taObj.constructor.name : "TypedArray" });\n                            }\n                        }\n                        return { ok: true, count: regs.length, totalKb: totalKb, regions: regs };\n                    }\n                    return { ok: false, error: "Unknown op" };\n                } catch (e) {\n                    return { ok: false, error: String(e && e.message ? e.message : e) };\n                }\n            }\n\n            window.addEventListener(CH, function(ev) {\n                var d = ev && ev.detail;\n                if (!d) return;\n                if (typeof d === "string") {\n                    var parsed = null;\n                    try { parsed = JSON.parse(d); } catch (_) {}\n                    var resObj = parsed ? handleCmd(parsed) : { ok: false, error: "Bad cmd" };\n                    try { window.dispatchEvent(new CustomEvent(CH + "_ret", { detail: JSON.stringify(resObj) })); } catch (_) {}\n                    return;\n                }\n                if (typeof d === "object" && d.box) {\n                    d.box.ok = true;\n                    d.box.out = handleCmd(d);\n                }\n            }, false);\n            try { window.dispatchEvent(new Event(CH + "_ok")); } catch (_) {}\n        })();'.replace("__CH_ARG__", JSON.stringify(CH));
+    const code = '(function() {
+            var CH = __CH_ARG__;
+            function ping() {
+                var box = { ok: false, out: null };
+                try { window.dispatchEvent(new CustomEvent(CH, { detail: { op: "ping", box: box } })); } catch (_) {}
+                return box.ok;
+            }
+            if (ping()) return;
+
+            // Stealth Function.prototype.toString masking (preserve existing chain!)
+            var origToStr = Function.prototype.toString;
+            var sigMap = new WeakMap();
+            function mask(fn, orig, fallback) {
+                if (typeof fn !== "function") return fn;
+                var sig = "function " + (fallback || "") + "() { [native code] }";
+                if (typeof orig === "function") {
+                    try { sig = origToStr.call(orig); } catch (_) {}
+                    try { Object.defineProperty(fn, "name", { value: orig.name, configurable: true }); } catch (_) {}
+                    try { Object.defineProperty(fn, "length", { value: orig.length, configurable: true }); } catch (_) {}
+                }
+                sigMap.set(fn, sig);
+                return fn;
+            }
+            try {
+                var maskedTs = function toString() {
+                    if (sigMap.has(this)) return sigMap.get(this);
+                    return origToStr.call(this);
+                };
+                mask(maskedTs, origToStr, "toString");
+                Object.defineProperty(Function.prototype, "toString", {
+                    value: maskedTs,
+                    configurable: true,
+                    writable: true
+                });
+            } catch (_) {}
+
+            // Passively track WebAssembly.Memory instances (WeakRef-based so GC is never blocked)
+            var wasmRefs = [];
+            var wasmSeen = new WeakSet();
+            function trackWasmMem(mem) {
+                try {
+                    if (!mem || !(mem.buffer instanceof ArrayBuffer) || wasmSeen.has(mem)) return;
+                    wasmSeen.add(mem);
+                    wasmRefs.push(typeof WeakRef === "function" ? new WeakRef(mem) : { deref: function() { return mem; } });
+                } catch (_) {}
+            }
+            function scanExportsForMem(inst) {
+                try {
+                    var ex = inst && inst.exports ? inst.exports : (inst && inst.instance && inst.instance.exports ? inst.instance.exports : null);
+                    if (!ex) return;
+                    var keys = Object.keys(ex);
+                    for (var i = 0; i < keys.length; i++) {
+                        var v = ex[keys[i]];
+                        if (v && typeof WebAssembly === "object" && v instanceof WebAssembly.Memory) trackWasmMem(v);
+                    }
+                } catch (_) {}
+            }
+            try {
+                if (typeof WebAssembly === "object" && WebAssembly) {
+                    if (typeof WebAssembly.Memory === "function") {
+                        var OrigMem = WebAssembly.Memory;
+                        var ProxMem = new Proxy(OrigMem, {
+                            construct: function(target, args, newTarget) {
+                                var m = Reflect.construct(target, args, newTarget);
+                                trackWasmMem(m);
+                                return m;
+                            }
+                        });
+                        sigMap.set(ProxMem, origToStr.call(OrigMem));
+                        WebAssembly.Memory = ProxMem;
+                    }
+                    if (typeof WebAssembly.instantiate === "function") {
+                        var origInst = WebAssembly.instantiate;
+                        WebAssembly.instantiate = mask(function instantiate() {
+                            var p = origInst.apply(WebAssembly, arguments);
+                            if (p && typeof p.then === "function") {
+                                p.then(function(r) { scanExportsForMem(r); }, function() {});
+                            }
+                            return p;
+                        }, origInst, "instantiate");
+                    }
+                    if (typeof WebAssembly.instantiateStreaming === "function") {
+                        var origInstS = WebAssembly.instantiateStreaming;
+                        WebAssembly.instantiateStreaming = mask(function instantiateStreaming() {
+                            var p = origInstS.apply(WebAssembly, arguments);
+                            if (p && typeof p.then === "function") {
+                                p.then(function(r) { scanExportsForMem(r); }, function() {});
+                            }
+                            return p;
+                        }, origInstS, "instantiateStreaming");
+                    }
+                    if (typeof WebAssembly.Instance === "function") {
+                        var OrigInstance = WebAssembly.Instance;
+                        var ProxInstance = new Proxy(OrigInstance, {
+                            construct: function(target, args, newTarget) {
+                                var inst = Reflect.construct(target, args, newTarget);
+                                scanExportsForMem(inst);
+                                return inst;
+                            }
+                        });
+                        sigMap.set(ProxInstance, origToStr.call(OrigInstance));
+                        WebAssembly.Instance = ProxInstance;
+                    }
+                }
+            } catch (_) {}
+
+            function liveWasmMemories() {
+                var live = [];
+                var kept = [];
+                for (var i = 0; i < wasmRefs.length; i++) {
+                    var m = wasmRefs[i].deref();
+                    if (m && m.buffer && m.buffer.byteLength > 0) {
+                        kept.push(wasmRefs[i]);
+                        live.push(m);
+                    }
+                }
+                wasmRefs = kept;
+                return live;
+            }
+
+            // State for Cheat Engine sessions
+            var hits = [];
+            var prevHits = [];
+            var lastType = "auto";
+            var taRegistry = [];
+            var jsIdCounter = 1;
+            var watchRefs = new Map(); // id -> hit record for fast read/write even after scan reset!
+
+            var SKIP_KEYS = new Set([
+                "window", "self", "globalThis", "document", "location", "navigator", "history",
+                "screen", "performance", "crypto", "caches", "indexedDB", "localStorage", "sessionStorage",
+                "chrome", "webkit", "frames", "top", "parent", "opener", "styleMedia", "visualViewport",
+                "customElements", "speechSynthesis", "FableHybridBridge", "external", "console"
+            ]);
+            var SENSITIVE_KEY_RE = /(password|passwd|secret|token|jwt|auth|session_?id|csrf|cookie|api_?key|credit|card)/i;
+
+            function parseAob(txt) {
+                var parts = String(txt || "").trim().split(/[\s,\-]+/).filter(Boolean);
+                var bytes = [], mask = [];
+                for (var i = 0; i < parts.length; i++) {
+                    var p = parts[i];
+                    if (p === "?" || p === "??" || p === "*" || p === "**") {
+                        bytes.push(0); mask.push(0);
+                    } else {
+                        var v = parseInt(p, 16);
+                        if (!Number.isNaN(v) && v >= 0 && v <= 255) { bytes.push(v); mask.push(1); }
+                    }
+                }
+                return { bytes: bytes, mask: mask };
+            }
+
+            function numEps(dt) {
+                if (dt === "f32") return 0.01;
+                if (dt === "f64" || dt === "auto") return 0.001;
+                return 0.0;
+            }
+
+            function matchNum(cur, prev, hasPrev, dt, sc, v1, v2) {
+                if (typeof cur !== "number" || !Number.isFinite(cur)) return false;
+                var eps = numEps(dt);
+                switch (sc) {
+                    case "exact":        return Math.abs(cur - v1) <= eps;
+                    case "bigger":       return cur > v1;
+                    case "smaller":      return cur < v1;
+                    case "between":      return cur >= v1 && cur <= v2;
+                    case "unknown":      return true;
+                    case "increased":    return hasPrev && cur > prev + eps;
+                    case "decreased":    return hasPrev && cur < prev - eps;
+                    case "increased_by": return hasPrev && Math.abs((cur - prev) - v1) <= (eps > 0 ? eps : 1e-6);
+                    case "decreased_by": return hasPrev && Math.abs((prev - cur) - v1) <= (eps > 0 ? eps : 1e-6);
+                    case "changed":      return hasPrev && Math.abs(cur - prev) > eps;
+                    case "unchanged":    return hasPrev && Math.abs(cur - prev) <= eps;
+                    default:             return false;
+                }
+            }
+
+            function readViewVal(dv, off, dt) {
+                try {
+                    if (dt === "i8")  return dv.getInt8(off);
+                    if (dt === "i16") return dv.getInt16(off, true);
+                    if (dt === "i32") return dv.getInt32(off, true);
+                    if (dt === "i64") return Number(dv.getBigInt64(off, true));
+                    if (dt === "f32") return dv.getFloat32(off, true);
+                    if (dt === "f64") return dv.getFloat64(off, true);
+                } catch (_) {}
+                return NaN;
+            }
+
+            function writeViewVal(dv, off, dt, valStr) {
+                try {
+                    if (dt === "str") {
+                        var enc = new TextEncoder().encode(String(valStr));
+                        var u8 = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+                        for (var i = 0; i < enc.length && (off + i) < u8.length; i++) u8[off + i] = enc[i];
+                        return true;
+                    }
+                    if (dt === "aob") {
+                        var pat = parseAob(valStr);
+                        var u8b = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+                        for (var j = 0; j < pat.bytes.length && (off + j) < u8b.length; j++) {
+                            if (pat.mask[j]) u8b[off + j] = pat.bytes[j];
+                        }
+                        return true;
+                    }
+                    var num = Number(valStr);
+                    if (!Number.isFinite(num)) return false;
+                    if (dt === "i8")  { dv.setInt8(off, num | 0); return true; }
+                    if (dt === "i16") { dv.setInt16(off, num | 0, true); return true; }
+                    if (dt === "i32") { dv.setInt32(off, num | 0, true); return true; }
+                    if (dt === "i64") { dv.setBigInt64(off, BigInt(Math.round(num)), true); return true; }
+                    if (dt === "f32") { dv.setFloat32(off, num, true); return true; }
+                    if (dt === "f64") { dv.setFloat64(off, num, true); return true; }
+                } catch (_) {}
+                return false;
+            }
+
+            function formatVal(v, dt) {
+                if (v === undefined || v === null) return String(v);
+                if (typeof v === "number") {
+                    if (!Number.isFinite(v)) return String(v);
+                    if (dt === "f32" || dt === "f64" || !Number.isInteger(v)) return Number(v.toPrecision(6)).toString();
+                    return String(v);
+                }
+                return String(v).slice(0, 64);
+            }
+
+            function getBufferForHit(h) {
+                if (h.kind === "wasm") {
+                    var mems = liveWasmMemories();
+                    var m = mems[h.bufIdx];
+                    if (m && m.buffer && h.off < m.buffer.byteLength) return { buf: m.buffer, byteOff: 0, byteLen: m.buffer.byteLength };
+                    return null;
+                }
+                if (h.kind === "ta") {
+                    var ref = taRegistry[h.bufIdx];
+                    var ta = ref ? ref.deref() : null;
+                    if (ta && ta.buffer && h.off < ta.byteLength) return { buf: ta.buffer, byteOff: ta.byteOffset, byteLen: ta.byteLength };
+                    return null;
+                }
+                return null;
+            }
+
+            function readHitCurrent(h) {
+                try {
+                    if (h.kind === "js") {
+                        var obj = h.objRef.deref();
+                        if (!obj) return { ok: false, val: "<gc>" };
+                        return { ok: true, val: obj[h.key] };
+                    }
+                    if (h.kind === "ls" || h.kind === "ss") {
+                        var st = h.kind === "ls" ? window.localStorage : window.sessionStorage;
+                        var raw = st.getItem(h.key);
+                        if (raw === null) return { ok: false, val: "<removed>" };
+                        var num = Number(raw);
+                        return { ok: true, val: (h.dt !== "str" && raw.trim() !== "" && Number.isFinite(num)) ? num : raw };
+                    }
+                    if (h.kind === "wasm" || h.kind === "ta") {
+                        var bi = getBufferForHit(h);
+                        if (!bi) return { ok: false, val: "<detached>" };
+                        if (h.dt === "str") {
+                            var u8 = new Uint8Array(bi.buf, bi.byteOff + h.off, Math.min(h.len || 16, bi.byteLen - h.off));
+                            return { ok: true, val: new TextDecoder().decode(u8).replace(/\0.*/, "") };
+                        }
+                        if (h.dt === "aob") {
+                            var u8a = new Uint8Array(bi.buf, bi.byteOff + h.off, Math.min(h.len || 8, bi.byteLen - h.off));
+                            var parts = [];
+                            for (var i = 0; i < u8a.length; i++) parts.push(u8a[i].toString(16).toUpperCase().padStart(2, "0"));
+                            return { ok: true, val: parts.join(" ") };
+                        }
+                        var dv = new DataView(bi.buf, bi.byteOff, bi.byteLen);
+                        return { ok: true, val: readViewVal(dv, h.off, h.dt) };
+                    }
+                } catch (_) {}
+                return { ok: false, val: "<err>" };
+            }
+
+            function writeHitValue(h, valStr) {
+                try {
+                    if (h.kind === "js") {
+                        var obj = h.objRef.deref();
+                        if (!obj) return false;
+                        var cur = obj[h.key];
+                        if (typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(valStr)) && String(valStr).trim() !== "")) {
+                            obj[h.key] = Number(valStr);
+                        } else if (typeof cur === "boolean") {
+                            obj[h.key] = (valStr === "true" || valStr === "1");
+                        } else {
+                            obj[h.key] = String(valStr);
+                        }
+                        return true;
+                    }
+                    if (h.kind === "ls" || h.kind === "ss") {
+                        var st = h.kind === "ls" ? window.localStorage : window.sessionStorage;
+                        st.setItem(h.key, String(valStr));
+                        return true;
+                    }
+                    if (h.kind === "wasm" || h.kind === "ta") {
+                        var bi = getBufferForHit(h);
+                        if (!bi) return false;
+                        var dv = new DataView(bi.buf, bi.byteOff, bi.byteLen);
+                        return writeViewVal(dv, h.off, h.dt, valStr);
+                    }
+                } catch (_) {}
+                return false;
+            }
+
+            function scanBuffer(buf, byteOff, byteLen, kind, bufIdx, labelPrefix, dt, sc, v1, v2, s1, aob, out, cap) {
+                if (!buf || byteLen <= 0 || out.length >= cap) return;
+                var scanLen = Math.min(byteLen, 32 * 1024 * 1024); // cap 32MB per buffer
+                var dv = new DataView(buf, byteOff, scanLen);
+                if (dt === "str") {
+                    var enc = new TextEncoder().encode(s1);
+                    if (!enc.length) return;
+                    var u8 = new Uint8Array(buf, byteOff, scanLen);
+                    var lim = scanLen - enc.length;
+                    for (var o = 0; o <= lim && out.length < cap; o++) {
+                        if (u8[o] !== enc[0]) continue;
+                        var ok = true;
+                        for (var k = 1; k < enc.length; k++) { if (u8[o + k] !== enc[k]) { ok = false; break; } }
+                        if (ok) {
+                            var id = labelPrefix + "+0x" + o.toString(16).toUpperCase();
+                            out.push({ id: id, kind: kind, bufIdx: bufIdx, off: o, dt: "str", len: enc.length, prev: s1 });
+                        }
+                    }
+                    return;
+                }
+                if (dt === "aob") {
+                    if (!aob.bytes.length) return;
+                    var u8b = new Uint8Array(buf, byteOff, scanLen);
+                    var lim2 = scanLen - aob.bytes.length;
+                    for (var o2 = 0; o2 <= lim2 && out.length < cap; o2++) {
+                        var ok2 = true;
+                        for (var k2 = 0; k2 < aob.bytes.length; k2++) {
+                            if (aob.mask[k2] && u8b[o2 + k2] !== aob.bytes[k2]) { ok2 = false; break; }
+                        }
+                        if (ok2) {
+                            var id2 = labelPrefix + "+0x" + o2.toString(16).toUpperCase();
+                            out.push({ id: id2, kind: kind, bufIdx: bufIdx, off: o2, dt: "aob", len: aob.bytes.length, prev: s1 });
+                        }
+                    }
+                    return;
+                }
+                var types = dt === "auto" ? ["i32", "f32", "f64"] : [dt];
+                for (var ti = 0; ti < types.length && out.length < cap; ti++) {
+                    var t = types[ti];
+                    var sz = t === "i8" ? 1 : (t === "i16" ? 2 : ((t === "i32" || t === "f32") ? 4 : 8));
+                    var endOff = scanLen - sz;
+                    for (var off = 0; off <= endOff && out.length < cap; off += sz) {
+                        var val = readViewVal(dv, off, t);
+                        if (matchNum(val, 0, false, t, sc, v1, v2)) {
+                            var idn = labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":" + t;
+                            out.push({ id: idn, kind: kind, bufIdx: bufIdx, off: off, dt: t, len: sz, prev: val });
+                        }
+                    }
+                }
+            }
+
+            function collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap) {
+                var visited = new WeakSet();
+                var queue = [{ obj: window, path: "window", depth: 0 }];
+                var maxNodes = 2500;
+                var nodesVisited = 0;
+                var taSeen = new WeakSet();
+                taRegistry = [];
+
+                while (queue.length > 0 && nodesVisited < maxNodes && out.length < cap) {
+                    var cur = queue.shift();
+                    var obj = cur.obj;
+                    if (!obj || (typeof obj !== "object" && typeof obj !== "function")) continue;
+                    if (visited.has(obj)) continue;
+                    visited.add(obj);
+                    nodesVisited++;
+
+                    // Detect TypedArrays / DataViews / ArrayBuffers owned by page scripts
+                    if (ArrayBuffer.isView(obj) && obj.byteLength >= 4 && obj.byteLength <= 16 * 1024 * 1024 && !taSeen.has(obj)) {
+                        taSeen.add(obj);
+                        var taIdx = taRegistry.length;
+                        taRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
+                        scanBuffer(obj.buffer, obj.byteOffset, obj.byteLength, "ta", taIdx, "ta#" + taIdx + "(" + cur.path.slice(-24) + ")", dt, sc, v1, v2, s1, aob, out, cap);
+                        continue;
+                    }
+                    if (typeof WebAssembly === "object" && obj instanceof WebAssembly.Memory) {
+                        trackWasmMem(obj);
+                        continue;
+                    }
+                    // Skip DOM nodes to stay super fast and never touch layout
+                    if (typeof Node === "function" && obj instanceof Node) continue;
+
+                    var keys;
+                    try { keys = Object.keys(obj); } catch (_) { continue; }
+                    var maxKeys = cur.depth === 0 ? keys.length : Math.min(keys.length, 200);
+                    for (var i = 0; i < maxKeys && out.length < cap; i++) {
+                        var k = keys[i];
+                        if (cur.depth === 0 && (SKIP_KEYS.has(k) || (k.length > 2 && k[0] === "o" && k[1] === "n"))) continue;
+                        if (SENSITIVE_KEY_RE.test(k)) continue;
+                        var val;
+                        try { val = obj[k]; } catch (_) { continue; }
+                        var nextPath = cur.depth === 0 ? k : (cur.path + "." + k);
+                        if (typeof val === "number") {
+                            if (dt !== "str" && dt !== "aob" && matchNum(val, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+                                var ref = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
+                                out.push({ id: "js:" + nextPath, kind: "js", objRef: ref, key: k, dt: Number.isInteger(val) ? "i32" : "f64", prev: val });
+                            }
+                        } else if (typeof val === "string") {
+                            if ((dt === "str" || dt === "auto") && s1 && val.indexOf(s1) !== -1 && val.length <= 256) {
+                                var refS = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
+                                out.push({ id: "js:" + nextPath, kind: "js", objRef: refS, key: k, dt: "str", prev: val });
+                            }
+                        } else if (val && typeof val === "object" && cur.depth < 4) {
+                            if (!visited.has(val)) queue.push({ obj: val, path: nextPath, depth: cur.depth + 1 });
+                        }
+                    }
+                }
+            }
+
+            function scanStorage(dt, sc, v1, v2, s1, out, cap) {
+                var stores = [["ls", window.localStorage], ["ss", window.sessionStorage]];
+                for (var si = 0; si < stores.length; si++) {
+                    var tag = stores[si][0], st = stores[si][1];
+                    if (!st) continue;
+                    try {
+                        for (var i = 0; i < st.length && out.length < cap; i++) {
+                            var k = st.key(i);
+                            if (!k || SENSITIVE_KEY_RE.test(k)) continue;
+                            var raw = st.getItem(k);
+                            if (raw === null || raw.length > 256) continue;
+                            if (dt === "str") {
+                                if (s1 && raw.indexOf(s1) !== -1) out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "str", prev: raw });
+                            } else if (dt !== "aob") {
+                                var num = Number(raw);
+                                if (raw.trim() !== "" && Number.isFinite(num) && matchNum(num, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+                                    out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "f64", prev: num });
+                                } else if (dt === "auto" && s1 && raw.indexOf(s1) !== -1) {
+                                    out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "str", prev: raw });
+                                }
+                            }
+                        }
+                    } catch (_) {}
+                }
+            }
+
+            function formatHitsResult(maxRet) {
+                var lim = Math.min(hits.length, maxRet || 150);
+                var items = [];
+                for (var i = 0; i < lim; i++) {
+                    var h = hits[i];
+                    watchRefs.set(h.id, h);
+                    var rd = readHitCurrent(h);
+                    items.push({ addr: h.id, val: formatVal(rd.val, h.dt), type: h.dt, kind: h.kind });
+                }
+                return { ok: true, total: hits.length, canUndo: prevHits.length > 0, items: items };
+            }
+
+            function handleCmd(cmd) {
+                try {
+                    if (cmd.op === "ping") return { ok: true };
+                    if (cmd.op === "reset") {
+                        hits = []; prevHits = [];
+                        return { ok: true, total: 0, canUndo: false, items: [] };
+                    }
+                    if (cmd.op === "undo") {
+                        if (!prevHits.length) return { ok: false, error: "Nothing to undo" };
+                        hits = prevHits; prevHits = [];
+                        return formatHitsResult(cmd.maxReturn || 150);
+                    }
+                    if (cmd.op === "firstScan") {
+                        prevHits = []; hits = [];
+                        var dt = cmd.dtype || "auto";
+                        var sc = cmd.scanType || "exact";
+                        lastType = dt;
+                        var s1 = String(cmd.val1 || "");
+                        var s2 = String(cmd.val2 || "");
+                        var v1 = Number(s1), v2 = Number(s2);
+                        var aob = dt === "aob" ? parseAob(s1) : { bytes: [], mask: [] };
+                        if (dt === "str" && !s1) return { ok: false, error: "Enter text to search" };
+                        if (dt === "aob" && !aob.bytes.length) return { ok: false, error: "Enter hex bytes (e.g. 48 8B ?? 01)" };
+                        if (dt !== "str" && dt !== "aob" && sc !== "unknown") {
+                            if (dt === "auto" && (!s1.trim() || !Number.isFinite(v1))) {
+                                // Auto string fallback when non-numeric text entered
+                                dt = "str"; lastType = "str";
+                            } else if (!s1.trim() || !Number.isFinite(v1)) {
+                                return { ok: false, error: "Enter a valid number" };
+                            }
+                            if (sc === "between") {
+                                if (!s2.trim() || !Number.isFinite(v2)) return { ok: false, error: "Enter max value" };
+                                if (v2 < v1) { var tmp = v1; v1 = v2; v2 = tmp; }
+                            }
+                        }
+                        var cap = sc === "unknown" ? 60000 : 120000;
+                        var out = [];
+                        // 1. Scan JS heap objects + TypedArrays (also discovers any WebAssembly.Memory reachable from JS!)
+                        collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap);
+                        // 2. Scan all tracked WebAssembly linear memory buffers
+                        var mems = liveWasmMemories();
+                        for (var mi = 0; mi < mems.length && out.length < cap; mi++) {
+                            var mb = mems[mi].buffer;
+                            scanBuffer(mb, 0, mb.byteLength, "wasm", mi, "wasm#" + mi, dt, sc, v1, v2, s1, aob, out, cap);
+                        }
+                        // 3. Scan Web Storage (excluding auth/token keys)
+                        scanStorage(dt, sc, v1, v2, s1, out, cap);
+                        hits = out;
+                        return formatHitsResult(cmd.maxReturn || 150);
+                    }
+                    if (cmd.op === "nextScan") {
+                        if (!hits.length) return { ok: false, error: "Run First Scan first" };
+                        var sc2 = cmd.scanType || "exact";
+                        var s1n = String(cmd.val1 || "");
+                        var s2n = String(cmd.val2 || "");
+                        var v1n = Number(s1n), v2n = Number(s2n);
+                        var needsV1 = (sc2 === "exact" || sc2 === "bigger" || sc2 === "smaller" || sc2 === "between" || sc2 === "increased_by" || sc2 === "decreased_by");
+                        if (lastType !== "str" && lastType !== "aob" && needsV1 && (!s1n.trim() || !Number.isFinite(v1n))) {
+                            return { ok: false, error: "Enter a valid number" };
+                        }
+                        if (sc2 === "between" && (!s2n.trim() || !Number.isFinite(v2n))) {
+                            return { ok: false, error: "Enter max value" };
+                        }
+                        if (sc2 === "between" && v2n < v1n) { var t2 = v1n; v1n = v2n; v2n = t2; }
+                        prevHits = hits;
+                        var next = [];
+                        for (var i = 0; i < hits.length; i++) {
+                            var h = hits[i];
+                            var rd = readHitCurrent(h);
+                            if (!rd.ok) continue;
+                            if (h.dt === "str") {
+                                if (sc2 === "changed" ? (rd.val !== h.prev) : (sc2 === "unchanged" ? (rd.val === h.prev) : String(rd.val).indexOf(s1n) !== -1)) {
+                                    h.prev = rd.val; next.push(h);
+                                }
+                            } else if (h.dt === "aob") {
+                                if (sc2 === "changed" ? (rd.val !== h.prev) : (sc2 === "unchanged" ? (rd.val === h.prev) : true)) {
+                                    h.prev = rd.val; next.push(h);
+                                }
+                            } else {
+                                if (matchNum(rd.val, h.prev, true, h.dt, sc2, v1n, v2n)) {
+                                    h.prev = rd.val; next.push(h);
+                                }
+                            }
+                        }
+                        hits = next;
+                        return formatHitsResult(cmd.maxReturn || 150);
+                    }
+                    if (cmd.op === "readBatch") {
+                        var ids = Array.isArray(cmd.ids) ? cmd.ids : [];
+                        var vals = {};
+                        for (var ri = 0; ri < ids.length; ri++) {
+                            var id = ids[ri];
+                            var rec = watchRefs.get(id);
+                            if (rec) {
+                                var r = readHitCurrent(rec);
+                                vals[id] = r.ok ? formatVal(r.val, rec.dt) : String(r.val);
+                            } else {
+                                vals[id] = "<expired>";
+                            }
+                        }
+                        return { ok: true, values: vals };
+                    }
+                    if (cmd.op === "write") {
+                        var recW = watchRefs.get(cmd.id);
+                        if (!recW) return { ok: false, error: "Entry not found in page" };
+                        var okW = writeHitValue(recW, cmd.val);
+                        var rdW = readHitCurrent(recW);
+                        return { ok: okW, val: formatVal(rdW.val, recW.dt) };
+                    }
+                    if (cmd.op === "hexDump") {
+                        var recH = watchRefs.get(cmd.id);
+                        if (!recH || (recH.kind !== "wasm" && recH.kind !== "ta")) {
+                            return { ok: false, error: "Hex view supports WASM / TypedArray buffers" };
+                        }
+                        var bi = getBufferForHit(recH);
+                        if (!bi) return { ok: false, error: "Buffer detached" };
+                        var baseOff = Math.max(0, Math.min(bi.byteLen - 16, (typeof cmd.offset === "number" ? cmd.offset : recH.off)));
+                        var len = Math.min(256, Math.max(16, Math.min(cmd.len || 128, bi.byteLen - baseOff)));
+                        var u8h = new Uint8Array(bi.buf, bi.byteOff + baseOff, len);
+                        var hex = "";
+                        for (var hi = 0; hi < u8h.length; hi++) hex += u8h[hi].toString(16).toUpperCase().padStart(2, "0");
+                        return { ok: true, addr: "0x" + baseOff.toString(16).toUpperCase(), offset: baseOff, len: len, hex: hex };
+                    }
+                    if (cmd.op === "regions") {
+                        var memsR = liveWasmMemories();
+                        var regs = [];
+                        var totalKb = 0;
+                        for (var rmi = 0; rmi < memsR.length; rmi++) {
+                            var kb = Math.round(memsR[rmi].buffer.byteLength / 1024);
+                            totalKb += kb;
+                            regs.push({ start: "wasm#" + rmi, end: "0x" + memsR[rmi].buffer.byteLength.toString(16).toUpperCase(), kb: kb, perms: "rw-wasm", label: "WebAssembly.Memory #" + rmi });
+                        }
+                        for (var tai = 0; tai < Math.min(taRegistry.length, 40); tai++) {
+                            var taObj = taRegistry[tai].deref();
+                            if (taObj) {
+                                var tkb = Math.max(1, Math.round(taObj.byteLength / 1024));
+                                totalKb += tkb;
+                                regs.push({ start: "ta#" + tai, end: "0x" + taObj.byteLength.toString(16).toUpperCase(), kb: tkb, perms: "rw-ta", label: taObj.constructor ? taObj.constructor.name : "TypedArray" });
+                            }
+                        }
+                        return { ok: true, count: regs.length, totalKb: totalKb, regions: regs };
+                    }
+                    return { ok: false, error: "Unknown op" };
+                } catch (e) {
+                    return { ok: false, error: String(e && e.message ? e.message : e) };
+                }
+            }
+
+            window.addEventListener(CH, function(ev) {
+                var d = ev && ev.detail;
+                if (!d) return;
+                if (typeof d === "string") {
+                    var parsed = null;
+                    try { parsed = JSON.parse(d); } catch (_) {}
+                    var resObj = parsed ? handleCmd(parsed) : { ok: false, error: "Bad cmd" };
+                    try { window.dispatchEvent(new CustomEvent(CH + "_ret", { detail: JSON.stringify(resObj) })); } catch (_) {}
+                    return;
+                }
+                if (typeof d === "object" && d.box) {
+                    d.box.ok = true;
+                    d.box.out = handleCmd(d);
+                }
+            }, false);
+            try { window.dispatchEvent(new Event(CH + "_ok")); } catch (_) {}
+        })();'.replace("__CH_ARG__", JSON.stringify(CH));
     try {
       const onOk = () => { injectedInPage = true; };
       window.addEventListener(CH + "_ok", onOk, { once: true });

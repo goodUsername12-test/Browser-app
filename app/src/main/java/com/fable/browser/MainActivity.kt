@@ -52,6 +52,7 @@ class MainActivity : FragmentActivity() {
     @Inject lateinit var activityBridge: ActivityBridge
     @Inject lateinit var settingsStore: SettingsStore
     @Inject lateinit var cacheCleaner: CacheCleaner
+    @Inject lateinit var memoryEngineManager: com.fable.browser.engine.MemoryEngineManager
 
     private var displayListener: DisplayManager.DisplayListener? = null
     @Volatile private var currentHighRefresh: Boolean = true
@@ -361,6 +362,92 @@ class MainActivity : FragmentActivity() {
                             settingsStore.setTimeScaleMultiplierTenths(tenths)
                             settingsStore.setTimeScaleEnabled(on)
                             android.util.Log.i("FABLE-SPEED-TEST", "set enabled=$on tenths=$tenths")
+                        }
+                    }
+                    intent.hasExtra("fable_test_mem_toggle") -> {
+                        val on = intent.getBooleanExtra("fable_test_mem_toggle", false)
+                        memoryEngineManager.setEngineActive(on)
+                        lifecycleScope.launch {
+                            settingsStore.setMemoryEngineEnabled(on)
+                            android.util.Log.i("FABLE-MEM-TEST", "toggle enabled=$on")
+                        }
+                    }
+                    intent.hasExtra("fable_test_mem_selfcheck") -> {
+                        val scopeName = intent.getStringExtra("fable_test_mem_selfcheck").orEmpty()
+                        lifecycleScope.launch {
+                            if (scopeName == "native") {
+                                val regions = withContext(Dispatchers.IO) { com.fable.browser.engine.NativeMemoryScanner.listRegions() }
+                                val regObj = runCatching { org.json.JSONObject(regions) }.getOrNull()
+                                val okReg = regObj?.optBoolean("ok", false) == true && (regObj.optInt("count", 0) > 0)
+                                val buf = java.nio.ByteBuffer.allocateDirect(64).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                val sentinel1 = 193847261
+                                val sentinel2 = 193847361
+                                buf.putInt(0, sentinel1)
+                                val r1 = withContext(Dispatchers.IO) {
+                                    com.fable.browser.engine.NativeMemoryScanner.firstScan(
+                                        com.fable.browser.engine.MemDataType.INT32,
+                                        com.fable.browser.engine.MemScanType.EXACT,
+                                        sentinel1.toString()
+                                    )
+                                }
+                                buf.putInt(0, sentinel2)
+                                val r2 = withContext(Dispatchers.IO) {
+                                    com.fable.browser.engine.NativeMemoryScanner.nextScan(
+                                        com.fable.browser.engine.MemScanType.INCREASED_BY,
+                                        "100"
+                                    )
+                                }
+                                val r2Obj = runCatching { org.json.JSONObject(r2) }.getOrNull()
+                                val firstAddr = r2Obj?.optJSONArray("items")?.optJSONObject(0)?.optString("addr").orEmpty()
+                                val writeOk = if (firstAddr.isNotEmpty()) {
+                                    withContext(Dispatchers.IO) {
+                                        com.fable.browser.engine.NativeMemoryScanner.writeValue(
+                                            firstAddr,
+                                            com.fable.browser.engine.MemDataType.INT32,
+                                            "987654321"
+                                        )
+                                    }
+                                } else false
+                                val readBack = buf.getInt(0)
+                                val hexOk = if (firstAddr.isNotEmpty()) {
+                                    withContext(Dispatchers.IO) {
+                                        com.fable.browser.engine.NativeMemoryScanner.hexDump(firstAddr, 32).contains("\"ok\":true")
+                                    }
+                                } else false
+                                withContext(Dispatchers.IO) { com.fable.browser.engine.NativeMemoryScanner.resetScan() }
+                                android.util.Log.i(
+                                    "FABLE-MEM-CHECK",
+                                    "scope=native okReg=$okReg total1=${runCatching { org.json.JSONObject(r1).optInt("total") }.getOrDefault(-1)} " +
+                                        "total2=${r2Obj?.optInt("total") ?: -1} writeOk=$writeOk readBack=$readBack hexOk=$hexOk"
+                                )
+                            } else {
+                                memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
+                                memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.EXACT)
+                                memoryEngineManager.firstScan("133700")
+                                kotlinx.coroutines.delay(1500)
+                                val st1 = memoryEngineManager.state.value
+                                val hit = st1.results.firstOrNull { it.addr.contains("wasm#") || it.addr.contains("gold") }
+                                if (hit != null) {
+                                    memoryEngineManager.addToWatch(hit)
+                                    val w = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (w != null) {
+                                        memoryEngineManager.setWatchValue(w.id, "777888")
+                                        kotlinx.coroutines.delay(700)
+                                    }
+                                    if (hit.kind == "wasm") {
+                                        memoryEngineManager.inspectHex(hit.addr, com.fable.browser.engine.MemScope.PAGE_WASM, 0L)
+                                        kotlinx.coroutines.delay(600)
+                                    }
+                                }
+                                val st2 = memoryEngineManager.state.value
+                                val hexOk = st2.hex.hexBytes.isNotBlank()
+                                android.util.Log.i(
+                                    "FABLE-MEM-CHECK",
+                                    "scope=$scopeName engine=${st2.activeEngineLabel} total=${st1.totalMatches} hit=${hit?.addr ?: "none"} hexOk=$hexOk"
+                                )
+                                memoryEngineManager.resetScan()
+                            }
                         }
                     }
                 }

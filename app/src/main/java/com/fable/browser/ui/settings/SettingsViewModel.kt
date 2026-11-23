@@ -210,6 +210,11 @@ class SettingsViewModel @Inject constructor(
     fun setTimeScalePanelPosition(x: Float, y: Float) = edit { store.setTimeScalePanelPosition(x, y) }
     fun setTimeScalePanelExpanded(v: Boolean) = edit { store.setTimeScalePanelExpanded(v) }
     fun resetTimeScalePanelLayout() = edit { store.resetTimeScalePanelLayout() }
+    fun setMemoryEngineEnabled(v: Boolean) = edit { store.setMemoryEngineEnabled(v) }
+    fun setMemoryEngineShowPanel(v: Boolean) = edit { store.setMemoryEngineShowPanel(v) }
+    fun setMemoryEnginePanelScalePct(v: Int) = edit { store.setMemoryEnginePanelScalePct(v) }
+    fun setMemoryEnginePanelExpanded(v: Boolean) = edit { store.setMemoryEnginePanelExpanded(v) }
+    fun resetMemoryEnginePanelLayout() = edit { store.resetMemoryEnginePanelLayout() }
 
     fun applyPreset(preset: PrivacyPreset) = edit {
         val stealth = preset == PrivacyPreset.STEALTH

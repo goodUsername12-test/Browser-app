@@ -55,6 +55,7 @@ let config = {
   timeScaleCss: true,
   timeScaleMedia: true,
   timeScaleWorkers: true,
+  memoryEngineEnabled: false,
 };
 
 let superByUa = new Map();
@@ -64,6 +65,9 @@ let lastContentConfig = "";
 let timeScaleRegistered = null;
 let timeScaleSeq = 0;
 let lastTimeScaleConfig = "";
+let memScanRegistered = null;
+let memScanSeq = 0;
+const memScanChannel = "_mev_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 8);
 const timeScaleChannel = "_ev_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 8);
 
 function postNative(message) {
@@ -197,6 +201,7 @@ async function broadcastTimeScaleLive(msg) {
   config.timeScaleMedia = cfgObj.media;
   config.timeScaleWorkers = cfgObj.workers;
   await applyTimeScaleScript(false);
+    applyMemoryScannerScript();
   try {
     const tabs = await browser.tabs.query({});
     for (const tab of tabs) {
@@ -214,6 +219,85 @@ async function broadcastTimeScaleLive(msg) {
       }
     }
   } catch (_) {}
+}
+
+
+async function applyMemoryScannerScript() {
+  const on = config.memoryEngineEnabled === true;
+  if (!on) {
+    ++memScanSeq;
+    const old = memScanRegistered;
+    memScanRegistered = null;
+    if (old) { try { await old.unregister(); } catch (_) {} }
+    try {
+      const tabs = await browser.tabs.query({});
+      for (const tab of tabs) {
+        if (tab && tab.id !== undefined) {
+          browser.tabs.sendMessage(tab.id, { type: "fable-mem-reset" }).catch(() => {});
+        }
+      }
+    } catch (_) {}
+    return;
+  }
+  if (memScanRegistered) return;
+  const seq = ++memScanSeq;
+  const cfgStr = JSON.stringify({ enabled: true, ch: memScanChannel });
+  let next = null;
+  try {
+    if (browser.contentScripts && browser.contentScripts.register) {
+      next = await browser.contentScripts.register({
+        matches: ["<all_urls>"],
+        js: [{ code: "var __MEM_CFG = " + cfgStr + ";" }, { file: "memory_scanner.js" }],
+        runAt: "document_start",
+        allFrames: false,
+        matchAboutBlank: true,
+      });
+    }
+  } catch (e) {
+    postNative({ type: "diag", text: "memory_scanner register failed: " + e });
+  }
+  if (seq !== memScanSeq) {
+    if (next) next.unregister().catch(() => {});
+    return;
+  }
+  const old = memScanRegistered;
+  memScanRegistered = next;
+  if (old) { try { await old.unregister(); } catch (_) {} }
+}
+
+async function handleMemCommand(msg) {
+  const reqId = String(msg.reqId || "");
+  const cmd = msg.cmd || { op: "ping" };
+  try {
+    const activeTabs = await browser.tabs.query({ active: true });
+    let tab = activeTabs && activeTabs.length ? activeTabs[0] : null;
+    if (!tab) {
+      const all = await browser.tabs.query({});
+      tab = all && all.length ? all[all.length - 1] : null;
+    }
+    if (!tab || tab.id === undefined) {
+      postNative({ type: "mem-res", reqId, payload: JSON.stringify({ ok: false, error: "No active GeckoView tab" }) });
+      return;
+    }
+    let resp = null;
+    try {
+      resp = await browser.tabs.sendMessage(tab.id, { type: "fable-mem-cmd", cmd });
+    } catch (_) {}
+    if ((!resp || typeof resp.payload !== "string") && browser.tabs.executeScript) {
+      try {
+        const cfgStr = JSON.stringify({ enabled: true, ch: memScanChannel });
+        await browser.tabs.executeScript(tab.id, { code: "var __MEM_CFG = " + cfgStr + ";" });
+        await browser.tabs.executeScript(tab.id, { file: "memory_scanner.js" });
+        resp = await browser.tabs.sendMessage(tab.id, { type: "fable-mem-cmd", cmd });
+      } catch (_) {}
+    }
+    const payload = (resp && typeof resp.payload === "string")
+      ? resp.payload
+      : JSON.stringify({ ok: false, error: "Page did not respond (try reloading or Fable Process scope)" });
+    postNative({ type: "mem-res", reqId, payload });
+  } catch (e) {
+    postNative({ type: "mem-res", reqId, payload: JSON.stringify({ ok: false, error: String(e) }) });
+  }
 }
 
 function rebuildSupers() {
@@ -605,7 +689,16 @@ function onNativeMessage(msg) {
     registerListeners();
     applyContentScripts(false);
     applyTimeScaleScript(false);
-  } else if (msg.type === "time-scale-update") {
+  } else if (msg.type === "memory-engine-toggle") {
+      config.memoryEngineEnabled = msg.enabled === true;
+      applyMemoryScannerScript();
+      return;
+    }
+    if (msg.type === "mem-cmd") {
+      handleMemCommand(msg);
+      return;
+    }
+    if (msg.type === "time-scale-update") {
     broadcastTimeScaleLive(msg);
   } else if (msg.type === "sync-cookies-to-gecko") {
     syncCookiesToGecko(msg.url, msg.cookieHeader);

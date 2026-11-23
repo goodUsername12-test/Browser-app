@@ -84,7 +84,9 @@ fun MenuSheet(
     onOpenRecorderSettings: () -> Unit = {},
     timeScaleEnabled: Boolean = false,
     timeScaleRateLabel: String = "1x",
-    onToggleTimeScale: () -> Unit = {}
+    onToggleTimeScale: () -> Unit = {},
+    memoryEngineEnabled: Boolean = false,
+    onToggleMemoryEngine: () -> Unit = {}
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -117,6 +119,12 @@ fun MenuSheet(
                 label = if (timeScaleEnabled) "Website speed ($timeScaleRateLabel)" else "Website speed control (OFF)",
                 checked = timeScaleEnabled,
                 onCheckedChange = { onToggleTimeScale() }
+            )
+            MenuToggle(
+                icon = Icons.Outlined.Memory,
+                label = if (memoryEngineEnabled) "Memory Engine CE (ON)" else "Memory Engine CE (OFF)",
+                checked = memoryEngineEnabled,
+                onCheckedChange = { onToggleMemoryEngine() }
             )
             MenuItem(
                 icon = if (isScreenRecording) Icons.Outlined.Stop else Icons.Outlined.FiberManualRecord,

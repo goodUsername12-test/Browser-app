@@ -225,6 +225,12 @@ data class Settings(
     val timeScalePanelPosX: Float = com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_X,
     val timeScalePanelPosY: Float = com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_Y,
     val timeScalePanelExpanded: Boolean = true,
+    val memoryEngineEnabled: Boolean = false,
+    val memoryEngineShowPanel: Boolean = true,
+    val memoryEnginePanelScalePct: Int = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT,
+    val memoryEnginePanelPosX: Float = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_X,
+    val memoryEnginePanelPosY: Float = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_Y,
+    val memoryEnginePanelExpanded: Boolean = true,
 ) {
     val timeScaleRate: Float
         get() = com.fable.browser.engine.WebsiteSpeedEngine.rateFromTenths(timeScaleMultiplierTenths)
@@ -443,6 +449,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val TIME_SCALE_PANEL_X = floatPreferencesKey("time_scale_panel_pos_x")
         val TIME_SCALE_PANEL_Y = floatPreferencesKey("time_scale_panel_pos_y")
         val TIME_SCALE_PANEL_EXPANDED = booleanPreferencesKey("time_scale_panel_expanded")
+        val MEM_ENGINE_ENABLED = booleanPreferencesKey("mem_engine_enabled")
+        val MEM_ENGINE_SHOW_PANEL = booleanPreferencesKey("mem_engine_show_panel")
+        val MEM_ENGINE_SCALE = intPreferencesKey("mem_engine_scale_pct")
+        val MEM_ENGINE_X = floatPreferencesKey("mem_engine_pos_x")
+        val MEM_ENGINE_Y = floatPreferencesKey("mem_engine_pos_y")
+        val MEM_ENGINE_EXPANDED = booleanPreferencesKey("mem_engine_expanded")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -633,6 +645,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             timeScalePanelPosX = (p[Keys.TIME_SCALE_PANEL_X] ?: com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_X).coerceIn(0f, 1f),
             timeScalePanelPosY = (p[Keys.TIME_SCALE_PANEL_Y] ?: com.fable.browser.engine.WebsiteSpeedEngine.DEFAULT_PANEL_POS_Y).coerceIn(0f, 1f),
             timeScalePanelExpanded = p[Keys.TIME_SCALE_PANEL_EXPANDED] ?: true,
+            memoryEngineEnabled = p[Keys.MEM_ENGINE_ENABLED] ?: false,
+            memoryEngineShowPanel = p[Keys.MEM_ENGINE_SHOW_PANEL] ?: true,
+            memoryEnginePanelScalePct = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(p[Keys.MEM_ENGINE_SCALE] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT),
+            memoryEnginePanelPosX = (p[Keys.MEM_ENGINE_X] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_X).coerceIn(0f, 1f),
+            memoryEnginePanelPosY = (p[Keys.MEM_ENGINE_Y] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_Y).coerceIn(0f, 1f),
+            memoryEnginePanelExpanded = p[Keys.MEM_ENGINE_EXPANDED] ?: true,
         )
     }.distinctUntilChanged()
 
@@ -904,6 +922,24 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         context.dataStore.edit {
             it[Keys.TIME_SCALE_PANEL_X] = x.coerceIn(0f, 1f)
             it[Keys.TIME_SCALE_PANEL_Y] = y.coerceIn(0f, 1f)
+        }
+    }
+    suspend fun setMemoryEngineEnabled(v: Boolean) = set(Keys.MEM_ENGINE_ENABLED, v)
+    suspend fun setMemoryEngineShowPanel(v: Boolean) = set(Keys.MEM_ENGINE_SHOW_PANEL, v)
+    suspend fun setMemoryEnginePanelScalePct(v: Int) = set(Keys.MEM_ENGINE_SCALE, com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(v))
+    suspend fun setMemoryEnginePanelExpanded(v: Boolean) = set(Keys.MEM_ENGINE_EXPANDED, v)
+    suspend fun setMemoryEnginePanelPosition(x: Float, y: Float) {
+        context.dataStore.edit {
+            it[Keys.MEM_ENGINE_X] = x.coerceIn(0f, 1f)
+            it[Keys.MEM_ENGINE_Y] = y.coerceIn(0f, 1f)
+        }
+    }
+    suspend fun resetMemoryEnginePanelLayout() {
+        context.dataStore.edit {
+            it[Keys.MEM_ENGINE_SCALE] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT
+            it[Keys.MEM_ENGINE_X] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_X
+            it[Keys.MEM_ENGINE_Y] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_Y
+            it[Keys.MEM_ENGINE_EXPANDED] = true
         }
     }
     suspend fun resetTimeScalePanelLayout() {

@@ -56,3 +56,6 @@
 -keep class com.fable.browser.engine.CapturePhase { *; }
 
 -keep class com.fable.browser.engine.WebsiteSpeedEngine { *; }
+
+-keep class com.fable.browser.engine.NativeMemoryScanner { *; }
+-keep class com.fable.browser.engine.WebsiteMemoryEngine { *; }

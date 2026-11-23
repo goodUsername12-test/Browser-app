@@ -17,6 +17,8 @@ interface HybridBlinkController {
     fun clearFind()
     fun savePageCode(mode: String, reqId: String, continuous: Boolean = false): Boolean
     fun applyTimeScale(enabled: Boolean, rate: Float, css: Boolean, media: Boolean, workers: Boolean)
+    suspend fun runMemoryCommand(cmdJson: String): String
+    fun resetMemoryEngine()
     fun exitFullScreen()
 }
 
@@ -139,7 +141,12 @@ object HybridEngineBridge {
 
         val zoomInit = settings.textZoomPercent.coerceIn(50, 200)
         val timeScaleBlock = WebsiteSpeedEngine.buildBootstrapScript(settings)
-        return (if (timeScaleBlock.isNotEmpty()) "$timeScaleBlock\n" else "") + """
+        val memBlock = WebsiteMemoryEngine.buildBootstrapScript(settings)
+        val prefix = buildString {
+            if (timeScaleBlock.isNotEmpty()) { append(timeScaleBlock); append("\n") }
+            if (memBlock.isNotEmpty()) { append(memBlock); append("\n") }
+        }
+        return prefix + """
         (function() {
             if (window.__fableHybridBootstrapped) {
                 try {

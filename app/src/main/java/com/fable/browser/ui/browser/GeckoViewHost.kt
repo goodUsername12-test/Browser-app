@@ -1101,6 +1101,42 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 }
             }
 
+            override suspend fun runMemoryCommand(cmdJson: String): String {
+                val script = com.fable.browser.engine.WebsiteMemoryEngine.buildBlinkCommandScript(cmdJson)
+                return kotlinx.coroutines.withTimeoutOrNull(8_000L) {
+                    kotlinx.coroutines.suspendCancellableCoroutine<String> { cont ->
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            runCatching {
+                                wv.evaluateJavascript(script) { raw ->
+                                    if (!cont.isActive) return@evaluateJavascript
+                                    val unquoted = if (raw.isNullOrBlank() || raw == "null") {
+                                        "{\"ok\":false,\"error\":\"Empty page response\"}"
+                                    } else {
+                                        runCatching { org.json.JSONTokener(raw).nextValue()?.toString() }.getOrNull() ?: raw
+                                    }
+                                    cont.resumeWith(Result.success(unquoted))
+                                }
+                            }.onFailure {
+                                if (cont.isActive) {
+                                    cont.resumeWith(Result.success("{\"ok\":false,\"error\":\"WebView eval failed\"}"))
+                                }
+                            }
+                        }
+                    }
+                } ?: "{\"ok\":false,\"error\":\"Blink scan timed out\"}"
+            }
+
+            override fun resetMemoryEngine() {
+                val resetJs = com.fable.browser.engine.WebsiteMemoryEngine.buildBlinkResetIfInstalledScript()
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    runCatching {
+                        val freshBoot = tab.hybridBootstrapProvider?.invoke(wv.url ?: tab.url.value).orEmpty()
+                        com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(wv, freshBoot)
+                        wv.evaluateJavascript(resetJs, null)
+                    }
+                }
+            }
+
             override fun exitFullScreen() {
                 wv.post {
                     if (customFullScreenView != null) {

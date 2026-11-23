@@ -135,6 +135,35 @@ PRIVACY_HTML = """<!DOCTYPE html>
 <script src="/dynamic/extra.json"></script>
 </body></html>"""
 
+MEM_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Fable Memory Test</title></head>
+<body>
+<pre id="out">ready</pre>
+<script>
+(function() {
+  window.gameState = { gold: 133700, hp: 500 };
+  window.testWasmMem = new WebAssembly.Memory({ initial: 1 });
+  new Int32Array(window.testWasmMem.buffer)[16] = 133700;
+  function checkStealth() {
+    try {
+      const noLeak = Object.getOwnPropertyNames(window).filter(k => /fable|cheat|memscan/i.test(k)).length === 0;
+      const wasmNat = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
+      return noLeak && wasmNat;
+    } catch (_) { return false; }
+  }
+  const qs = new URLSearchParams(location.search);
+  const tag = qs.get("tag") || "mem";
+  window.addEventListener("load", function() {
+    setTimeout(function() {
+      const wVal = new Int32Array(window.testWasmMem.buffer)[16];
+      const gVal = window.gameState.gold;
+      const st = checkStealth();
+      fetch("/mem-probe?tag=" + encodeURIComponent(tag) + "&stealth=" + st + "&wasm=" + wVal + "&gold=" + gVal).catch(() => {});
+    }, 3800);
+  });
+})();
+</script></body></html>"""
+
 SPEED_HTML = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Fable Speed Test</title>
 <style>
@@ -242,6 +271,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             import time
             print(f"SPEED_START tag={tag} ts={time.monotonic():.3f}", flush=True)
             self._send(200, "text/html; charset=utf-8", SPEED_HTML.encode())
+        elif p == "/mem.html":
+            self._send(200, "text/html; charset=utf-8", MEM_HTML.encode())
+        elif p == "/mem-probe":
+            print(f"MEM_PROBE q={parsed.query}", flush=True)
+            self._send(200, "application/json", b'{"ok":true}')
         elif p == "/speed-done":
             qs = urllib.parse.parse_qs(parsed.query)
             tag = qs.get("tag", ["run"])[0]
@@ -503,6 +537,26 @@ sleep 3
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/speed.html?tag=off_after_gecko&ms=200' -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 5; step "speed back OFF unloaded (GeckoView)"
 
+
+log "Phase 6b: Memory Engine CE (Native C++ self-process + GeckoView WASM/JS + Blink x Gecko WASM/JS + Stealth)"
+adb shell am start -n "$ACT" --ez fable_test_mem_toggle true >/dev/null 2>&1 || true
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck native >/dev/null 2>&1 || true
+sleep 3; step "memory engine native C++ self-scan & write"
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/mem.html?tag=mem_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck page_gecko >/dev/null 2>&1 || true
+sleep 5; step "memory engine GeckoView WASM+JS scan & write"
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/mem.html?tag=mem_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck page_blink >/dev/null 2>&1 || true
+sleep 5; step "memory engine Blink x Gecko WASM+JS scan & write"
+
+adb shell am start -n "$ACT" --ez fable_test_mem_toggle false >/dev/null 2>&1 || true
+sleep 2
+
 log "Phase 7: Cookie Persistence across Force-Stop"
 timeout 90 adb shell am start -W -a android.intent.action.VIEW -d "http://127.0.0.1:18080/cookie-set" -n "$ACT" >> "$ART/nav.txt" 2>&1
 sleep 8
@@ -584,6 +638,16 @@ PYSPEED
 )"
 echo "$SPEED_CHECK" | grep -q "^OK " || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} speed-control(${SPEED_CHECK})"; }
 
+
+MEM_NATIVE_LINE="$(grep 'FABLE-MEM-CHECK.*scope=native' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_GECKO_LINE="$(grep 'FABLE-MEM-CHECK.*scope=page_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_BLINK_LINE="$(grep 'FABLE-MEM-CHECK.*scope=page_blink' "$ART/logcat.txt" | tail -n 1 || true)"
+echo "$MEM_NATIVE_LINE" | grep -q 'okReg=true.*writeOk=true readBack=987654321 hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-native(${MEM_NATIVE_LINE:-missing})"; }
+echo "$MEM_GECKO_LINE" | grep -q 'engine=GeckoView.*hit=wasm#' || echo "$MEM_GECKO_LINE" | grep -q 'engine=GeckoView.*hit=js:gameState.gold' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko(${MEM_GECKO_LINE:-missing})"; }
+echo "$MEM_BLINK_LINE" | grep -q 'engine=Blink x Gecko.*hit=wasm#' || echo "$MEM_BLINK_LINE" | grep -q 'engine=Blink x Gecko.*hit=js:gameState.gold' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink(${MEM_BLINK_LINE:-missing})"; }
+grep -q 'MEM_PROBE q=tag=mem_gecko&stealth=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko-stealth"; }
+grep -q 'MEM_PROBE q=tag=mem_blink&stealth=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink-stealth"; }
+
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
 
@@ -605,6 +669,12 @@ VERDICT="PASS"
   echo "${PERF_LINES:-(none)}"
   echo "--- gfxinfo ---"
   echo "${GFX_SUMMARY:-(none)}"
+  echo '```'
+  echo "### Memory Engine (Mobile CE) Verification"
+  echo '```'
+  echo "Native: ${MEM_NATIVE_LINE:-(none)}"
+  echo "Gecko:  ${MEM_GECKO_LINE:-(none)}"
+  echo "Blink:  ${MEM_BLINK_LINE:-(none)}"
   echo '```'
   echo "### Website Speed Control Verification"
   echo '```'

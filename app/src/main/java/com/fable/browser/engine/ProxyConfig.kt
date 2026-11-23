@@ -5,6 +5,7 @@ import android.webkit.CookieManager
 import com.fable.browser.BuildConfig
 import com.fable.browser.data.prefs.Settings
 import com.fable.browser.data.repo.FaviconStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,6 +43,7 @@ class ProxyConfig @Inject constructor(
     private val cookieIoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lastBlinkCookieDigest = ConcurrentHashMap<String, String>()
     private var cookieFlushJob: kotlinx.coroutines.Job? = null
+    private val pendingMemCalls = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
     init {
         superIncognito.addListener { push() }
@@ -110,6 +112,40 @@ class ProxyConfig @Inject constructor(
                 })
             }
         }
+    }
+
+
+    fun broadcastMemoryEngineToggle(enabled: Boolean) {
+        val p = port ?: return
+        scope.launch {
+            runCatching {
+                p.postMessage(JSONObject().apply {
+                    put("type", "memory-engine-toggle")
+                    put("enabled", enabled)
+                })
+            }
+        }
+    }
+
+    suspend fun executeMemoryCommand(cmd: JSONObject): String {
+        val p = port ?: return "{\"ok\":false,\"error\":\"GeckoView extension port not connected\"}"
+        val reqId = java.util.UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<String>()
+        pendingMemCalls[reqId] = deferred
+        scope.launch {
+            runCatching {
+                p.postMessage(JSONObject().apply {
+                    put("type", "mem-cmd")
+                    put("reqId", reqId)
+                    put("cmd", cmd)
+                })
+            }.onFailure {
+                pendingMemCalls.remove(reqId)?.complete("{\"ok\":false,\"error\":\"Failed to send GeckoView command\"}")
+            }
+        }
+        val result = withTimeoutOrNull(8_000L) { deferred.await() }
+        pendingMemCalls.remove(reqId)
+        return result ?: "{\"ok\":false,\"error\":\"GeckoView page scan timed out\"}"
     }
 
     fun shouldBlockHybrid(url: String, docHost: String?, adBlockActive: Boolean): Boolean {
@@ -302,12 +338,18 @@ class ProxyConfig @Inject constructor(
             put("timeScaleCss", s?.timeScaleCssAnimations ?: true)
             put("timeScaleMedia", s?.timeScaleMedia ?: true)
             put("timeScaleWorkers", s?.timeScaleWorkers ?: true)
+            put("memoryEngineEnabled", s?.memoryEngineEnabled ?: false)
         }
     }
 
     private fun handlePortMessage(message: Any?, p: WebExtension.Port) {
         val json = message as? JSONObject
         when (json?.optString("type")) {
+            "mem-res" -> {
+                val reqId = json.optString("reqId")
+                val payload = json.optString("payload", "{\"ok\":false,\"error\":\"Empty Gecko response\"}")
+                if (reqId.isNotBlank()) pendingMemCalls.remove(reqId)?.complete(payload)
+            }
             "applied" -> {
                 val ids = json.optJSONArray("superIds")
                 val set = HashSet<String>()

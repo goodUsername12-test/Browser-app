@@ -124,6 +124,10 @@ fun BrowserScreen(
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     val isScreenRecording by ScreenRecorderManager.isRecording.collectAsStateWithLifecycle()
     val captureState by viewModel.captureState.collectAsStateWithLifecycle()
+    val memState by viewModel.memoryEngineState.collectAsStateWithLifecycle()
+    LaunchedEffect(settings.memoryEngineEnabled) {
+        viewModel.memoryEngineManager.setEngineActive(settings.memoryEngineEnabled)
+    }
     val perfSnap by viewModel.perfSnapshot.collectAsStateWithLifecycle()
     val recElapsedSec by ScreenRecorderManager.elapsedSeconds.collectAsStateWithLifecycle()
     val lastButtonPress by ScreenRecorderManager.lastButtonPress.collectAsStateWithLifecycle()
@@ -563,6 +567,41 @@ fun BrowserScreen(
             )
         }
 
+        if (settings.memoryEngineEnabled && settings.memoryEngineShowPanel) {
+            com.fable.browser.ui.components.DraggableMemoryEnginePanel(
+                state = memState,
+                scalePct = settings.memoryEnginePanelScalePct,
+                posX = settings.memoryEnginePanelPosX,
+                posY = settings.memoryEnginePanelPosY,
+                expanded = settings.memoryEnginePanelExpanded,
+                topSafePadding = if (toolbarAtTop && showToolbar) 64.dp else 8.dp,
+                bottomSafePadding = if (!toolbarAtTop && showToolbar) 64.dp else 8.dp,
+                onSelectScope = viewModel.memoryEngineManager::setScope,
+                onSelectDataType = viewModel.memoryEngineManager::setDataType,
+                onSelectScanType = viewModel.memoryEngineManager::setScanType,
+                onFirstScan = viewModel.memoryEngineManager::firstScan,
+                onNextScan = viewModel.memoryEngineManager::nextScan,
+                onUndoScan = viewModel.memoryEngineManager::undoScan,
+                onResetScan = viewModel.memoryEngineManager::resetScan,
+                onAddWatch = { item -> viewModel.memoryEngineManager.addToWatch(item) },
+                onSetWatchValue = viewModel.memoryEngineManager::setWatchValue,
+                onRestoreWatchOriginal = viewModel.memoryEngineManager::restoreWatchOriginal,
+                onToggleWatchFreeze = viewModel.memoryEngineManager::toggleWatchFreeze,
+                onRemoveWatch = viewModel.memoryEngineManager::removeWatch,
+                onUnfreezeAll = viewModel.memoryEngineManager::unfreezeAll,
+                onInspectHex = viewModel.memoryEngineManager::inspectHex,
+                onRefreshRegions = viewModel.memoryEngineManager::refreshRegions,
+                onPositionChangeFinished = viewModel::setMemoryEnginePanelPosition,
+                onToggleExpanded = { viewModel.setMemoryEnginePanelExpanded(!settings.memoryEnginePanelExpanded) },
+                onTurnOff = { viewModel.setMemoryEngineEnabled(false) },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .imePadding()
+            )
+        }
+
         com.fable.browser.ui.components.UndoCloseBar(
             closed = recentlyClosed,
             onUndo = { viewModel.undoClose() },
@@ -615,7 +654,9 @@ fun BrowserScreen(
             onOpenRecorderSettings = onOpenRecorderSettings,
             timeScaleEnabled = settings.timeScaleEnabled,
             timeScaleRateLabel = com.fable.browser.engine.WebsiteSpeedEngine.formatTenths(settings.timeScaleMultiplierTenths),
-            onToggleTimeScale = { viewModel.setTimeScaleEnabled(!settings.timeScaleEnabled) }
+            onToggleTimeScale = { viewModel.setTimeScaleEnabled(!settings.timeScaleEnabled) },
+            memoryEngineEnabled = settings.memoryEngineEnabled,
+            onToggleMemoryEngine = { viewModel.setMemoryEngineEnabled(!settings.memoryEngineEnabled) }
         )
     }
 

@@ -44,8 +44,10 @@ class BrowserViewModel @Inject constructor(
     private val downloader: Downloader,
     private val engineManager: EngineManager,
     private val activityBridge: ActivityBridge,
-    private val biometricGate: BiometricGate
+    private val biometricGate: BiometricGate,
+    val memoryEngineManager: com.fable.browser.engine.MemoryEngineManager
 ) : ViewModel() {
+    val memoryEngineState = memoryEngineManager.state
     val tabs: StateFlow<List<BrowserTab>> = tabManager.tabs
     val activeTabId: StateFlow<String?> = tabManager.activeTabId
     val isIncognito: StateFlow<Boolean> = tabManager.isIncognitoMode
@@ -336,6 +338,20 @@ class BrowserViewModel @Inject constructor(
         viewModelScope.launch {
             settingsStore.setTimeScalePanelExpanded(expanded)
         }
+    }
+
+    fun setMemoryEngineEnabled(enabled: Boolean) {
+        memoryEngineManager.setEngineActive(enabled)
+        viewModelScope.launch { settingsStore.setMemoryEngineEnabled(enabled) }
+        toast(if (enabled) "Memory Engine (Mobile CE) ON" else "Memory Engine OFF")
+    }
+
+    fun setMemoryEnginePanelPosition(x: Float, y: Float) {
+        viewModelScope.launch { settingsStore.setMemoryEnginePanelPosition(x, y) }
+    }
+
+    fun setMemoryEnginePanelExpanded(expanded: Boolean) {
+        viewModelScope.launch { settingsStore.setMemoryEnginePanelExpanded(expanded) }
     }
 
 

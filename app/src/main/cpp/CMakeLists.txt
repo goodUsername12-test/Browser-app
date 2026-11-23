@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(fable_fast SHARED
     fable_fast.cpp
+    fable_memscan.cpp
 )
 
 target_compile_options(fable_fast PRIVATE

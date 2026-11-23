@@ -50,7 +50,10 @@ object WebsiteMemoryEngine {
                 if (typeof fn !== "function") return fn;
                 var sig = "function " + (fallback || "") + "() { [native code] }";
                 if (typeof orig === "function") {
-                    try { sig = origToStr.call(orig); } catch (_) {}
+                    try {
+                        var rawSig = origToStr.call(orig);
+                        if (rawSig && rawSig.indexOf("[native code]") !== -1) sig = rawSig;
+                    } catch (_) {}
                     try { Object.defineProperty(fn, "name", { value: orig.name, configurable: true }); } catch (_) {}
                     try { Object.defineProperty(fn, "length", { value: orig.length, configurable: true }); } catch (_) {}
                 }

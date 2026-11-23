@@ -142,10 +142,8 @@ object HybridEngineBridge {
         val zoomInit = settings.textZoomPercent.coerceIn(50, 200)
         val timeScaleBlock = WebsiteSpeedEngine.buildBootstrapScript(settings)
         val memBlock = WebsiteMemoryEngine.buildBootstrapScript(settings)
-        val prefix = buildString {
-            if (timeScaleBlock.isNotEmpty()) { append(timeScaleBlock); append("\n") }
-            if (memBlock.isNotEmpty()) { append(memBlock); append("\n") }
-        }
+        val prefix = if (timeScaleBlock.isNotEmpty()) "$timeScaleBlock\n" else ""
+        val suffix = if (memBlock.isNotEmpty()) "\n$memBlock" else ""
         return prefix + """
         (function() {
             if (window.__fableHybridBootstrapped) {
@@ -1981,7 +1979,7 @@ object HybridEngineBridge {
                 }
             }
         })();
-        """.trimIndent()
+        """.trimIndent() + suffix
     }
 
     fun buildBlinkArchiveScript(

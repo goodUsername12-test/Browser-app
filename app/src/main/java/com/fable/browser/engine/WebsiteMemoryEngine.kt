@@ -97,7 +97,7 @@ object WebsiteMemoryEngine {
                     var keys = Object.keys(ex);
                     for (var i = 0; i < keys.length; i++) {
                         var v = ex[keys[i]];
-                        if (v && typeof WebAssembly === "object" && v instanceof WebAssembly.Memory) trackWasmMem(v);
+                        if (v && typeof WebAssembly === "object" && safeInstanceOf(v, WebAssembly.Memory)) trackWasmMem(v);
                     }
                 } catch (_) {}
             }
@@ -584,23 +584,42 @@ object WebsiteMemoryEngine {
                 scanBuffer(ab, 0, ab.byteLength, "ab", abIdx, lbl, dt, sc, v1, v2, s1, aob, out, cap);
             }
 
+            function safeInstanceOf(obj, ctor) {
+                try { return typeof ctor === "function" && obj instanceof ctor; } catch (_) { return false; }
+            }
+
+            function safeIsView(obj) {
+                try { return typeof ArrayBuffer === "function" && ArrayBuffer.isView(obj); } catch (_) { return false; }
+            }
+
             function isSkippedBuiltinObject(obj) {
                 if (!obj) return true;
-                if (typeof Node === "function" && obj instanceof Node) return true;
-                if (typeof Event === "function" && obj instanceof Event) return true;
-                if (typeof Promise === "function" && obj instanceof Promise) return true;
-                if (typeof RegExp === "function" && obj instanceof RegExp) return true;
-                if (typeof Error === "function" && obj instanceof Error) return true;
-                var cname = obj.constructor && obj.constructor.name ? obj.constructor.name : "";
-                if (cname === "CSSStyleDeclaration" || cname === "DOMTokenList" || cname === "NamedNodeMap" ||
-                    cname === "HTMLCollection" || cname === "NodeList" || cname === "Performance" ||
-                    cname === "Navigator" || cname === "Screen" || cname === "History" || cname === "Location" ||
-                    cname === "WebGLRenderingContext" || cname === "WebGL2RenderingContext" ||
-                    cname === "WebGLProgram" || cname === "WebGLShader" || cname === "WebGLBuffer" ||
-                    cname === "WebGLTexture" || cname === "WebGLFramebuffer" || cname === "AudioContext") {
+                try {
+                    if (typeof Window === "function" && safeInstanceOf(obj, Window)) {
+                        void obj.document;
+                    }
+                    if (safeInstanceOf(obj, typeof Node === "function" ? Node : null)) return true;
+                    if (safeInstanceOf(obj, typeof Event === "function" ? Event : null)) return true;
+                    if (safeInstanceOf(obj, typeof Promise === "function" ? Promise : null)) return true;
+                    if (safeInstanceOf(obj, typeof RegExp === "function" ? RegExp : null)) return true;
+                    if (safeInstanceOf(obj, typeof Error === "function" ? Error : null)) return true;
+                    var ctor = null;
+                    try { ctor = obj.constructor; } catch (_) { return true; }
+                    var cname = "";
+                    try { cname = ctor && typeof ctor.name === "string" ? ctor.name : ""; } catch (_) { return true; }
+                    if (cname === "CSSStyleDeclaration" || cname === "DOMTokenList" || cname === "NamedNodeMap" ||
+                        cname === "HTMLCollection" || cname === "NodeList" || cname === "Performance" ||
+                        cname === "Navigator" || cname === "Screen" || cname === "History" || cname === "Location" ||
+                        cname === "Window" || cname === "WindowProxy" || cname === "CrossOriginWindow" ||
+                        cname === "WebGLRenderingContext" || cname === "WebGL2RenderingContext" ||
+                        cname === "WebGLProgram" || cname === "WebGLShader" || cname === "WebGLBuffer" ||
+                        cname === "WebGLTexture" || cname === "WebGLFramebuffer" || cname === "AudioContext") {
+                        return true;
+                    }
+                    return false;
+                } catch (_) {
                     return true;
                 }
-                return false;
             }
 
             function collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap, scannedBufs) {
@@ -633,11 +652,11 @@ object WebsiteMemoryEngine {
                     visited.add(obj);
                     nodesVisited++;
 
-                    if (typeof WebAssembly === "object" && obj instanceof WebAssembly.Memory) {
+                    if (typeof WebAssembly === "object" && safeInstanceOf(obj, WebAssembly.Memory)) {
                         trackWasmMem(obj);
                         continue;
                     }
-                    if (ArrayBuffer.isView(obj)) {
+                    if (safeIsView(obj)) {
                         if (obj.buffer) {
                             registerAndScanFullBuffer(obj.buffer, cur.path, dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
                         }
@@ -647,13 +666,13 @@ object WebsiteMemoryEngine {
                         }
                         continue;
                     }
-                    if (typeof ArrayBuffer === "function" && (obj instanceof ArrayBuffer || (typeof SharedArrayBuffer === "function" && obj instanceof SharedArrayBuffer))) {
+                    if (typeof ArrayBuffer === "function" && (safeInstanceOf(obj, ArrayBuffer) || (typeof SharedArrayBuffer === "function" && safeInstanceOf(obj, SharedArrayBuffer)))) {
                         registerAndScanFullBuffer(obj, cur.path, dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
                         continue;
                     }
                     if (cur.depth > 0 && isSkippedBuiltinObject(obj)) continue;
 
-                    if (obj instanceof Map) {
+                    if (safeInstanceOf(obj, Map)) {
                         var mCount = 0;
                         try {
                             obj.forEach(function(mv, mk) {
@@ -673,7 +692,7 @@ object WebsiteMemoryEngine {
                         } catch (_) {}
                         continue;
                     }
-                    if (obj instanceof Set) {
+                    if (safeInstanceOf(obj, Set)) {
                         var sCount = 0;
                         try {
                             obj.forEach(function(sv) {
@@ -972,9 +991,14 @@ object WebsiteMemoryEngine {
                         for (var tai = 0; tai < Math.min(taRegistry.length, 40); tai++) {
                             var taObj = taRegistry[tai].deref();
                             if (taObj) {
-                                var tkb = Math.max(1, Math.round(taObj.byteLength / 1024));
-                                totalKb += tkb;
-                                regs.push({ start: "ta#" + tai, end: "0x" + taObj.byteLength.toString(16).toUpperCase(), kb: tkb, perms: "rw-ta", label: taObj.constructor ? taObj.constructor.name : "TypedArray" });
+                                try {
+                                    var tLen = taObj.byteLength;
+                                    var tkb = Math.max(1, Math.round(tLen / 1024));
+                                    var tName = "TypedArray";
+                                    try { tName = taObj.constructor && taObj.constructor.name ? taObj.constructor.name : "TypedArray"; } catch (_) {}
+                                    totalKb += tkb;
+                                    regs.push({ start: "ta#" + tai, end: "0x" + tLen.toString(16).toUpperCase(), kb: tkb, perms: "rw-ta", label: tName });
+                                } catch (_) {}
                             }
                         }
                         return { ok: true, count: regs.length, totalKb: totalKb, regions: regs };

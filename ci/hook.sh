@@ -168,7 +168,7 @@ UNITY_IFRAME_HTML = """<!DOCTYPE html>
       const coins = new Int32Array(unityMem.buffer)[0x2800000 >> 2];
       const st = checkStealth();
       fetch("http://127.0.0.1:18080/xorigin-probe?stealth=" + st + "&coins=" + coins, { mode: "no-cors" }).catch(() => {});
-    }, 4500);
+    }, 6800);
   });
 })();
 </script></body></html>"""
@@ -422,6 +422,7 @@ adb shell settings put global transition_animation_scale 0 || true
 adb shell settings put global animator_duration_scale 0 || true
 adb shell input keyevent 82 || true
 adb reverse tcp:18080 tcp:18080 || true
+adb reverse tcp:18081 tcp:18081 || true
 sleep 6
 
 if ! timeout 240 adb install -r -g "$APK_X86_DBG" > "$ART/install.log" 2>&1; then
@@ -612,21 +613,21 @@ sleep 5; step "memory engine Blink x Gecko WASM+JS scan & write"
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/xorigin-unity.html?eng=gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 3
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck xorigin_gecko --es fable_test_mem_query "4,976,216" --es fable_test_mem_write "9999999" >/dev/null 2>&1 || true
-sleep 6; step "memory engine cross-origin 48MB Unity WASM iframe (GeckoView)"
+sleep 7; step "memory engine cross-origin 48MB Unity WASM iframe (GeckoView)"
 
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/xorigin-unity.html?eng=blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 3
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck xorigin_blink --es fable_test_mem_query "4,976,216" --es fable_test_mem_write "9999999" >/dev/null 2>&1 || true
-sleep 6; step "memory engine cross-origin 48MB Unity WASM iframe (Blink x Gecko)"
+sleep 7; step "memory engine cross-origin 48MB Unity WASM iframe (Blink x Gecko)"
 
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://veck.io' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
 sleep 8
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_veck --es fable_test_mem_query "100" --es fable_test_mem_write "" >/dev/null 2>&1 || true
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_veck --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
 sleep 4
 
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/turbo-trail-txl' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
 sleep 8
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy --es fable_test_mem_query "100" --es fable_test_mem_write "" >/dev/null 2>&1 || true
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
 sleep 4
 
 adb shell am start -n "$ACT" --ez fable_test_mem_toggle false >/dev/null 2>&1 || true

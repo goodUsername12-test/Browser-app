@@ -1265,11 +1265,15 @@ object WebsiteMemoryEngine {
             window.addEventListener(CH, function(ev) {
                 var d = ev && ev.detail;
                 if (!d || typeof d !== "object" || !d.box) return;
+                if (IS_TOP && d.__mreq) {
+                    var cleanCmd = {};
+                    for (var ck in d) {
+                        if (ck !== "box" && ck !== "__mreq") cleanCmd[ck] = d[ck];
+                    }
+                    relayToChildFrames({ __mch: CH, __mreq: d.__mreq, cmd: cleanCmd });
+                }
                 d.box.ok = true;
                 d.box.out = handleCmd(d);
-                if (IS_TOP && d.__mreq) {
-                    relayToChildFrames({ __mch: CH, __mreq: d.__mreq, cmd: d });
-                }
             }, false);
         })();
         """.trimIndent()

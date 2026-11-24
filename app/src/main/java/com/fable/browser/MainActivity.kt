@@ -423,7 +423,7 @@ class MainActivity : FragmentActivity() {
                             } else {
                                 val queryVal = intent.getStringExtra("fable_test_mem_query")?.takeIf { it.isNotBlank() } ?: "133700"
                                 val writeVal = intent.getStringExtra("fable_test_mem_write").orEmpty()
-                                val doWrite = if (intent.hasExtra("fable_test_mem_write")) writeVal.isNotBlank() else true
+                                val doWrite = if (intent.hasExtra("fable_test_mem_write")) (writeVal.isNotBlank() && !writeVal.equals("skip", ignoreCase = true)) else true
                                 val targetWrite = if (writeVal.isNotBlank()) writeVal else "777888"
                                 memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
                                 memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)

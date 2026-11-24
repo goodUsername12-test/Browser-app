@@ -6,7 +6,7 @@ enum class MemScope(val label: String) {
 }
 
 enum class MemDataType(val code: Int, val jsCode: String, val shortLabel: String) {
-    AUTO(2, "auto", "Auto"),
+    AUTO(8, "auto", "Auto"),
     INT8(0, "i8", "1B (i8)"),
     INT16(1, "i16", "2B (i16)"),
     INT32(2, "i32", "4B (i32)"),
@@ -41,6 +41,9 @@ object NativeMemoryScanner {
     private external fun nativeNextScan(scanType: Int, val1: String, val2: String, maxReturn: Int): String
 
     @JvmStatic
+    private external fun nativeRefreshHits(maxReturn: Int): String
+
+    @JvmStatic
     private external fun nativeUndoScan(maxReturn: Int): String
 
     @JvmStatic
@@ -60,8 +63,7 @@ object NativeMemoryScanner {
 
     fun firstScan(dtype: MemDataType, scanType: MemScanType, val1: String, val2: String = "", maxReturn: Int = 150): String {
         if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
-        val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
-        return runCatching { nativeFirstScan(nativeType, scanType.code, val1, val2, maxReturn) }
+        return runCatching { nativeFirstScan(dtype.code, scanType.code, val1, val2, maxReturn) }
             .getOrElse { "{\"ok\":false,\"error\":\"Native scan error\"}" }
     }
 
@@ -69,6 +71,12 @@ object NativeMemoryScanner {
         if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
         return runCatching { nativeNextScan(scanType.code, val1, val2, maxReturn) }
             .getOrElse { "{\"ok\":false,\"error\":\"Native next scan error\"}" }
+    }
+
+    fun refreshHits(maxReturn: Int = 150): String {
+        if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
+        return runCatching { nativeRefreshHits(maxReturn) }
+            .getOrElse { "{\"ok\":false,\"error\":\"Refresh failed\"}" }
     }
 
     fun undoScan(maxReturn: Int = 150): String {

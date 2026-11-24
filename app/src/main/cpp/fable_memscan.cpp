@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -15,7 +16,6 @@
 
 namespace {
 
-// Data types matching Cheat Engine
 constexpr int DT_INT8   = 0;
 constexpr int DT_INT16  = 1;
 constexpr int DT_INT32  = 2;
@@ -24,8 +24,8 @@ constexpr int DT_FLOAT  = 4;
 constexpr int DT_DOUBLE = 5;
 constexpr int DT_STRING = 6;
 constexpr int DT_AOB    = 7;
+constexpr int DT_AUTO   = 8;
 
-// Scan comparison types matching Cheat Engine
 constexpr int SC_EXACT        = 0;
 constexpr int SC_BIGGER       = 1;
 constexpr int SC_SMALLER      = 2;
@@ -41,7 +41,8 @@ constexpr int SC_UNCHANGED    = 10;
 constexpr std::size_t MAX_RESULTS_CAP = 200000;
 constexpr std::size_t MAX_UNKNOWN_CAP = 120000;
 constexpr std::size_t CHUNK_BYTES     = 256 * 1024;
-constexpr std::size_t MAX_REGION_BYTES = 64 * 1024 * 1024; // skip giant 64MB+ mmap pools for speed
+constexpr std::size_t PIPE_STEP_BYTES = 4096;
+constexpr std::size_t MAX_REGION_BYTES = 128 * 1024 * 1024;
 
 struct MemRegion {
     std::uint64_t start = 0;
@@ -52,12 +53,104 @@ struct MemRegion {
 
 struct ScanHit {
     std::uint64_t addr = 0;
-    std::uint64_t prev_raw = 0; // stores raw bytes (up to 8 bytes) for Next Scan delta comparisons
+    std::uint64_t prev_raw = 0;
+    std::uint8_t hit_type = DT_INT32;
 };
 
 struct AobPattern {
     std::vector<std::uint8_t> bytes;
-    std::vector<std::uint8_t> mask; // 1 = match byte, 0 = wildcard ??
+    std::vector<std::uint8_t> mask;
+};
+
+class SafeMemIo {
+public:
+    explicit SafeMemIo(bool writable) : writable_(writable) {
+        mem_fd_ = ::open("/proc/self/mem", (writable ? O_RDWR : O_RDONLY) | O_CLOEXEC);
+        if (mem_fd_ < 0) {
+            if (::pipe2(pipe_fd_, O_CLOEXEC | O_NONBLOCK) == 0) {
+#ifdef F_SETPIPE_SZ
+                ::fcntl(pipe_fd_[1], F_SETPIPE_SZ, 65536);
+#endif
+                use_pipe_ = true;
+            }
+        }
+    }
+
+    ~SafeMemIo() {
+        if (mem_fd_ >= 0) ::close(mem_fd_);
+        if (pipe_fd_[0] >= 0) ::close(pipe_fd_[0]);
+        if (pipe_fd_[1] >= 0) ::close(pipe_fd_[1]);
+    }
+
+    SafeMemIo(const SafeMemIo&) = delete;
+    SafeMemIo& operator=(const SafeMemIo&) = delete;
+
+    bool valid() const { return mem_fd_ >= 0 || use_pipe_; }
+    bool using_pipe() const { return use_pipe_; }
+
+    ssize_t read_at(std::uint64_t addr, void* dst, std::size_t len) {
+        if (len == 0) return 0;
+        if (mem_fd_ >= 0) {
+            return ::pread(mem_fd_, dst, len, static_cast<off_t>(addr));
+        }
+        if (!use_pipe_) return -1;
+        auto* out = static_cast<std::uint8_t*>(dst);
+        std::size_t total = 0;
+        while (total < len) {
+            const std::size_t step = std::min<std::size_t>(PIPE_STEP_BYTES, len - total);
+            const auto* src_ptr = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(addr + total));
+            const ssize_t w = ::write(pipe_fd_[1], src_ptr, step);
+            if (w <= 0) {
+                drain_pipe();
+                break;
+            }
+            std::size_t got = 0;
+            while (got < static_cast<std::size_t>(w)) {
+                const ssize_t r = ::read(pipe_fd_[0], out + total + got, static_cast<std::size_t>(w) - got);
+                if (r <= 0) {
+                    drain_pipe();
+                    return total > 0 ? static_cast<ssize_t>(total) : -1;
+                }
+                got += static_cast<std::size_t>(r);
+            }
+            total += got;
+            if (static_cast<std::size_t>(w) < step) break;
+        }
+        return total > 0 ? static_cast<ssize_t>(total) : -1;
+    }
+
+    ssize_t write_at(std::uint64_t addr, const void* src, std::size_t len) {
+        if (!writable_ || len == 0 || len > PIPE_STEP_BYTES) return -1;
+        if (mem_fd_ >= 0) {
+            return ::pwrite(mem_fd_, src, len, static_cast<off_t>(addr));
+        }
+        if (!use_pipe_) return -1;
+        drain_pipe();
+        const ssize_t w = ::write(pipe_fd_[1], src, len);
+        if (w != static_cast<ssize_t>(len)) {
+            drain_pipe();
+            return -1;
+        }
+        auto* dst_ptr = reinterpret_cast<void*>(static_cast<std::uintptr_t>(addr));
+        const ssize_t r = ::read(pipe_fd_[0], dst_ptr, len);
+        if (r != static_cast<ssize_t>(len)) {
+            drain_pipe();
+            return -1;
+        }
+        return r;
+    }
+
+private:
+    void drain_pipe() {
+        if (pipe_fd_[0] < 0) return;
+        std::uint8_t sink[512];
+        while (::read(pipe_fd_[0], sink, sizeof(sink)) > 0) {}
+    }
+
+    bool writable_ = false;
+    bool use_pipe_ = false;
+    int mem_fd_ = -1;
+    int pipe_fd_[2] = {-1, -1};
 };
 
 std::mutex g_scan_mu;
@@ -67,13 +160,11 @@ int g_last_type = DT_INT32;
 std::size_t g_last_str_len = 0;
 
 bool is_safe_private_rw_region(const MemRegion& r) {
-    // Strictly require readable, writable, non-executable, private mapping
     if (r.perms[0] != 'r' || r.perms[1] != 'w' || r.perms[2] != '-' || r.perms[3] != 'p') {
         return false;
     }
     if (r.end <= r.start) return false;
     if ((r.end - r.start) > MAX_REGION_BYTES) return false;
-    // Skip system/device/graphics/linker mappings
     const std::string_view lbl(r.label);
     if (!lbl.empty()) {
         if (lbl.starts_with("/dev/") || lbl.starts_with("/system/") ||
@@ -139,7 +230,7 @@ bool is_inside_scanner_internal(std::uint64_t addr, std::size_t size,
         if (v.empty() && v.capacity() == 0) return false;
         const std::uint64_t vs = reinterpret_cast<std::uint64_t>(v.data());
         const std::uint64_t ve = vs + v.capacity() * sizeof(ScanHit);
-        return vs != 0 && addr < ve && (addr + size) > vs;
+        return addr < ve && (addr + size) > vs;
     };
     return overlaps_vec(g_hits) || overlaps_vec(g_prev_hits);
 }
@@ -167,6 +258,20 @@ std::size_t type_align(int dtype) {
         case DT_FLOAT:  return 4;
         case DT_DOUBLE: return 8;
         default:        return 1;
+    }
+}
+
+const char* type_code_str(int dtype) {
+    switch (dtype) {
+        case DT_INT8:   return "i8";
+        case DT_INT16:  return "i16";
+        case DT_INT32:  return "i32";
+        case DT_INT64:  return "i64";
+        case DT_FLOAT:  return "f32";
+        case DT_DOUBLE: return "f64";
+        case DT_STRING: return "str";
+        case DT_AOB:    return "aob";
+        default:        return "i32";
     }
 }
 
@@ -400,34 +505,46 @@ std::string json_escape(std::string_view s) {
     return out;
 }
 
-std::string build_results_json(int fd, int dtype, std::size_t item_len, std::size_t max_return) {
+std::string build_results_json(SafeMemIo& io, std::size_t max_return) {
     std::string json;
     json.reserve(4096);
-    json += "{\"ok\":true,\"total\":";
+    json += "{\"ok\":true,\"mode\":\"";
+    json += (io.using_pipe() ? "pipe" : "proc");
+    json += "\",\"total\":";
     json += std::to_string(g_hits.size());
     json += ",\"canUndo\":";
     json += (g_prev_hits.empty() ? "false" : "true");
     json += ",\"items\":[";
     const std::size_t limit = std::min(g_hits.size(), max_return);
     std::uint8_t tmp[64];
-    const std::size_t rd_len = std::min<std::size_t>(item_len, sizeof(tmp));
     for (std::size_t i = 0; i < limit; ++i) {
         if (i > 0) json += ",";
         const auto& h = g_hits[i];
+        const int htype = static_cast<int>(h.hit_type);
+        const std::size_t rd_len = std::min<std::size_t>(type_size(htype, g_last_str_len), sizeof(tmp));
         std::memset(tmp, 0, sizeof(tmp));
         bool ok_rd = false;
-        if (fd >= 0 && rd_len > 0) {
-            const ssize_t got = ::pread(fd, tmp, rd_len, static_cast<off_t>(h.addr));
+        if (io.valid() && rd_len > 0) {
+            const ssize_t got = io.read_at(h.addr, tmp, rd_len);
             ok_rd = (got == static_cast<ssize_t>(rd_len));
         }
         char addr_hex[32];
         std::snprintf(addr_hex, sizeof(addr_hex), "0x%llX", static_cast<unsigned long long>(h.addr));
-        const std::string val_str = ok_rd ? format_value(tmp, rd_len, dtype) : "<unreadable>";
+        const std::string val_str = ok_rd ? format_value(tmp, rd_len, htype) : "<unreadable>";
+        std::uint8_t prev_bytes[8] = {0};
+        std::memcpy(prev_bytes, &h.prev_raw, 8);
+        const std::string prev_str = (htype == DT_STRING || htype == DT_AOB)
+            ? val_str
+            : format_value(prev_bytes, std::min<std::size_t>(rd_len, 8), htype);
         json += "{\"addr\":\"";
         json += addr_hex;
         json += "\",\"val\":\"";
         json += json_escape(val_str);
-        json += "\"}";
+        json += "\",\"prev\":\"";
+        json += json_escape(prev_str);
+        json += "\",\"type\":\"";
+        json += type_code_str(htype);
+        json += "\",\"kind\":\"native\"}";
     }
     json += "]}";
     return json;
@@ -462,78 +579,99 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
         }
     }
 
-    const int fd = ::open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return "{\"ok\":false,\"error\":\"Cannot open self process memory\"}";
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self process memory\"}";
 
     const auto regions = parse_self_maps();
     std::vector<std::uint8_t> chunk(CHUNK_BYTES);
     const std::uint64_t chunk_start = reinterpret_cast<std::uint64_t>(chunk.data());
     const std::uint64_t chunk_end = chunk_start + chunk.size();
-    const std::size_t item_sz = type_size(dtype, g_last_str_len);
-    const std::size_t step = type_align(dtype);
     const std::size_t cap = (scan_type == SC_UNKNOWN) ? MAX_UNKNOWN_CAP : MAX_RESULTS_CAP;
 
-    // Exclude our query strings themselves from matching
     const std::uint64_t s1_start = reinterpret_cast<std::uint64_t>(s1.data());
     const std::uint64_t s1_end = s1_start + s1.capacity() + 1;
+
+    int scan_types[3] = { dtype, 0, 0 };
+    int scan_type_count = 1;
+    if (dtype == DT_AUTO) {
+        scan_types[0] = DT_INT32;
+        scan_types[1] = DT_FLOAT;
+        scan_types[2] = DT_DOUBLE;
+        scan_type_count = (scan_type == SC_UNKNOWN) ? 1 : 3;
+    }
 
     for (const auto& reg : regions) {
         if (g_hits.size() >= cap) break;
         std::uint64_t cursor = reg.start;
         while (cursor < reg.end && g_hits.size() < cap) {
             const std::size_t to_read = static_cast<std::size_t>(std::min<std::uint64_t>(CHUNK_BYTES, reg.end - cursor));
-            if (to_read < item_sz) break;
-            const ssize_t got = ::pread(fd, chunk.data(), to_read, static_cast<off_t>(cursor));
-            if (got < static_cast<ssize_t>(item_sz)) {
-                cursor += to_read;
+            if (to_read < 1) break;
+            const ssize_t got = io.read_at(cursor, chunk.data(), to_read);
+            if (got <= 0) {
+                cursor += std::min<std::size_t>(PIPE_STEP_BYTES, to_read);
                 continue;
             }
             const std::size_t valid = static_cast<std::size_t>(got);
-            const std::size_t last_off = valid - item_sz;
 
             if (dtype == DT_STRING) {
-                const auto* needle = reinterpret_cast<const std::uint8_t*>(s1.data());
-                for (std::size_t off = 0; off <= last_off && g_hits.size() < cap; ++off) {
-                    if (chunk[off] == needle[0] && std::memcmp(chunk.data() + off, needle, item_sz) == 0) {
-                        const std::uint64_t addr = cursor + off;
-                        if (addr >= s1_start && addr < s1_end) continue;
-                        if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
-                        g_hits.push_back(ScanHit{addr, 0});
-                    }
-                }
-            } else if (dtype == DT_AOB) {
-                for (std::size_t off = 0; off <= last_off && g_hits.size() < cap; ++off) {
-                    bool ok = true;
-                    for (std::size_t k = 0; k < aob.bytes.size(); ++k) {
-                        if (aob.mask[k] && chunk[off + k] != aob.bytes[k]) {
-                            ok = false;
-                            break;
+                const std::size_t item_sz = type_size(DT_STRING, g_last_str_len);
+                if (valid >= item_sz) {
+                    const std::size_t last_off = valid - item_sz;
+                    const auto* needle = reinterpret_cast<const std::uint8_t*>(s1.data());
+                    for (std::size_t off = 0; off <= last_off && g_hits.size() < cap; ++off) {
+                        if (chunk[off] == needle[0] && std::memcmp(chunk.data() + off, needle, item_sz) == 0) {
+                            const std::uint64_t addr = cursor + off;
+                            if (addr >= s1_start && addr < s1_end) continue;
+                            if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
+                            g_hits.push_back(ScanHit{addr, 0, DT_STRING});
                         }
                     }
-                    if (ok) {
-                        const std::uint64_t addr = cursor + off;
-                        if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
-                        g_hits.push_back(ScanHit{addr, 0});
+                }
+                const std::size_t advance = (valid > item_sz) ? (valid - item_sz + 1) : valid;
+                cursor += advance;
+            } else if (dtype == DT_AOB) {
+                const std::size_t item_sz = type_size(DT_AOB, g_last_str_len);
+                if (valid >= item_sz) {
+                    const std::size_t last_off = valid - item_sz;
+                    for (std::size_t off = 0; off <= last_off && g_hits.size() < cap; ++off) {
+                        bool ok = true;
+                        for (std::size_t k = 0; k < aob.bytes.size(); ++k) {
+                            if (aob.mask[k] && chunk[off + k] != aob.bytes[k]) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if (ok) {
+                            const std::uint64_t addr = cursor + off;
+                            if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
+                            g_hits.push_back(ScanHit{addr, 0, DT_AOB});
+                        }
                     }
                 }
+                const std::size_t advance = (valid > item_sz) ? (valid - item_sz + 1) : valid;
+                cursor += advance;
             } else {
-                for (std::size_t off = 0; off <= last_off && g_hits.size() < cap; off += step) {
-                    const std::uint64_t raw = load_raw_u64(chunk.data() + off, dtype);
-                    if (match_numeric(raw, 0, false, dtype, scan_type, v1, v2, iv1, iv2)) {
-                        const std::uint64_t addr = cursor + off;
-                        if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
-                        g_hits.push_back(ScanHit{addr, raw});
+                for (int ti = 0; ti < scan_type_count && g_hits.size() < cap; ++ti) {
+                    const int cur_dt = scan_types[ti];
+                    const std::size_t item_sz = type_size(cur_dt, 0);
+                    const std::size_t step = type_align(cur_dt);
+                    if (valid < item_sz) continue;
+                    const std::size_t last_off = valid - item_sz;
+                    for (std::size_t off = 0; off <= last_off && g_hits.size() < cap; off += step) {
+                        const std::uint64_t raw = load_raw_u64(chunk.data() + off, cur_dt);
+                        if (match_numeric(raw, 0, false, cur_dt, scan_type, v1, v2, iv1, iv2)) {
+                            const std::uint64_t addr = cursor + off;
+                            if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
+                            g_hits.push_back(ScanHit{addr, raw, static_cast<std::uint8_t>(cur_dt)});
+                        }
                     }
                 }
+                cursor += valid;
             }
-            const std::size_t advance = (valid > item_sz && step == 1) ? (valid - item_sz + 1) : valid;
-            cursor += advance;
         }
     }
 
-    const std::string res = build_results_json(fd, dtype, item_sz, max_return);
-    ::close(fd);
-    return res;
+    return build_results_json(io, max_return);
 }
 
 std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::string& s2, std::size_t max_return) {
@@ -562,41 +700,46 @@ std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::
         }
     }
 
-    const int fd = ::open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return "{\"ok\":false,\"error\":\"Cannot open self process memory\"}";
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self process memory\"}";
 
     g_prev_hits = g_hits;
     std::vector<ScanHit> next;
     next.reserve(std::min<std::size_t>(g_hits.size(), 4096));
-    const std::size_t item_sz = type_size(dtype, g_last_str_len);
     std::uint8_t buf[64];
-    const std::size_t rd_sz = std::min<std::size_t>(item_sz, sizeof(buf));
 
     for (const auto& h : g_hits) {
-        const ssize_t got = ::pread(fd, buf, rd_sz, static_cast<off_t>(h.addr));
+        const int htype = static_cast<int>(h.hit_type);
+        const std::size_t rd_sz = std::min<std::size_t>(type_size(htype, g_last_str_len), sizeof(buf));
+        const ssize_t got = io.read_at(h.addr, buf, rd_sz);
         if (got != static_cast<ssize_t>(rd_sz)) continue;
-        if (dtype == DT_STRING) {
+        if (htype == DT_STRING) {
             const std::size_t cmp_len = std::min(rd_sz, s1.size());
             if (std::memcmp(buf, s1.data(), cmp_len) == 0) {
                 next.push_back(h);
             }
-        } else if (dtype == DT_AOB) {
+        } else if (htype == DT_AOB) {
             bool ok = true;
             for (std::size_t k = 0; k < aob.bytes.size() && k < rd_sz; ++k) {
                 if (aob.mask[k] && buf[k] != aob.bytes[k]) { ok = false; break; }
             }
             if (ok) next.push_back(h);
         } else {
-            const std::uint64_t raw = load_raw_u64(buf, dtype);
-            if (match_numeric(raw, h.prev_raw, true, dtype, scan_type, v1, v2, iv1, iv2)) {
-                next.push_back(ScanHit{h.addr, raw});
+            const std::uint64_t raw = load_raw_u64(buf, htype);
+            if (match_numeric(raw, h.prev_raw, true, htype, scan_type, v1, v2, iv1, iv2)) {
+                next.push_back(ScanHit{h.addr, raw, h.hit_type});
             }
         }
     }
     g_hits.swap(next);
-    const std::string res = build_results_json(fd, dtype, item_sz, max_return);
-    ::close(fd);
-    return res;
+    return build_results_json(io, max_return);
+}
+
+std::string mem_refresh_hits_impl(std::size_t max_return) {
+    std::lock_guard<std::mutex> lk(g_scan_mu);
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self process memory\"}";
+    return build_results_json(io, max_return);
 }
 
 std::string mem_undo_impl(std::size_t max_return) {
@@ -606,19 +749,16 @@ std::string mem_undo_impl(std::size_t max_return) {
     }
     g_hits.swap(g_prev_hits);
     g_prev_hits.clear();
-    const int fd = ::open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
-    const std::string res = build_results_json(fd, g_last_type, type_size(g_last_type, g_last_str_len), max_return);
-    if (fd >= 0) ::close(fd);
-    return res;
+    SafeMemIo io(false);
+    return build_results_json(io, max_return);
 }
 
 std::string mem_read_value_impl(std::uint64_t addr, int dtype, std::size_t str_len) {
     const std::size_t sz = std::min<std::size_t>(type_size(dtype, str_len > 0 ? str_len : 16), 64);
-    const int fd = ::open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return "<err>";
+    SafeMemIo io(false);
+    if (!io.valid()) return "<err>";
     std::uint8_t buf[64] = {0};
-    const ssize_t got = ::pread(fd, buf, sz, static_cast<off_t>(addr));
-    ::close(fd);
+    const ssize_t got = io.read_at(addr, buf, sz);
     if (got != static_cast<ssize_t>(sz)) return "<unreadable>";
     return format_value(buf, sz, dtype);
 }
@@ -650,22 +790,19 @@ bool mem_write_value_impl(std::uint64_t addr, int dtype, const std::string& val_
             default: return false;
         }
     }
-    // Safety gate: ONLY allow writes inside Fable's own verified rw-p private heap mappings!
     if (!is_addr_in_safe_rw_region(addr, sz)) return false;
-    const int fd = ::open("/proc/self/mem", O_RDWR | O_CLOEXEC);
-    if (fd < 0) return false;
-    const ssize_t wrote = ::pwrite(fd, buf, sz, static_cast<off_t>(addr));
-    ::close(fd);
+    SafeMemIo io(true);
+    if (!io.valid()) return false;
+    const ssize_t wrote = io.write_at(addr, buf, sz);
     return wrote == static_cast<ssize_t>(sz);
 }
 
 std::string mem_hex_dump_impl(std::uint64_t addr, std::size_t len) {
     const std::size_t clamped = std::min<std::size_t>(std::max<std::size_t>(len, 16), 256);
-    const int fd = ::open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return "{\"ok\":false,\"error\":\"Cannot open self mem\"}";
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self mem\"}";
     std::uint8_t buf[256] = {0};
-    const ssize_t got = ::pread(fd, buf, clamped, static_cast<off_t>(addr));
-    ::close(fd);
+    const ssize_t got = io.read_at(addr, buf, clamped);
     if (got <= 0) return "{\"ok\":false,\"error\":\"Address unreadable\"}";
     char addr_hex[32];
     std::snprintf(addr_hex, sizeof(addr_hex), "0x%llX", static_cast<unsigned long long>(addr));
@@ -729,7 +866,7 @@ std::string jstr_to_std(JNIEnv* env, jstring js) {
     return s;
 }
 
-} // namespace
+}
 
 extern "C" {
 
@@ -757,6 +894,14 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeNextScan(
         jstr_to_std(env, val2),
         static_cast<std::size_t>(max_return > 0 ? max_return : 150)
     );
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeRefreshHits(
+    JNIEnv* env, jclass, jint max_return
+) {
+    const std::string res = mem_refresh_hits_impl(static_cast<std::size_t>(max_return > 0 ? max_return : 150));
     return env->NewStringUTF(res.c_str());
 }
 
@@ -816,4 +961,4 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeListRegions(JNIEnv* env,
     return env->NewStringUTF(res.c_str());
 }
 
-} // extern "C"
+}

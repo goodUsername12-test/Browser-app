@@ -4,14 +4,6 @@ import com.fable.browser.data.prefs.Settings
 import org.json.JSONObject
 import java.util.UUID
 
-/**
- * Stealth Page + WebAssembly + TypedArray + Storage Memory Engine (Mobile Cheat Engine).
- * - Strictly ZERO-LOAD when memoryEngineEnabled == false.
- * - Zero global "fable" or "cheat" properties on window.
- * - Masks hooked WebAssembly helpers via Function.prototype.toString native signatures.
- * - Communicates privately through a random per-session CustomEvent channel (and returns JSON
- *   directly via WebView evaluateJavascript ValueCallback or GeckoView WebExtension message port).
- */
 object WebsiteMemoryEngine {
     const val MIN_PANEL_SCALE_PCT = 65
     const val MAX_PANEL_SCALE_PCT = 150
@@ -23,9 +15,6 @@ object WebsiteMemoryEngine {
 
     fun clampPanelScalePct(pct: Int): Int = pct.coerceIn(MIN_PANEL_SCALE_PCT, MAX_PANEL_SCALE_PCT)
 
-    /**
-     * Returns empty string when feature is OFF so ZERO bytes are injected into any page.
-     */
     fun buildBootstrapScript(settings: Settings): String {
         if (!settings.memoryEngineEnabled) return ""
         return buildBootstrapScriptInternal(CHANNEL_ID)
@@ -43,7 +32,6 @@ object WebsiteMemoryEngine {
             }
             if (ping()) return;
 
-            // Stealth Function.prototype.toString masking (preserve existing chain!)
             var origToStr = Function.prototype.toString;
             var sigMap = new WeakMap();
             function mask(fn, orig, fallback) {
@@ -73,14 +61,33 @@ object WebsiteMemoryEngine {
                 });
             } catch (_) {}
 
-            // Passively track WebAssembly.Memory instances (WeakRef-based so GC is never blocked)
             var wasmRefs = [];
             var wasmSeen = new WeakSet();
+            var bufRefs = [];
+            var bufSeen = new WeakSet();
+            var MAX_TRACKED_BUFS = 180;
+
             function trackWasmMem(mem) {
                 try {
-                    if (!mem || !(mem.buffer instanceof ArrayBuffer) || wasmSeen.has(mem)) return;
+                    if (!mem || !mem.buffer || wasmSeen.has(mem)) return;
                     wasmSeen.add(mem);
                     wasmRefs.push(typeof WeakRef === "function" ? new WeakRef(mem) : { deref: function() { return mem; } });
+                } catch (_) {}
+            }
+            function trackRawBuf(ab) {
+                try {
+                    if (!ab || typeof ab.byteLength !== "number" || ab.byteLength < 2048 || ab.byteLength > 64 * 1024 * 1024) return;
+                    if (bufSeen.has(ab)) return;
+                    bufSeen.add(ab);
+                    if (bufRefs.length >= MAX_TRACKED_BUFS) {
+                        var nextB = [];
+                        for (var i = 0; i < bufRefs.length; i++) {
+                            var d = bufRefs[i].deref();
+                            if (d && d.byteLength >= 2048) nextB.push(bufRefs[i]);
+                        }
+                        bufRefs = nextB.slice(-Math.floor(MAX_TRACKED_BUFS * 0.75));
+                    }
+                    bufRefs.push(typeof WeakRef === "function" ? new WeakRef(ab) : { deref: function() { return ab; } });
                 } catch (_) {}
             }
             function scanExportsForMem(inst) {
@@ -141,6 +148,30 @@ object WebsiteMemoryEngine {
                         WebAssembly.Instance = ProxInstance;
                     }
                 }
+                if (typeof ArrayBuffer === "function") {
+                    var OrigAB = ArrayBuffer;
+                    var ProxAB = new Proxy(OrigAB, {
+                        construct: function(target, args, newTarget) {
+                            var ab = Reflect.construct(target, args, newTarget);
+                            trackRawBuf(ab);
+                            return ab;
+                        }
+                    });
+                    sigMap.set(ProxAB, origToStr.call(OrigAB));
+                    window.ArrayBuffer = ProxAB;
+                }
+                if (typeof SharedArrayBuffer === "function") {
+                    var OrigSAB = SharedArrayBuffer;
+                    var ProxSAB = new Proxy(OrigSAB, {
+                        construct: function(target, args, newTarget) {
+                            var sab = Reflect.construct(target, args, newTarget);
+                            trackRawBuf(sab);
+                            return sab;
+                        }
+                    });
+                    sigMap.set(ProxSAB, origToStr.call(OrigSAB));
+                    window.SharedArrayBuffer = ProxSAB;
+                }
             } catch (_) {}
 
             function liveWasmMemories() {
@@ -156,20 +187,38 @@ object WebsiteMemoryEngine {
                 wasmRefs = kept;
                 return live;
             }
+            function liveRawBuffers(excludeSet) {
+                var live = [];
+                var kept = [];
+                for (var i = 0; i < bufRefs.length; i++) {
+                    var ab = bufRefs[i].deref();
+                    if (ab && ab.byteLength >= 2048) {
+                        kept.push(bufRefs[i]);
+                        if (!excludeSet || !excludeSet.has(ab)) live.push(ab);
+                    }
+                }
+                bufRefs = kept;
+                return live;
+            }
 
-            // State for Cheat Engine sessions
             var hits = [];
             var prevHits = [];
             var lastType = "auto";
             var taRegistry = [];
-            var jsIdCounter = 1;
-            var watchRefs = new Map(); // id -> hit record for fast read/write even after scan reset!
+            var abRegistry = [];
+            var watchRefs = new Map();
 
             var SKIP_KEYS = new Set([
                 "window", "self", "globalThis", "document", "location", "navigator", "history",
                 "screen", "performance", "crypto", "caches", "indexedDB", "localStorage", "sessionStorage",
                 "chrome", "webkit", "frames", "top", "parent", "opener", "styleMedia", "visualViewport",
-                "customElements", "speechSynthesis", "FableHybridBridge", "external", "console"
+                "customElements", "speechSynthesis", "FableHybridBridge", "external", "console",
+                "innerWidth", "innerHeight", "outerWidth", "outerHeight", "screenX", "screenY",
+                "screenLeft", "screenTop", "scrollX", "scrollY", "pageXOffset", "pageYOffset",
+                "devicePixelRatio", "length", "isSecureContext", "crossOriginIsolated", "origin",
+                "name", "status", "closed", "toolbar", "menubar", "personalbar", "scrollbars",
+                "statusbar", "locationbar", "clientInformation", "scheduler", "navigation",
+                "cookieStore", "trustedTypes", "credentialless", "launchQueue", "documentPictureInPicture"
             ]);
             var SENSITIVE_KEY_RE = /(password|passwd|secret|token|jwt|auth|session_?id|csrf|cookie|api_?key|credit|card)/i;
 
@@ -270,6 +319,12 @@ object WebsiteMemoryEngine {
                     if (m && m.buffer && h.off < m.buffer.byteLength) return { buf: m.buffer, byteOff: 0, byteLen: m.buffer.byteLength };
                     return null;
                 }
+                if (h.kind === "ab") {
+                    var refA = abRegistry[h.bufIdx];
+                    var ab = refA ? refA.deref() : null;
+                    if (ab && ab.byteLength > 0 && h.off < ab.byteLength) return { buf: ab, byteOff: 0, byteLen: ab.byteLength };
+                    return null;
+                }
                 if (h.kind === "ta") {
                     var ref = taRegistry[h.bufIdx];
                     var ta = ref ? ref.deref() : null;
@@ -286,6 +341,12 @@ object WebsiteMemoryEngine {
                         if (!obj) return { ok: false, val: "<gc>" };
                         return { ok: true, val: obj[h.key] };
                     }
+                    if (h.kind === "map") {
+                        var mp = h.objRef.deref();
+                        if (!mp || typeof mp.get !== "function") return { ok: false, val: "<gc>" };
+                        if (!mp.has(h.key)) return { ok: false, val: "<removed>" };
+                        return { ok: true, val: mp.get(h.key) };
+                    }
                     if (h.kind === "ls" || h.kind === "ss") {
                         var st = h.kind === "ls" ? window.localStorage : window.sessionStorage;
                         var raw = st.getItem(h.key);
@@ -293,7 +354,7 @@ object WebsiteMemoryEngine {
                         var num = Number(raw);
                         return { ok: true, val: (h.dt !== "str" && raw.trim() !== "" && Number.isFinite(num)) ? num : raw };
                     }
-                    if (h.kind === "wasm" || h.kind === "ta") {
+                    if (h.kind === "wasm" || h.kind === "ta" || h.kind === "ab") {
                         var bi = getBufferForHit(h);
                         if (!bi) return { ok: false, val: "<detached>" };
                         if (h.dt === "str") {
@@ -328,12 +389,23 @@ object WebsiteMemoryEngine {
                         }
                         return true;
                     }
+                    if (h.kind === "map") {
+                        var mp = h.objRef.deref();
+                        if (!mp || typeof mp.set !== "function") return false;
+                        var curM = mp.get(h.key);
+                        if (typeof curM === "number" || (h.dt !== "str" && !Number.isNaN(Number(valStr)) && String(valStr).trim() !== "")) {
+                            mp.set(h.key, Number(valStr));
+                        } else {
+                            mp.set(h.key, String(valStr));
+                        }
+                        return true;
+                    }
                     if (h.kind === "ls" || h.kind === "ss") {
                         var st = h.kind === "ls" ? window.localStorage : window.sessionStorage;
                         st.setItem(h.key, String(valStr));
                         return true;
                     }
-                    if (h.kind === "wasm" || h.kind === "ta") {
+                    if (h.kind === "wasm" || h.kind === "ta" || h.kind === "ab") {
                         var bi = getBufferForHit(h);
                         if (!bi) return false;
                         var dv = new DataView(bi.buf, bi.byteOff, bi.byteLen);
@@ -345,7 +417,7 @@ object WebsiteMemoryEngine {
 
             function scanBuffer(buf, byteOff, byteLen, kind, bufIdx, labelPrefix, dt, sc, v1, v2, s1, aob, out, cap) {
                 if (!buf || byteLen <= 0 || out.length >= cap) return;
-                var scanLen = Math.min(byteLen, 32 * 1024 * 1024); // cap 32MB per buffer
+                var scanLen = Math.min(byteLen, 32 * 1024 * 1024);
                 var dv = new DataView(buf, byteOff, scanLen);
                 if (dt === "str") {
                     var enc = new TextEncoder().encode(s1);
@@ -379,7 +451,7 @@ object WebsiteMemoryEngine {
                     }
                     return;
                 }
-                var types = dt === "auto" ? ["i32", "f32", "f64"] : [dt];
+                var types = dt === "auto" ? (sc === "unknown" ? ["i32", "f32"] : ["i32", "f32", "f64"]) : [dt];
                 for (var ti = 0; ti < types.length && out.length < cap; ti++) {
                     var t = types[ti];
                     var sz = t === "i8" ? 1 : (t === "i16" ? 2 : ((t === "i32" || t === "f32") ? 4 : 8));
@@ -394,10 +466,50 @@ object WebsiteMemoryEngine {
                 }
             }
 
-            function collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap) {
+            function seedFrameworkRoots(win, queue, visited) {
+                try {
+                    var doc = win.document;
+                    if (!doc || typeof doc.querySelectorAll !== "function") return;
+                    var els = doc.querySelectorAll("canvas,#root,#app,#game,#unity-canvas");
+                    var maxEls = Math.min(els.length, 10);
+                    for (var ei = 0; ei < maxEls; ei++) {
+                        var el = els[ei];
+                        if (!el) continue;
+                        var eKeys;
+                        try { eKeys = Object.keys(el); } catch (_) { continue; }
+                        for (var ki = 0; ki < eKeys.length; ki++) {
+                            var ek = eKeys[ki];
+                            if (ek.indexOf("__react") === 0 || ek.indexOf("__vue") === 0 || ek.indexOf("_") === 0 || ek === "game" || ek === "engine" || ek === "scene") {
+                                try {
+                                    var ev = el[ek];
+                                    if (ev && typeof ev === "object" && !visited.has(ev)) {
+                                        queue.push({ obj: ev, path: "dom." + ek.slice(0, 18), depth: 1 });
+                                    }
+                                } catch (_) {}
+                            }
+                        }
+                    }
+                } catch (_) {}
+            }
+
+            function collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap, scannedBufs) {
                 var visited = new WeakSet();
                 var queue = [{ obj: window, path: "window", depth: 0 }];
-                var maxNodes = 2500;
+                seedFrameworkRoots(window, queue, visited);
+                try {
+                    var fCount = Math.min(window.frames ? window.frames.length : 0, 8);
+                    for (var fi = 0; fi < fCount; fi++) {
+                        try {
+                            var fw = window.frames[fi];
+                            if (fw && fw !== window && fw.document) {
+                                queue.push({ obj: fw, path: "frame" + fi, depth: 0 });
+                                seedFrameworkRoots(fw, queue, visited);
+                            }
+                        } catch (_) {}
+                    }
+                } catch (_) {}
+
+                var maxNodes = 12000;
                 var nodesVisited = 0;
                 var taSeen = new WeakSet();
                 taRegistry = [];
@@ -410,24 +522,66 @@ object WebsiteMemoryEngine {
                     visited.add(obj);
                     nodesVisited++;
 
-                    // Detect TypedArrays / DataViews / ArrayBuffers owned by page scripts
-                    if (ArrayBuffer.isView(obj) && obj.byteLength >= 4 && obj.byteLength <= 16 * 1024 * 1024 && !taSeen.has(obj)) {
-                        taSeen.add(obj);
-                        var taIdx = taRegistry.length;
-                        taRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
-                        scanBuffer(obj.buffer, obj.byteOffset, obj.byteLength, "ta", taIdx, "ta#" + taIdx + "(" + cur.path.slice(-24) + ")", dt, sc, v1, v2, s1, aob, out, cap);
-                        continue;
-                    }
                     if (typeof WebAssembly === "object" && obj instanceof WebAssembly.Memory) {
                         trackWasmMem(obj);
                         continue;
                     }
-                    // Skip DOM nodes to stay super fast and never touch layout
+                    if (ArrayBuffer.isView(obj) && obj.byteLength >= 4 && obj.byteLength <= 32 * 1024 * 1024 && !taSeen.has(obj)) {
+                        taSeen.add(obj);
+                        if (obj.buffer) scannedBufs.add(obj.buffer);
+                        var taIdx = taRegistry.length;
+                        taRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
+                        scanBuffer(obj.buffer, obj.byteOffset, obj.byteLength, "ta", taIdx, "ta#" + taIdx + "(" + cur.path.slice(-22) + ")", dt, sc, v1, v2, s1, aob, out, cap);
+                        continue;
+                    }
+                    if (typeof ArrayBuffer === "function" && (obj instanceof ArrayBuffer || (typeof SharedArrayBuffer === "function" && obj instanceof SharedArrayBuffer))) {
+                        if (!scannedBufs.has(obj) && obj.byteLength >= 4 && obj.byteLength <= 32 * 1024 * 1024) {
+                            scannedBufs.add(obj);
+                            var abIdx = abRegistry.length;
+                            abRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
+                            scanBuffer(obj, 0, obj.byteLength, "ab", abIdx, "buf#" + abIdx + "(" + cur.path.slice(-20) + ")", dt, sc, v1, v2, s1, aob, out, cap);
+                        }
+                        continue;
+                    }
                     if (typeof Node === "function" && obj instanceof Node) continue;
+
+                    if (obj instanceof Map) {
+                        var mCount = 0;
+                        try {
+                            obj.forEach(function(mv, mk) {
+                                if (mCount >= 250 || out.length >= cap) return;
+                                mCount++;
+                                var keyLabel = String(mk).slice(0, 24);
+                                if (SENSITIVE_KEY_RE.test(keyLabel)) return;
+                                if (typeof mv === "number") {
+                                    if (dt !== "str" && dt !== "aob" && matchNum(mv, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+                                        var refM = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
+                                        out.push({ id: "map:" + cur.path + "[" + keyLabel + "]", kind: "map", objRef: refM, key: mk, dt: Number.isInteger(mv) ? "i32" : "f64", prev: mv });
+                                    }
+                                } else if (mv && typeof mv === "object" && cur.depth < 7 && !visited.has(mv)) {
+                                    queue.push({ obj: mv, path: cur.path + "[" + keyLabel + "]", depth: cur.depth + 1 });
+                                }
+                            });
+                        } catch (_) {}
+                        continue;
+                    }
+                    if (obj instanceof Set) {
+                        var sCount = 0;
+                        try {
+                            obj.forEach(function(sv) {
+                                if (sCount >= 200 || out.length >= cap) return;
+                                sCount++;
+                                if (sv && typeof sv === "object" && cur.depth < 7 && !visited.has(sv)) {
+                                    queue.push({ obj: sv, path: cur.path + "{#" + sCount + "}", depth: cur.depth + 1 });
+                                }
+                            });
+                        } catch (_) {}
+                        continue;
+                    }
 
                     var keys;
                     try { keys = Object.keys(obj); } catch (_) { continue; }
-                    var maxKeys = cur.depth === 0 ? keys.length : Math.min(keys.length, 200);
+                    var maxKeys = cur.depth === 0 ? keys.length : Math.min(keys.length, 240);
                     for (var i = 0; i < maxKeys && out.length < cap; i++) {
                         var k = keys[i];
                         if (cur.depth === 0 && (SKIP_KEYS.has(k) || (k.length > 2 && k[0] === "o" && k[1] === "n"))) continue;
@@ -445,7 +599,7 @@ object WebsiteMemoryEngine {
                                 var refS = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
                                 out.push({ id: "js:" + nextPath, kind: "js", objRef: refS, key: k, dt: "str", prev: val });
                             }
-                        } else if (val && typeof val === "object" && cur.depth < 4) {
+                        } else if (val && typeof val === "object" && cur.depth < 7) {
                             if (!visited.has(val)) queue.push({ obj: val, path: nextPath, depth: cur.depth + 1 });
                         }
                     }
@@ -485,9 +639,22 @@ object WebsiteMemoryEngine {
                     var h = hits[i];
                     watchRefs.set(h.id, h);
                     var rd = readHitCurrent(h);
-                    items.push({ addr: h.id, val: formatVal(rd.val, h.dt), type: h.dt, kind: h.kind });
+                    items.push({
+                        addr: h.id,
+                        val: formatVal(rd.val, h.dt),
+                        prev: formatVal(h.prev, h.dt),
+                        type: h.dt,
+                        kind: h.kind
+                    });
                 }
-                return { ok: true, total: hits.length, canUndo: prevHits.length > 0, items: items };
+                return {
+                    ok: true,
+                    total: hits.length,
+                    canUndo: prevHits.length > 0,
+                    wasmCount: liveWasmMemories().length,
+                    bufCount: abRegistry.length + taRegistry.length,
+                    items: items
+                };
             }
 
             function handleCmd(cmd) {
@@ -495,7 +662,10 @@ object WebsiteMemoryEngine {
                     if (cmd.op === "ping") return { ok: true };
                     if (cmd.op === "reset") {
                         hits = []; prevHits = [];
-                        return { ok: true, total: 0, canUndo: false, items: [] };
+                        return { ok: true, total: 0, canUndo: false, wasmCount: liveWasmMemories().length, bufCount: abRegistry.length + taRegistry.length, items: [] };
+                    }
+                    if (cmd.op === "refreshHits") {
+                        return formatHitsResult(cmd.maxReturn || 150);
                     }
                     if (cmd.op === "undo") {
                         if (!prevHits.length) return { ok: false, error: "Nothing to undo" };
@@ -503,7 +673,7 @@ object WebsiteMemoryEngine {
                         return formatHitsResult(cmd.maxReturn || 150);
                     }
                     if (cmd.op === "firstScan") {
-                        prevHits = []; hits = [];
+                        prevHits = []; hits = []; abRegistry = [];
                         var dt = cmd.dtype || "auto";
                         var sc = cmd.scanType || "exact";
                         lastType = dt;
@@ -515,7 +685,6 @@ object WebsiteMemoryEngine {
                         if (dt === "aob" && !aob.bytes.length) return { ok: false, error: "Enter hex bytes (e.g. 48 8B ?? 01)" };
                         if (dt !== "str" && dt !== "aob" && sc !== "unknown") {
                             if (dt === "auto" && (!s1.trim() || !Number.isFinite(v1))) {
-                                // Auto string fallback when non-numeric text entered
                                 dt = "str"; lastType = "str";
                             } else if (!s1.trim() || !Number.isFinite(v1)) {
                                 return { ok: false, error: "Enter a valid number" };
@@ -527,15 +696,29 @@ object WebsiteMemoryEngine {
                         }
                         var cap = sc === "unknown" ? 60000 : 120000;
                         var out = [];
-                        // 1. Scan JS heap objects + TypedArrays (also discovers any WebAssembly.Memory reachable from JS!)
-                        collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap);
-                        // 2. Scan all tracked WebAssembly linear memory buffers
+                        var scannedBufs = new WeakSet();
                         var mems = liveWasmMemories();
                         for (var mi = 0; mi < mems.length && out.length < cap; mi++) {
                             var mb = mems[mi].buffer;
+                            scannedBufs.add(mb);
                             scanBuffer(mb, 0, mb.byteLength, "wasm", mi, "wasm#" + mi, dt, sc, v1, v2, s1, aob, out, cap);
                         }
-                        // 3. Scan Web Storage (excluding auth/token keys)
+                        collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
+                        var memsAfter = liveWasmMemories();
+                        for (var mi2 = mems.length; mi2 < memsAfter.length && out.length < cap; mi2++) {
+                            var mb2 = memsAfter[mi2].buffer;
+                            if (!scannedBufs.has(mb2)) {
+                                scannedBufs.add(mb2);
+                                scanBuffer(mb2, 0, mb2.byteLength, "wasm", mi2, "wasm#" + mi2, dt, sc, v1, v2, s1, aob, out, cap);
+                            }
+                        }
+                        var rawBufs = liveRawBuffers(scannedBufs);
+                        for (var bi = 0; bi < rawBufs.length && out.length < cap; bi++) {
+                            var rb = rawBufs[bi];
+                            var abIdx = abRegistry.length;
+                            abRegistry.push(typeof WeakRef === "function" ? new WeakRef(rb) : { deref: function() { return rb; } });
+                            scanBuffer(rb, 0, rb.byteLength, "ab", abIdx, "buf#" + abIdx, dt, sc, v1, v2, s1, aob, out, cap);
+                        }
                         scanStorage(dt, sc, v1, v2, s1, out, cap);
                         hits = out;
                         return formatHitsResult(cmd.maxReturn || 150);
@@ -601,14 +784,14 @@ object WebsiteMemoryEngine {
                     }
                     if (cmd.op === "hexDump") {
                         var recH = watchRefs.get(cmd.id);
-                        if (!recH || (recH.kind !== "wasm" && recH.kind !== "ta")) {
-                            return { ok: false, error: "Hex view supports WASM / TypedArray buffers" };
+                        if (!recH || (recH.kind !== "wasm" && recH.kind !== "ta" && recH.kind !== "ab")) {
+                            return { ok: false, error: "Hex view supports WASM / ArrayBuffer / TypedArray" };
                         }
-                        var bi = getBufferForHit(recH);
-                        if (!bi) return { ok: false, error: "Buffer detached" };
-                        var baseOff = Math.max(0, Math.min(bi.byteLen - 16, (typeof cmd.offset === "number" ? cmd.offset : recH.off)));
-                        var len = Math.min(256, Math.max(16, Math.min(cmd.len || 128, bi.byteLen - baseOff)));
-                        var u8h = new Uint8Array(bi.buf, bi.byteOff + baseOff, len);
+                        var biH = getBufferForHit(recH);
+                        if (!biH) return { ok: false, error: "Buffer detached" };
+                        var baseOff = Math.max(0, Math.min(biH.byteLen - 16, (typeof cmd.offset === "number" ? cmd.offset : recH.off)));
+                        var len = Math.min(256, Math.max(16, Math.min(cmd.len || 128, biH.byteLen - baseOff)));
+                        var u8h = new Uint8Array(biH.buf, biH.byteOff + baseOff, len);
                         var hex = "";
                         for (var hi = 0; hi < u8h.length; hi++) hex += u8h[hi].toString(16).toUpperCase().padStart(2, "0");
                         return { ok: true, addr: "0x" + baseOff.toString(16).toUpperCase(), offset: baseOff, len: len, hex: hex };
@@ -621,6 +804,14 @@ object WebsiteMemoryEngine {
                             var kb = Math.round(memsR[rmi].buffer.byteLength / 1024);
                             totalKb += kb;
                             regs.push({ start: "wasm#" + rmi, end: "0x" + memsR[rmi].buffer.byteLength.toString(16).toUpperCase(), kb: kb, perms: "rw-wasm", label: "WebAssembly.Memory #" + rmi });
+                        }
+                        var seenR = new WeakSet();
+                        for (var rmi2 = 0; rmi2 < memsR.length; rmi2++) seenR.add(memsR[rmi2].buffer);
+                        var rawR = liveRawBuffers(seenR);
+                        for (var rbi = 0; rbi < Math.min(rawR.length, 40); rbi++) {
+                            var bkb = Math.max(1, Math.round(rawR[rbi].byteLength / 1024));
+                            totalKb += bkb;
+                            regs.push({ start: "buf#" + rbi, end: "0x" + rawR[rbi].byteLength.toString(16).toUpperCase(), kb: bkb, perms: "rw-buf", label: "ArrayBuffer #" + rbi });
                         }
                         for (var tai = 0; tai < Math.min(taRegistry.length, 40); tai++) {
                             var taObj = taRegistry[tai].deref();
@@ -648,10 +839,6 @@ object WebsiteMemoryEngine {
         """.trimIndent()
     }
 
-    /**
-     * Evaluates a command inside a Blink WebView and returns the JSON result directly via evaluateJavascript ValueCallback.
-     * Auto-installs on demand if the user opened the page while OFF and turned Memory Engine ON without refreshing!
-     */
     fun buildBlinkCommandScript(cmdJson: String): String {
         val chJson = JSONObject.quote(CHANNEL_ID)
         val boot = buildBootstrapScriptInternal(CHANNEL_ID)
@@ -675,9 +862,6 @@ object WebsiteMemoryEngine {
         """.trimIndent()
     }
 
-    /**
-     * Resets/clears page scan buffers when Memory Engine is turned OFF (never installs anything if page wasn't touched).
-     */
     fun buildBlinkResetIfInstalledScript(): String {
         val chJson = JSONObject.quote(CHANNEL_ID)
         return """

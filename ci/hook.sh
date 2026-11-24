@@ -351,8 +351,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-with socketserver.TCPServer(("127.0.0.1", 18080), Handler) as httpd:
-    print("TEST_SERVER_READY 18080", flush=True)
+import threading
+class ReusableThreadingServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+srv18081 = ReusableThreadingServer(("127.0.0.1", 18081), Handler)
+threading.Thread(target=srv18081.serve_forever, daemon=True).start()
+with ReusableThreadingServer(("127.0.0.1", 18080), Handler) as httpd:
+    print("TEST_SERVER_READY 18080+18081", flush=True)
     httpd.serve_forever()
 PYSRV
 

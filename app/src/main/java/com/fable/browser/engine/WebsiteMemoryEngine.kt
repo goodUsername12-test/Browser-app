@@ -390,7 +390,7 @@ object WebsiteMemoryEngine {
                 "toolbar", "menubar", "personalbar", "scrollbars", "statusbar", "locationbar",
                 "clientInformation", "scheduler", "navigation", "cookieStore", "trustedTypes",
                 "credentialless", "launchQueue", "documentPictureInPicture", "CSS", "Intl",
-                "Reflect", "Proxy", "JSON", "Math", "Atomics", "WebAssembly"
+                "Reflect", "Proxy", "JSON", "Math", "Atomics", "WebAssembly", "_sentryDebugIds", "__SENTRY__", "__sentry__", "Sentry", "dataLayer", "google_tag_manager", "gtag", "ga"
             ]);
             var SKIP_SUBTREE_KEYS = new Set([
                 "geometry", "material", "materials", "textures", "_textures", "_materials",

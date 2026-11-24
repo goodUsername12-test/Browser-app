@@ -1,6 +1,7 @@
 package com.fable.browser.engine
 
 import com.fable.browser.data.prefs.Settings
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
@@ -14,6 +15,118 @@ object WebsiteMemoryEngine {
     private val CHANNEL_ID: String = "_mev_" + UUID.randomUUID().toString().replace("-", "").take(14)
 
     fun clampPanelScalePct(pct: Int): Int = pct.coerceIn(MIN_PANEL_SCALE_PCT, MAX_PANEL_SCALE_PCT)
+
+    fun normalizeNumericInput(raw: String, dataType: MemDataType): String {
+        val t = raw.trim()
+        if (dataType == MemDataType.STRING || dataType == MemDataType.AOB) return t
+        val cleaned = t.replace(",", "").replace("_", "").replace(" ", "")
+        return if (cleaned.isNotEmpty() && cleaned.toDoubleOrNull() != null) cleaned else t
+    }
+
+    fun splitFrameAddr(addr: String): Pair<String?, String> {
+        if (!addr.startsWith("@")) return null to addr
+        val sep = addr.indexOf('|')
+        if (sep <= 1) return null to addr
+        return addr.substring(1, sep) to addr.substring(sep + 1)
+    }
+
+    fun mergeMultiFrameResults(payloads: List<String>, op: String, maxReturn: Int = 150): String {
+        val parsed = payloads.mapNotNull { runCatching { JSONObject(it) }.getOrNull() }
+        if (parsed.isEmpty()) return "{\"ok\":false,\"error\":\"Empty page response\"}"
+        if (parsed.size == 1) return parsed[0].toString()
+
+        if (op == "readBatch") {
+            val mergedVals = JSONObject()
+            for (o in parsed) {
+                val vals = o.optJSONObject("values") ?: continue
+                vals.keys().forEach { k -> mergedVals.put(k, vals.optString(k)) }
+            }
+            return JSONObject().put("ok", true).put("values", mergedVals).toString()
+        }
+        if (op == "write" || op == "hexDump") {
+            val hit = parsed.firstOrNull { it.optBoolean("ok", false) } ?: parsed[0]
+            return hit.toString()
+        }
+        if (op == "regions") {
+            var totalKb = 0L
+            val allRegs = JSONArray()
+            var anyOk = false
+            for (o in parsed) {
+                if (!o.optBoolean("ok", false)) continue
+                anyOk = true
+                totalKb += o.optLong("totalKb", 0L)
+                val regs = o.optJSONArray("regions") ?: continue
+                for (i in 0 until regs.length()) {
+                    if (allRegs.length() < 120) allRegs.put(regs.get(i))
+                }
+            }
+            if (!anyOk) return parsed[0].toString()
+            return JSONObject()
+                .put("ok", true)
+                .put("count", allRegs.length())
+                .put("totalKb", totalKb)
+                .put("frameCount", parsed.count { it.optBoolean("ok", false) })
+                .put("regions", allRegs)
+                .toString()
+        }
+
+        var anyOk = false
+        var total = 0
+        var canUndo = false
+        var wasmCount = 0
+        var bufCount = 0
+        var wroteTotal = 0
+        var hasWrote = false
+        var frameCount = 0
+        var firstErr: String? = null
+        val wasmItems = ArrayList<JSONObject>()
+        val bufItems = ArrayList<JSONObject>()
+        val otherItems = ArrayList<JSONObject>()
+
+        for (o in parsed) {
+            if (!o.optBoolean("ok", false)) {
+                if (firstErr == null) firstErr = o.optString("error").takeIf { it.isNotBlank() }
+                continue
+            }
+            anyOk = true
+            frameCount++
+            total += o.optInt("total", 0)
+            if (o.optBoolean("canUndo", false)) canUndo = true
+            wasmCount += o.optInt("wasmCount", 0)
+            bufCount += o.optInt("bufCount", 0)
+            if (o.has("wrote")) {
+                hasWrote = true
+                wroteTotal += o.optInt("wrote", 0)
+            }
+            val arr = o.optJSONArray("items") ?: continue
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                when (item.optString("kind")) {
+                    "wasm" -> wasmItems.add(item)
+                    "ab", "ta" -> bufItems.add(item)
+                    else -> otherItems.add(item)
+                }
+            }
+        }
+        if (!anyOk) {
+            return JSONObject().put("ok", false).put("error", firstErr ?: "Scan failed").toString()
+        }
+        val mergedItems = JSONArray()
+        for (item in wasmItems) { if (mergedItems.length() < maxReturn) mergedItems.put(item) }
+        for (item in bufItems) { if (mergedItems.length() < maxReturn) mergedItems.put(item) }
+        for (item in otherItems) { if (mergedItems.length() < maxReturn) mergedItems.put(item) }
+
+        val out = JSONObject()
+            .put("ok", true)
+            .put("total", total)
+            .put("canUndo", canUndo)
+            .put("wasmCount", wasmCount)
+            .put("bufCount", bufCount)
+            .put("frameCount", frameCount)
+            .put("items", mergedItems)
+        if (hasWrote) out.put("wrote", wroteTotal)
+        return out.toString()
+    }
 
     fun buildBootstrapScript(settings: Settings): String {
         if (!settings.memoryEngineEnabled) return ""
@@ -31,6 +144,10 @@ object WebsiteMemoryEngine {
                 return box.ok;
             }
             if (ping()) return;
+
+            var IS_TOP = false;
+            try { IS_TOP = (window === window.top); } catch (_) { IS_TOP = false; }
+            var FRAME_ID = IS_TOP ? "f0" : ("f_" + Math.random().toString(36).slice(2, 8));
 
             var origToStr = Function.prototype.toString;
             var sigMap = new WeakMap();
@@ -61,22 +178,35 @@ object WebsiteMemoryEngine {
                 });
             } catch (_) {}
 
-            var wasmRefs = [];
+            function safeInstanceOf(obj, ctor) {
+                try { return typeof ctor === "function" && obj instanceof ctor; } catch (_) { return false; }
+            }
+            function safeIsView(obj) {
+                try { return typeof ArrayBuffer === "function" && ArrayBuffer.isView(obj); } catch (_) { return false; }
+            }
+
+            var wasmEntries = [];
             var wasmSeen = new WeakSet();
+            var nextWasmId = 0;
             var bufRefs = [];
             var bufSeen = new WeakSet();
             var MAX_TRACKED_BUFS = 2500;
+            var MAX_SCAN_BYTES = 512 * 1024 * 1024;
 
             function trackWasmMem(mem) {
                 try {
                     if (!mem || !mem.buffer || wasmSeen.has(mem)) return;
                     wasmSeen.add(mem);
-                    wasmRefs.push(typeof WeakRef === "function" ? new WeakRef(mem) : { deref: function() { return mem; } });
+                    var id = nextWasmId++;
+                    wasmEntries.push({
+                        id: id,
+                        ref: typeof WeakRef === "function" ? new WeakRef(mem) : { deref: function() { return mem; } }
+                    });
                 } catch (_) {}
             }
             function trackRawBuf(ab) {
                 try {
-                    if (!ab || typeof ab.byteLength !== "number" || ab.byteLength < 16 || ab.byteLength > 128 * 1024 * 1024) return;
+                    if (!ab || typeof ab.byteLength !== "number" || ab.byteLength < 16 || ab.byteLength > MAX_SCAN_BYTES) return;
                     if (bufSeen.has(ab)) return;
                     bufSeen.add(ab);
                     if (bufRefs.length >= MAX_TRACKED_BUFS) {
@@ -88,6 +218,27 @@ object WebsiteMemoryEngine {
                         bufRefs = nextB.slice(-Math.floor(MAX_TRACKED_BUFS * 0.8));
                     }
                     bufRefs.push(typeof WeakRef === "function" ? new WeakRef(ab) : { deref: function() { return ab; } });
+                } catch (_) {}
+            }
+            function scanImportsForMem(imp) {
+                try {
+                    if (!imp || typeof imp !== "object") return;
+                    var ks = Object.keys(imp);
+                    for (var i = 0; i < ks.length; i++) {
+                        var v = imp[ks[i]];
+                        if (!v) continue;
+                        if (typeof WebAssembly === "object" && safeInstanceOf(v, WebAssembly.Memory)) {
+                            trackWasmMem(v);
+                        } else if (typeof v === "object") {
+                            var ks2 = Object.keys(v);
+                            for (var j = 0; j < ks2.length; j++) {
+                                var v2 = v[ks2[j]];
+                                if (v2 && typeof WebAssembly === "object" && safeInstanceOf(v2, WebAssembly.Memory)) {
+                                    trackWasmMem(v2);
+                                }
+                            }
+                        }
+                    }
                 } catch (_) {}
             }
             function scanExportsForMem(inst) {
@@ -118,6 +269,7 @@ object WebsiteMemoryEngine {
                     if (typeof WebAssembly.instantiate === "function") {
                         var origInst = WebAssembly.instantiate;
                         WebAssembly.instantiate = mask(function instantiate() {
+                            if (arguments.length > 1) scanImportsForMem(arguments[1]);
                             var p = origInst.apply(WebAssembly, arguments);
                             if (p && typeof p.then === "function") {
                                 p.then(function(r) { scanExportsForMem(r); }, function() {});
@@ -128,6 +280,7 @@ object WebsiteMemoryEngine {
                     if (typeof WebAssembly.instantiateStreaming === "function") {
                         var origInstS = WebAssembly.instantiateStreaming;
                         WebAssembly.instantiateStreaming = mask(function instantiateStreaming() {
+                            if (arguments.length > 1) scanImportsForMem(arguments[1]);
                             var p = origInstS.apply(WebAssembly, arguments);
                             if (p && typeof p.then === "function") {
                                 p.then(function(r) { scanExportsForMem(r); }, function() {});
@@ -139,6 +292,7 @@ object WebsiteMemoryEngine {
                         var OrigInstance = WebAssembly.Instance;
                         var ProxInstance = new Proxy(OrigInstance, {
                             construct: function(target, args, newTarget) {
+                                if (args && args.length > 1) scanImportsForMem(args[1]);
                                 var inst = Reflect.construct(target, args, newTarget);
                                 scanExportsForMem(inst);
                                 return inst;
@@ -189,17 +343,18 @@ object WebsiteMemoryEngine {
                 });
             } catch (_) {}
 
-            function liveWasmMemories() {
+            function liveWasmEntries() {
                 var live = [];
                 var kept = [];
-                for (var i = 0; i < wasmRefs.length; i++) {
-                    var m = wasmRefs[i].deref();
+                for (var i = 0; i < wasmEntries.length; i++) {
+                    var e = wasmEntries[i];
+                    var m = e.ref.deref();
                     if (m && m.buffer && m.buffer.byteLength > 0) {
-                        kept.push(wasmRefs[i]);
-                        live.push(m);
+                        kept.push(e);
+                        live.push({ id: e.id, mem: m, ref: e.ref });
                     }
                 }
-                wasmRefs = kept;
+                wasmEntries = kept;
                 return live;
             }
             function liveRawBuffers(excludeSet) {
@@ -248,6 +403,13 @@ object WebsiteMemoryEngine {
             ]);
             var INTERNAL_KEY_RE = /^(__fable|_mev_|_ts_|Fable|__TS_|__MEM_|__reactInternal|__webpack)/;
             var SENSITIVE_KEY_RE = /(password|passwd|secret|token|jwt|auth|session_?id|csrf|cookie|api_?key|credit|card)/i;
+
+            function cleanNumStr(raw) {
+                var s = String(raw || "").trim();
+                var stripped = s.replace(/[,\s_]/g, "");
+                if (stripped && Number.isFinite(Number(stripped))) return stripped;
+                return s;
+            }
 
             function parseAob(txt) {
                 var parts = String(txt || "").trim().split(/[\s,\-]+/).filter(Boolean);
@@ -317,7 +479,7 @@ object WebsiteMemoryEngine {
                         }
                         return true;
                     }
-                    var num = Number(valStr);
+                    var num = Number(cleanNumStr(valStr));
                     if (!Number.isFinite(num)) return false;
                     if (dt === "i8")  { dv.setInt8(off, num | 0); return true; }
                     if (dt === "i16") { dv.setInt16(off, num | 0, true); return true; }
@@ -341,14 +503,12 @@ object WebsiteMemoryEngine {
 
             function getBufferForHit(h) {
                 if (h.kind === "wasm") {
-                    var mems = liveWasmMemories();
-                    var m = mems[h.bufIdx];
+                    var m = h.memRef ? h.memRef.deref() : null;
                     if (m && m.buffer && h.off < m.buffer.byteLength) return { buf: m.buffer, byteOff: 0, byteLen: m.buffer.byteLength };
                     return null;
                 }
                 if (h.kind === "ab") {
-                    var refA = abRegistry[h.bufIdx];
-                    var ab = refA ? refA.deref() : null;
+                    var ab = h.abRef ? h.abRef.deref() : null;
                     if (ab && ab.byteLength > 0 && h.off < ab.byteLength) return { buf: ab, byteOff: 0, byteLen: ab.byteLength };
                     return null;
                 }
@@ -378,7 +538,7 @@ object WebsiteMemoryEngine {
                         var st = h.kind === "ls" ? window.localStorage : window.sessionStorage;
                         var raw = st.getItem(h.key);
                         if (raw === null) return { ok: false, val: "<removed>" };
-                        var num = Number(raw);
+                        var num = Number(cleanNumStr(raw));
                         return { ok: true, val: (h.dt !== "str" && raw.trim() !== "" && Number.isFinite(num)) ? num : raw };
                     }
                     if (h.kind === "wasm" || h.kind === "ta" || h.kind === "ab") {
@@ -407,8 +567,9 @@ object WebsiteMemoryEngine {
                         var obj = h.objRef.deref();
                         if (!obj) return false;
                         var cur = obj[h.key];
-                        if (typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(valStr)) && String(valStr).trim() !== "")) {
-                            obj[h.key] = Number(valStr);
+                        var cs = cleanNumStr(valStr);
+                        if (typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(cs)) && cs !== "")) {
+                            obj[h.key] = Number(cs);
                         } else if (typeof cur === "boolean") {
                             obj[h.key] = (valStr === "true" || valStr === "1");
                         } else {
@@ -420,8 +581,9 @@ object WebsiteMemoryEngine {
                         var mp = h.objRef.deref();
                         if (!mp || typeof mp.set !== "function") return false;
                         var curM = mp.get(h.key);
-                        if (typeof curM === "number" || (h.dt !== "str" && !Number.isNaN(Number(valStr)) && String(valStr).trim() !== "")) {
-                            mp.set(h.key, Number(valStr));
+                        var csM = cleanNumStr(valStr);
+                        if (typeof curM === "number" || (h.dt !== "str" && !Number.isNaN(Number(csM)) && csM !== "")) {
+                            mp.set(h.key, Number(csM));
                         } else {
                             mp.set(h.key, String(valStr));
                         }
@@ -442,23 +604,37 @@ object WebsiteMemoryEngine {
                 return false;
             }
 
-            function scanBuffer(buf, byteOff, byteLen, kind, bufIdx, labelPrefix, dt, sc, v1, v2, s1, aob, out, cap) {
+            function scanBuffer(buf, byteOff, byteLen, kind, bufIdx, labelPrefix, dt, sc, v1, v2, s1, aob, out, cap, extraRef) {
                 if (!buf || byteLen <= 0 || out.length >= cap) return;
-                var scanLen = Math.min(byteLen, 32 * 1024 * 1024);
-                var dv = new DataView(buf, byteOff, scanLen);
+                var scanLen = Math.min(byteLen, MAX_SCAN_BYTES);
+                var memRef = kind === "wasm" ? extraRef : null;
+                var abRef = kind === "ab" ? extraRef : null;
+
+                function pushHit(off, typeStr, len, prevVal) {
+                    out.push({
+                        id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + (typeStr === "str" || typeStr === "aob" ? "" : (":" + typeStr)),
+                        kind: kind,
+                        bufIdx: bufIdx,
+                        memRef: memRef,
+                        abRef: abRef,
+                        off: off,
+                        dt: typeStr,
+                        len: len,
+                        prev: prevVal
+                    });
+                }
+
                 if (dt === "str") {
                     var enc = new TextEncoder().encode(s1);
                     if (!enc.length || scanLen < enc.length) return;
                     var u8 = new Uint8Array(buf, byteOff, scanLen);
                     var lim = scanLen - enc.length;
+                    var b0 = enc[0];
                     for (var o = 0; o <= lim && out.length < cap; o++) {
-                        if (u8[o] !== enc[0]) continue;
+                        if (u8[o] !== b0) continue;
                         var ok = true;
                         for (var k = 1; k < enc.length; k++) { if (u8[o + k] !== enc[k]) { ok = false; break; } }
-                        if (ok) {
-                            var id = labelPrefix + "+0x" + o.toString(16).toUpperCase();
-                            out.push({ id: id, kind: kind, bufIdx: bufIdx, off: o, dt: "str", len: enc.length, prev: s1 });
-                        }
+                        if (ok) pushHit(o, "str", enc.length, s1);
                     }
                     return;
                 }
@@ -471,77 +647,113 @@ object WebsiteMemoryEngine {
                         for (var k2 = 0; k2 < aob.bytes.length; k2++) {
                             if (aob.mask[k2] && u8b[o2 + k2] !== aob.bytes[k2]) { ok2 = false; break; }
                         }
-                        if (ok2) {
-                            var id2 = labelPrefix + "+0x" + o2.toString(16).toUpperCase();
-                            out.push({ id: id2, kind: kind, bufIdx: bufIdx, off: o2, dt: "aob", len: aob.bytes.length, prev: s1 });
-                        }
+                        if (ok2) pushHit(o2, "aob", aob.bytes.length, s1);
                     }
                     return;
                 }
 
-                if (dt === "auto") {
+                var aligned4 = (byteOff & 3) === 0;
+                var aligned8 = (byteOff & 7) === 0;
+
+                if (dt === "i32" && aligned4 && sc === "exact") {
+                    var i32Fast = new Int32Array(buf, byteOff, scanLen >>> 2);
+                    var targetI32 = v1 | 0;
+                    for (var fi = 0, fl = i32Fast.length; fi < fl && out.length < cap; fi++) {
+                        if (i32Fast[fi] === targetI32) pushHit(fi << 2, "i32", 4, targetI32);
+                    }
+                    return;
+                }
+                if (dt === "f32" && aligned4 && sc === "exact") {
+                    var f32Fast = new Float32Array(buf, byteOff, scanLen >>> 2);
+                    for (var ff = 0, ffl = f32Fast.length; ff < ffl && out.length < cap; ff++) {
+                        var fv = f32Fast[ff];
+                        if (Math.abs(fv - v1) <= 0.01) pushHit(ff << 2, "f32", 4, fv);
+                    }
+                    return;
+                }
+                if (dt === "f64" && aligned8 && sc === "exact") {
+                    var f64Fast = new Float64Array(buf, byteOff, scanLen >>> 3);
+                    for (var fd = 0, fdl = f64Fast.length; fd < fdl && out.length < cap; fd++) {
+                        var fdv = f64Fast[fd];
+                        if (Math.abs(fdv - v1) <= 0.001) pushHit(fd << 3, "f64", 8, fdv);
+                    }
+                    return;
+                }
+                if (dt === "auto" && aligned4) {
+                    var len4 = scanLen >>> 2;
+                    var i32a = new Int32Array(buf, byteOff, len4);
+                    var f32a = new Float32Array(buf, byteOff, len4);
+                    var f64a = aligned8 ? new Float64Array(buf, byteOff, scanLen >>> 3) : null;
                     var isIntQuery = (sc !== "unknown") && Number.isInteger(v1);
                     var fitsI32 = isIntQuery && v1 >= -2147483648 && v1 <= 2147483647;
                     var fitsI16 = isIntQuery && v1 >= -32768 && v1 <= 32767 && v1 !== 0;
-                    var end4 = scanLen - 4;
-                    for (var off = 0; off <= end4 && out.length < cap; off += 4) {
-                        var matchedAtOff = false;
+                    var dvAuto = (!fitsI32 && isIntQuery) || fitsI16 ? new DataView(buf, byteOff, scanLen) : null;
+                    var isExact = sc === "exact";
+                    var target32 = v1 | 0;
+
+                    for (var idx = 0; idx < len4 && out.length < cap; idx++) {
+                        var off4 = idx << 2;
                         if (sc === "unknown") {
-                            var uVal = dv.getInt32(off, true);
-                            if (uVal !== 0) {
-                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i32", kind: kind, bufIdx: bufIdx, off: off, dt: "i32", len: 4, prev: uVal });
+                            var uv = i32a[idx];
+                            if (uv !== 0) pushHit(off4, "i32", 4, uv);
+                            continue;
+                        }
+                        if (isExact) {
+                            if (fitsI32 && i32a[idx] === target32) {
+                                pushHit(off4, "i32", 4, target32);
+                                continue;
+                            }
+                            if (!fitsI32 && isIntQuery && dvAuto && (off4 + 8) <= scanLen) {
+                                var i64e = readViewVal(dvAuto, off4, "i64");
+                                if (i64e === v1) { pushHit(off4, "i64", 8, i64e); continue; }
+                            }
+                            var f32e = f32a[idx];
+                            if ((v1 === 0 ? f32e === 0 : (f32e !== 0 && Math.abs(f32e - v1) <= 0.01))) {
+                                pushHit(off4, "f32", 4, f32e);
+                                continue;
+                            }
+                            if (f64a && (idx & 1) === 0) {
+                                var f64e = f64a[idx >>> 1];
+                                if ((v1 === 0 ? f64e === 0 : (f64e !== 0 && Math.abs(f64e - v1) <= 0.001))) {
+                                    pushHit(off4, "f64", 8, f64e);
+                                    continue;
+                                }
+                            }
+                            if (fitsI16 && dvAuto) {
+                                var s16a = dvAuto.getInt16(off4, true);
+                                if (s16a === target32) pushHit(off4, "i16", 2, s16a);
+                                var s16b = dvAuto.getInt16(off4 + 2, true);
+                                if (s16b === target32) pushHit(off4 + 2, "i16", 2, s16b);
                             }
                             continue;
                         }
-                        if (fitsI32 || !isIntQuery) {
-                            var i32v = dv.getInt32(off, true);
-                            if (matchNum(i32v, 0, false, "i32", sc, v1, v2)) {
-                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i32", kind: kind, bufIdx: bufIdx, off: off, dt: "i32", len: 4, prev: i32v });
-                                matchedAtOff = true;
-                            }
+                        var iv = i32a[idx];
+                        if ((fitsI32 || !isIntQuery) && matchNum(iv, 0, false, "i32", sc, v1, v2)) {
+                            pushHit(off4, "i32", 4, iv);
+                            continue;
                         }
-                        if (!matchedAtOff && !fitsI32 && isIntQuery && (off + 8) <= scanLen) {
-                            var i64v = readViewVal(dv, off, "i64");
-                            if (matchNum(i64v, 0, false, "i64", sc, v1, v2)) {
-                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i64", kind: kind, bufIdx: bufIdx, off: off, dt: "i64", len: 8, prev: i64v });
-                                matchedAtOff = true;
-                            }
+                        var fv2 = f32a[idx];
+                        if (Number.isFinite(fv2) && (v1 === 0 || Math.abs(fv2) >= 1e-6) && matchNum(fv2, 0, false, "f32", sc, v1, v2)) {
+                            pushHit(off4, "f32", 4, fv2);
+                            continue;
                         }
-                        if (!matchedAtOff) {
-                            var f32v = dv.getFloat32(off, true);
-                            if (Number.isFinite(f32v) && (v1 !== 0 || f32v === 0) && (v1 === 0 || Math.abs(f32v) >= 1e-6) && matchNum(f32v, 0, false, "f32", sc, v1, v2)) {
-                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":f32", kind: kind, bufIdx: bufIdx, off: off, dt: "f32", len: 4, prev: f32v });
-                                matchedAtOff = true;
-                            }
-                        }
-                        if (!matchedAtOff && (off % 8 === 0) && (off + 8) <= scanLen) {
-                            var f64v = dv.getFloat64(off, true);
-                            if (Number.isFinite(f64v) && (v1 !== 0 || f64v === 0) && (v1 === 0 || Math.abs(f64v) >= 1e-6) && matchNum(f64v, 0, false, "f64", sc, v1, v2)) {
-                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":f64", kind: kind, bufIdx: bufIdx, off: off, dt: "f64", len: 8, prev: f64v });
-                                matchedAtOff = true;
-                            }
-                        }
-                        if (!matchedAtOff && fitsI16) {
-                            var i16a = dv.getInt16(off, true);
-                            if (matchNum(i16a, 0, false, "i16", sc, v1, v2)) {
-                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i16", kind: kind, bufIdx: bufIdx, off: off, dt: "i16", len: 2, prev: i16a });
-                            }
-                            var i16b = dv.getInt16(off + 2, true);
-                            if (matchNum(i16b, 0, false, "i16", sc, v1, v2)) {
-                                out.push({ id: labelPrefix + "+0x" + (off + 2).toString(16).toUpperCase() + ":i16", kind: kind, bufIdx: bufIdx, off: off + 2, dt: "i16", len: 2, prev: i16b });
+                        if (f64a && (idx & 1) === 0) {
+                            var dv2 = f64a[idx >>> 1];
+                            if (Number.isFinite(dv2) && (v1 === 0 || Math.abs(dv2) >= 1e-6) && matchNum(dv2, 0, false, "f64", sc, v1, v2)) {
+                                pushHit(off4, "f64", 8, dv2);
                             }
                         }
                     }
                     return;
                 }
 
+                var dv = new DataView(buf, byteOff, scanLen);
                 var sz = dt === "i8" ? 1 : (dt === "i16" ? 2 : ((dt === "i32" || dt === "f32") ? 4 : 8));
                 var endOff = scanLen - sz;
                 for (var off2 = 0; off2 <= endOff && out.length < cap; off2 += sz) {
                     var val = readViewVal(dv, off2, dt);
                     if (matchNum(val, 0, false, dt, sc, v1, v2)) {
-                        var idn = labelPrefix + "+0x" + off2.toString(16).toUpperCase() + ":" + dt;
-                        out.push({ id: idn, kind: kind, bufIdx: bufIdx, off: off2, dt: dt, len: sz, prev: val });
+                        pushHit(off2, dt, sz, val);
                     }
                 }
             }
@@ -574,22 +786,15 @@ object WebsiteMemoryEngine {
             }
 
             function registerAndScanFullBuffer(ab, labelHint, dt, sc, v1, v2, s1, aob, out, cap, scannedBufs) {
-                if (!ab || typeof ab.byteLength !== "number" || ab.byteLength < 4 || ab.byteLength > 128 * 1024 * 1024) return;
+                if (!ab || typeof ab.byteLength !== "number" || ab.byteLength < 4 || ab.byteLength > MAX_SCAN_BYTES) return;
                 if (scannedBufs.has(ab)) return;
                 scannedBufs.add(ab);
                 trackRawBuf(ab);
                 var abIdx = abRegistry.length;
-                abRegistry.push(typeof WeakRef === "function" ? new WeakRef(ab) : { deref: function() { return ab; } });
+                var ref = typeof WeakRef === "function" ? new WeakRef(ab) : { deref: function() { return ab; } };
+                abRegistry.push(ref);
                 var lbl = labelHint ? ("buf#" + abIdx + "(" + labelHint.slice(-20) + ")") : ("buf#" + abIdx);
-                scanBuffer(ab, 0, ab.byteLength, "ab", abIdx, lbl, dt, sc, v1, v2, s1, aob, out, cap);
-            }
-
-            function safeInstanceOf(obj, ctor) {
-                try { return typeof ctor === "function" && obj instanceof ctor; } catch (_) { return false; }
-            }
-
-            function safeIsView(obj) {
-                try { return typeof ArrayBuffer === "function" && ArrayBuffer.isView(obj); } catch (_) { return false; }
+                scanBuffer(ab, 0, ab.byteLength, "ab", abIdx, lbl, dt, sc, v1, v2, s1, aob, out, cap, ref);
             }
 
             function isSkippedBuiltinObject(obj) {
@@ -626,18 +831,6 @@ object WebsiteMemoryEngine {
                 var visited = new WeakSet();
                 var queue = [{ obj: window, path: "window", depth: 0 }];
                 seedFrameworkRoots(window, queue, visited);
-                try {
-                    var fCount = Math.min(window.frames ? window.frames.length : 0, 12);
-                    for (var fi = 0; fi < fCount; fi++) {
-                        try {
-                            var fw = window.frames[fi];
-                            if (fw && fw !== window && fw.document) {
-                                queue.push({ obj: fw, path: "frame" + fi, depth: 0 });
-                                seedFrameworkRoots(fw, queue, visited);
-                            }
-                        } catch (_) {}
-                    }
-                } catch (_) {}
 
                 var maxNodes = 45000;
                 var nodesVisited = 0;
@@ -648,8 +841,10 @@ object WebsiteMemoryEngine {
                     var cur = queue.shift();
                     var obj = cur.obj;
                     if (!obj || (typeof obj !== "object" && typeof obj !== "function")) continue;
-                    if (visited.has(obj)) continue;
-                    visited.add(obj);
+                    try {
+                        if (visited.has(obj)) continue;
+                        visited.add(obj);
+                    } catch (_) { continue; }
                     nodesVisited++;
 
                     if (typeof WebAssembly === "object" && safeInstanceOf(obj, WebAssembly.Memory)) {
@@ -657,13 +852,15 @@ object WebsiteMemoryEngine {
                         continue;
                     }
                     if (safeIsView(obj)) {
-                        if (obj.buffer) {
-                            registerAndScanFullBuffer(obj.buffer, cur.path, dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
-                        }
-                        if (!taSeen.has(obj) && obj.byteLength >= 4) {
-                            taSeen.add(obj);
-                            taRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
-                        }
+                        try {
+                            if (obj.buffer) {
+                                registerAndScanFullBuffer(obj.buffer, cur.path, dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
+                            }
+                            if (!taSeen.has(obj) && obj.byteLength >= 4) {
+                                taSeen.add(obj);
+                                taRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
+                            }
+                        } catch (_) {}
                         continue;
                     }
                     if (typeof ArrayBuffer === "function" && (safeInstanceOf(obj, ArrayBuffer) || (typeof SharedArrayBuffer === "function" && safeInstanceOf(obj, SharedArrayBuffer)))) {
@@ -706,8 +903,11 @@ object WebsiteMemoryEngine {
                         continue;
                     }
 
-                    if (Array.isArray(obj)) {
-                        var arrLen = obj.length;
+                    var isArr = false;
+                    try { isArr = Array.isArray(obj); } catch (_) { isArr = false; }
+                    if (isArr) {
+                        var arrLen = 0;
+                        try { arrLen = obj.length; } catch (_) { continue; }
                         var numScanCap = Math.min(arrLen, 4096);
                         var objEnqueued = 0;
                         for (var ai = 0; ai < numScanCap && out.length < cap; ai++) {
@@ -718,9 +918,13 @@ object WebsiteMemoryEngine {
                                     var refA = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
                                     out.push({ id: "js:" + cur.path + "[" + ai + "]", kind: "js", objRef: refA, key: ai, dt: Number.isInteger(aval) ? "i32" : "f64", prev: aval });
                                 }
-                            } else if (aval && typeof aval === "object" && cur.depth < 10 && objEnqueued < 120 && !visited.has(aval)) {
-                                objEnqueued++;
-                                queue.push({ obj: aval, path: cur.path + "[" + ai + "]", depth: cur.depth + 1 });
+                            } else if (aval && typeof aval === "object" && cur.depth < 10 && objEnqueued < 120) {
+                                try {
+                                    if (!visited.has(aval)) {
+                                        objEnqueued++;
+                                        queue.push({ obj: aval, path: cur.path + "[" + ai + "]", depth: cur.depth + 1 });
+                                    }
+                                } catch (_) {}
                             }
                         }
                         continue;
@@ -738,7 +942,7 @@ object WebsiteMemoryEngine {
                         if (SKIP_KEYS.has(k) || INTERNAL_KEY_RE.test(k) || SENSITIVE_KEY_RE.test(k)) continue;
                         if (k.length > 2 && k[0] === "o" && k[1] === "n" && k[2] >= "a" && k[2] <= "z") continue;
                         var desc = null;
-                        try { desc = Object.getOwnPropertyDescriptor(obj, k); } catch (_) {}
+                        try { desc = Object.getOwnPropertyDescriptor(obj, k); } catch (_) { continue; }
                         if (desc && !("value" in desc)) continue;
                         var isWritable = !desc || desc.writable === true;
                         var val = desc ? desc.value : undefined;
@@ -761,17 +965,20 @@ object WebsiteMemoryEngine {
                         } else if (val && (typeof val === "object" || typeof val === "function") && cur.depth < 10) {
                             if (SKIP_SUBTREE_KEYS.has(k)) continue;
                             if (typeof val === "function" && cur.depth > 1) continue;
-                            if (!visited.has(val)) queue.push({ obj: val, path: nextPath, depth: cur.depth + 1 });
+                            try {
+                                if (!visited.has(val)) queue.push({ obj: val, path: nextPath, depth: cur.depth + 1 });
+                            } catch (_) {}
                         }
                     }
                 }
             }
 
             function scanStorage(dt, sc, v1, v2, s1, out, cap) {
-                var stores = [["ls", window.localStorage], ["ss", window.sessionStorage]];
+                var stores = [];
+                try { if (window.localStorage) stores.push(["ls", window.localStorage]); } catch (_) {}
+                try { if (window.sessionStorage) stores.push(["ss", window.sessionStorage]); } catch (_) {}
                 for (var si = 0; si < stores.length; si++) {
                     var tag = stores[si][0], st = stores[si][1];
-                    if (!st) continue;
                     try {
                         for (var i = 0; i < st.length && out.length < cap; i++) {
                             var k = st.key(i);
@@ -781,7 +988,7 @@ object WebsiteMemoryEngine {
                             if (dt === "str") {
                                 if (s1 && raw.indexOf(s1) !== -1) out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "str", prev: raw });
                             } else if (dt !== "aob") {
-                                var num = Number(raw);
+                                var num = Number(cleanNumStr(raw));
                                 if (raw.trim() !== "" && Number.isFinite(num) && matchNum(num, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
                                     out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "f64", prev: num });
                                 } else if (dt === "auto" && s1 && raw.indexOf(s1) !== -1) {
@@ -793,6 +1000,16 @@ object WebsiteMemoryEngine {
                 }
             }
 
+            function qualifyId(rawId) {
+                return IS_TOP ? rawId : ("@" + FRAME_ID + "|" + rawId);
+            }
+            function stripOwnFramePrefix(id) {
+                if (!id || typeof id !== "string") return id;
+                var pref = "@" + FRAME_ID + "|";
+                if (id.indexOf(pref) === 0) return id.slice(pref.length);
+                return id;
+            }
+
             function formatHitsResult(maxRet) {
                 var lim = Math.min(hits.length, maxRet || 150);
                 var items = [];
@@ -801,7 +1018,7 @@ object WebsiteMemoryEngine {
                     watchRefs.set(h.id, h);
                     var rd = readHitCurrent(h);
                     items.push({
-                        addr: h.id,
+                        addr: qualifyId(h.id),
                         val: formatVal(rd.val, h.dt),
                         prev: formatVal(h.prev, h.dt),
                         type: h.dt,
@@ -810,9 +1027,10 @@ object WebsiteMemoryEngine {
                 }
                 return {
                     ok: true,
+                    frameId: FRAME_ID,
                     total: hits.length,
                     canUndo: prevHits.length > 0,
-                    wasmCount: liveWasmMemories().length,
+                    wasmCount: liveWasmEntries().length,
                     bufCount: abRegistry.length + taRegistry.length,
                     items: items
                 };
@@ -820,10 +1038,13 @@ object WebsiteMemoryEngine {
 
             function handleCmd(cmd) {
                 try {
-                    if (cmd.op === "ping") return { ok: true };
+                    if (cmd.targetFrame && cmd.targetFrame !== FRAME_ID) {
+                        return { ok: false, skippedFrame: true };
+                    }
+                    if (cmd.op === "ping") return { ok: true, frameId: FRAME_ID };
                     if (cmd.op === "reset") {
                         hits = []; prevHits = [];
-                        return { ok: true, total: 0, canUndo: false, wasmCount: liveWasmMemories().length, bufCount: abRegistry.length + taRegistry.length, items: [] };
+                        return { ok: true, frameId: FRAME_ID, total: 0, canUndo: false, wasmCount: liveWasmEntries().length, bufCount: abRegistry.length + taRegistry.length, items: [] };
                     }
                     if (cmd.op === "refreshHits") {
                         return formatHitsResult(cmd.maxReturn || 150);
@@ -849,8 +1070,8 @@ object WebsiteMemoryEngine {
                         var dt = cmd.dtype || "auto";
                         var sc = cmd.scanType || "exact";
                         lastType = dt;
-                        var s1 = String(cmd.val1 || "");
-                        var s2 = String(cmd.val2 || "");
+                        var s1 = (dt === "str" || dt === "aob") ? String(cmd.val1 || "") : cleanNumStr(cmd.val1);
+                        var s2 = (dt === "str" || dt === "aob") ? String(cmd.val2 || "") : cleanNumStr(cmd.val2);
                         var v1 = Number(s1), v2 = Number(s2);
                         var aob = dt === "aob" ? parseAob(s1) : { bytes: [], mask: [] };
                         if (dt === "str" && !s1) return { ok: false, error: "Enter text to search" };
@@ -869,19 +1090,19 @@ object WebsiteMemoryEngine {
                         var cap = sc === "unknown" ? 60000 : 120000;
                         var out = [];
                         var scannedBufs = new WeakSet();
-                        var mems = liveWasmMemories();
+                        var mems = liveWasmEntries();
                         for (var mi = 0; mi < mems.length && out.length < cap; mi++) {
-                            var mb = mems[mi].buffer;
+                            var mb = mems[mi].mem.buffer;
                             scannedBufs.add(mb);
-                            scanBuffer(mb, 0, mb.byteLength, "wasm", mi, "wasm#" + mi, dt, sc, v1, v2, s1, aob, out, cap);
+                            scanBuffer(mb, 0, mb.byteLength, "wasm", mems[mi].id, "wasm#" + mems[mi].id, dt, sc, v1, v2, s1, aob, out, cap, mems[mi].ref);
                         }
                         collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
-                        var memsAfter = liveWasmMemories();
-                        for (var mi2 = mems.length; mi2 < memsAfter.length && out.length < cap; mi2++) {
-                            var mb2 = memsAfter[mi2].buffer;
+                        var memsAfter = liveWasmEntries();
+                        for (var mi2 = 0; mi2 < memsAfter.length && out.length < cap; mi2++) {
+                            var mb2 = memsAfter[mi2].mem.buffer;
                             if (!scannedBufs.has(mb2)) {
                                 scannedBufs.add(mb2);
-                                scanBuffer(mb2, 0, mb2.byteLength, "wasm", mi2, "wasm#" + mi2, dt, sc, v1, v2, s1, aob, out, cap);
+                                scanBuffer(mb2, 0, mb2.byteLength, "wasm", memsAfter[mi2].id, "wasm#" + memsAfter[mi2].id, dt, sc, v1, v2, s1, aob, out, cap, memsAfter[mi2].ref);
                             }
                         }
                         var rawBufs = liveRawBuffers(scannedBufs);
@@ -893,10 +1114,10 @@ object WebsiteMemoryEngine {
                         return formatHitsResult(cmd.maxReturn || 150);
                     }
                     if (cmd.op === "nextScan") {
-                        if (!hits.length) return { ok: false, error: "Run First Scan first" };
+                        if (!hits.length) return { ok: true, frameId: FRAME_ID, total: 0, canUndo: prevHits.length > 0, wasmCount: liveWasmEntries().length, bufCount: abRegistry.length + taRegistry.length, items: [] };
                         var sc2 = cmd.scanType || "exact";
-                        var s1n = String(cmd.val1 || "");
-                        var s2n = String(cmd.val2 || "");
+                        var s1n = (lastType === "str" || lastType === "aob") ? String(cmd.val1 || "") : cleanNumStr(cmd.val1);
+                        var s2n = (lastType === "str" || lastType === "aob") ? String(cmd.val2 || "") : cleanNumStr(cmd.val2);
                         var v1n = Number(s1n), v2n = Number(s2n);
                         if ((sc2 === "unknown" || sc2 === "changed" || sc2 === "increased" || sc2 === "decreased" || sc2 === "unchanged") &&
                             s1n.trim() !== "" && Number.isFinite(v1n)) {
@@ -939,26 +1160,34 @@ object WebsiteMemoryEngine {
                         var ids = Array.isArray(cmd.ids) ? cmd.ids : [];
                         var vals = {};
                         for (var ri = 0; ri < ids.length; ri++) {
-                            var id = ids[ri];
-                            var rec = watchRefs.get(id);
+                            var fullId = ids[ri];
+                            if (typeof fullId !== "string") continue;
+                            if (fullId.charAt(0) === "@") {
+                                var pref = "@" + FRAME_ID + "|";
+                                if (fullId.indexOf(pref) !== 0) continue;
+                            } else if (!IS_TOP) {
+                                continue;
+                            }
+                            var localId = stripOwnFramePrefix(fullId);
+                            var rec = watchRefs.get(localId);
                             if (rec) {
                                 var r = readHitCurrent(rec);
-                                vals[id] = r.ok ? formatVal(r.val, rec.dt) : String(r.val);
-                            } else {
-                                vals[id] = "<expired>";
+                                vals[fullId] = r.ok ? formatVal(r.val, rec.dt) : String(r.val);
                             }
                         }
-                        return { ok: true, values: vals };
+                        return { ok: true, frameId: FRAME_ID, values: vals };
                     }
                     if (cmd.op === "write") {
-                        var recW = watchRefs.get(cmd.id);
-                        if (!recW) return { ok: false, error: "Entry not found in page" };
+                        var localW = stripOwnFramePrefix(cmd.id);
+                        var recW = watchRefs.get(localW);
+                        if (!recW) return { ok: false, error: "Entry not found in frame" };
                         var okW = writeHitValue(recW, cmd.val);
                         var rdW = readHitCurrent(recW);
-                        return { ok: okW, val: formatVal(rdW.val, recW.dt) };
+                        return { ok: okW, frameId: FRAME_ID, val: formatVal(rdW.val, recW.dt) };
                     }
                     if (cmd.op === "hexDump") {
-                        var recH = watchRefs.get(cmd.id);
+                        var localH = stripOwnFramePrefix(cmd.id);
+                        var recH = watchRefs.get(localH);
                         if (!recH || (recH.kind !== "wasm" && recH.kind !== "ta" && recH.kind !== "ab")) {
                             return { ok: false, error: "Hex view supports WASM / ArrayBuffer / TypedArray" };
                         }
@@ -969,24 +1198,25 @@ object WebsiteMemoryEngine {
                         var u8h = new Uint8Array(biH.buf, biH.byteOff + baseOff, len);
                         var hex = "";
                         for (var hi = 0; hi < u8h.length; hi++) hex += u8h[hi].toString(16).toUpperCase().padStart(2, "0");
-                        return { ok: true, addr: "0x" + baseOff.toString(16).toUpperCase(), offset: baseOff, len: len, hex: hex };
+                        return { ok: true, frameId: FRAME_ID, addr: "0x" + baseOff.toString(16).toUpperCase(), offset: baseOff, len: len, hex: hex };
                     }
                     if (cmd.op === "regions") {
-                        var memsR = liveWasmMemories();
+                        var memsR = liveWasmEntries();
                         var regs = [];
                         var totalKb = 0;
+                        var fTag = IS_TOP ? "" : ("[" + FRAME_ID + "] ");
                         for (var rmi = 0; rmi < memsR.length; rmi++) {
-                            var kb = Math.round(memsR[rmi].buffer.byteLength / 1024);
+                            var kb = Math.round(memsR[rmi].mem.buffer.byteLength / 1024);
                             totalKb += kb;
-                            regs.push({ start: "wasm#" + rmi, end: "0x" + memsR[rmi].buffer.byteLength.toString(16).toUpperCase(), kb: kb, perms: "rw-wasm", label: "WebAssembly.Memory #" + rmi });
+                            regs.push({ start: qualifyId("wasm#" + memsR[rmi].id), end: "0x" + memsR[rmi].mem.buffer.byteLength.toString(16).toUpperCase(), kb: kb, perms: "rw-wasm", label: fTag + "WebAssembly.Memory #" + memsR[rmi].id });
                         }
                         var seenR = new WeakSet();
-                        for (var rmi2 = 0; rmi2 < memsR.length; rmi2++) seenR.add(memsR[rmi2].buffer);
+                        for (var rmi2 = 0; rmi2 < memsR.length; rmi2++) seenR.add(memsR[rmi2].mem.buffer);
                         var rawR = liveRawBuffers(seenR);
                         for (var rbi = 0; rbi < Math.min(rawR.length, 60); rbi++) {
                             var bkb = Math.max(1, Math.round(rawR[rbi].byteLength / 1024));
                             totalKb += bkb;
-                            regs.push({ start: "buf#" + rbi, end: "0x" + rawR[rbi].byteLength.toString(16).toUpperCase(), kb: bkb, perms: "rw-buf", label: "ArrayBuffer #" + rbi });
+                            regs.push({ start: qualifyId("buf#" + rbi), end: "0x" + rawR[rbi].byteLength.toString(16).toUpperCase(), kb: bkb, perms: "rw-buf", label: fTag + "ArrayBuffer #" + rbi });
                         }
                         for (var tai = 0; tai < Math.min(taRegistry.length, 40); tai++) {
                             var taObj = taRegistry[tai].deref();
@@ -997,11 +1227,11 @@ object WebsiteMemoryEngine {
                                     var tName = "TypedArray";
                                     try { tName = taObj.constructor && taObj.constructor.name ? taObj.constructor.name : "TypedArray"; } catch (_) {}
                                     totalKb += tkb;
-                                    regs.push({ start: "ta#" + tai, end: "0x" + tLen.toString(16).toUpperCase(), kb: tkb, perms: "rw-ta", label: tName });
+                                    regs.push({ start: qualifyId("ta#" + tai), end: "0x" + tLen.toString(16).toUpperCase(), kb: tkb, perms: "rw-ta", label: fTag + tName });
                                 } catch (_) {}
                             }
                         }
-                        return { ok: true, count: regs.length, totalKb: totalKb, regions: regs };
+                        return { ok: true, frameId: FRAME_ID, count: regs.length, totalKb: totalKb, regions: regs };
                     }
                     return { ok: false, error: "Unknown op" };
                 } catch (e) {
@@ -1009,23 +1239,52 @@ object WebsiteMemoryEngine {
                 }
             }
 
+            function relayToChildFrames(packet) {
+                try {
+                    var fc = window.frames ? window.frames.length : 0;
+                    for (var i = 0; i < fc && i < 24; i++) {
+                        try { window.frames[i].postMessage(packet, "*"); } catch (_) {}
+                    }
+                } catch (_) {}
+            }
+
+            window.addEventListener("message", function(ev) {
+                try {
+                    var d = ev && ev.data;
+                    if (!d || typeof d !== "object" || d.__mch !== CH || !d.__mreq) return;
+                    relayToChildFrames(d);
+                    if (IS_TOP) return;
+                    var out = handleCmd(d.cmd || { op: "ping" });
+                    if (out && out.skippedFrame) return;
+                    if (window.FableHybridBridge && typeof window.FableHybridBridge.onFrameMemResult === "function") {
+                        window.FableHybridBridge.onFrameMemResult(String(d.__mreq), FRAME_ID, JSON.stringify(out));
+                    }
+                } catch (_) {}
+            }, false);
+
             window.addEventListener(CH, function(ev) {
                 var d = ev && ev.detail;
                 if (!d || typeof d !== "object" || !d.box) return;
                 d.box.ok = true;
                 d.box.out = handleCmd(d);
+                if (IS_TOP && d.__mreq) {
+                    relayToChildFrames({ __mch: CH, __mreq: d.__mreq, cmd: d });
+                }
             }, false);
         })();
         """.trimIndent()
     }
 
-    fun buildBlinkCommandScript(cmdJson: String): String {
+    fun buildBlinkCommandScript(cmdJson: String, reqId: String = ""): String {
         val chJson = JSONObject.quote(CHANNEL_ID)
+        val reqJson = JSONObject.quote(reqId)
         val boot = buildBootstrapScriptInternal(CHANNEL_ID)
         return """
         (function() {
             var CH = $chJson;
             var cmd = $cmdJson;
+            var rid = $reqJson;
+            if (rid) cmd.__mreq = rid;
             function send() {
                 var box = { ok: false, out: null };
                 cmd.box = box;
@@ -1037,7 +1296,9 @@ object WebsiteMemoryEngine {
                 $boot
                 res = send();
             }
-            return JSON.stringify(res.ok && res.out ? res.out : { ok: false, error: "Page scanner unavailable" });
+            var outObj = (res.ok && res.out) ? res.out : { ok: false, error: "Page scanner unavailable" };
+            try { outObj.childFrames = window.frames ? window.frames.length : 0; } catch (_) { outObj.childFrames = 0; }
+            return JSON.stringify(outObj);
         })();
         """.trimIndent()
     }

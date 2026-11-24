@@ -135,6 +135,44 @@ PRIVACY_HTML = """<!DOCTYPE html>
 <script src="/dynamic/extra.json"></script>
 </body></html>"""
 
+XORIGIN_HOST_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>CrazyGames-Style Cross-Origin Host</title></head>
+<body>
+<h3>Host Wrapper (port 18080)</h3>
+<iframe id="gameFrame" src="http://127.0.0.1:18081/unity-frame.html" width="320" height="200"></iframe>
+<script>
+window.hostWrapperRef = document.getElementById("gameFrame").contentWindow;
+</script>
+</body></html>"""
+
+UNITY_IFRAME_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Unity 6 WASM Game Iframe (port 18081)</title></head>
+<body>
+<pre id="uout">loading unity 48mb wasm</pre>
+<script>
+(function() {
+  var unityMem = new WebAssembly.Memory({ initial: 768, maximum: 1024 });
+  var i32 = new Int32Array(unityMem.buffer);
+  i32[0x2800000 >> 2] = 4976216;
+  window.__keepUnityMem = unityMem;
+  function checkStealth() {
+    try {
+      const noLeak = Object.getOwnPropertyNames(window).filter(k => /cheat|memscan|__fableMem|__fableTimeScale/i.test(k)).length === 0;
+      const wasmNat = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
+      const abNat = Function.prototype.toString.call(ArrayBuffer).indexOf("[native code]") !== -1;
+      return noLeak && wasmNat && abNat;
+    } catch (_) { return false; }
+  }
+  window.addEventListener("load", function() {
+    setTimeout(function() {
+      const coins = new Int32Array(unityMem.buffer)[0x2800000 >> 2];
+      const st = checkStealth();
+      fetch("http://127.0.0.1:18080/xorigin-probe?stealth=" + st + "&coins=" + coins, { mode: "no-cors" }).catch(() => {});
+    }, 4500);
+  });
+})();
+</script></body></html>"""
+
 MEM_HTML = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Fable Memory Test</title></head>
 <body>
@@ -280,6 +318,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             import time
             print(f"SPEED_START tag={tag} ts={time.monotonic():.3f}", flush=True)
             self._send(200, "text/html; charset=utf-8", SPEED_HTML.encode())
+        elif p == "/xorigin-unity.html":
+            self._send(200, "text/html; charset=utf-8", XORIGIN_HOST_HTML.encode())
+        elif p == "/unity-frame.html":
+            self._send(200, "text/html; charset=utf-8", UNITY_IFRAME_HTML.encode())
+        elif p == "/xorigin-probe":
+            print(f"XORIGIN_UNITY_PROBE q={parsed.query}", flush=True)
+            self._send(200, "application/json", b'{"ok":true}')
         elif p == "/mem.html":
             self._send(200, "text/html; charset=utf-8", MEM_HTML.encode())
         elif p == "/mem-probe":
@@ -563,6 +608,27 @@ sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck page_blink >/dev/null 2>&1 || true
 sleep 5; step "memory engine Blink x Gecko WASM+JS scan & write"
 
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/xorigin-unity.html?eng=gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 3
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck xorigin_gecko --es fable_test_mem_query "4,976,216" --es fable_test_mem_write "9999999" >/dev/null 2>&1 || true
+sleep 6; step "memory engine cross-origin 48MB Unity WASM iframe (GeckoView)"
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/xorigin-unity.html?eng=blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 3
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck xorigin_blink --es fable_test_mem_query "4,976,216" --es fable_test_mem_write "9999999" >/dev/null 2>&1 || true
+sleep 6; step "memory engine cross-origin 48MB Unity WASM iframe (Blink x Gecko)"
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://veck.io' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
+sleep 8
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_veck --es fable_test_mem_query "100" --es fable_test_mem_write "" >/dev/null 2>&1 || true
+sleep 4
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/turbo-trail-txl' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
+sleep 8
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy --es fable_test_mem_query "100" --es fable_test_mem_write "" >/dev/null 2>&1 || true
+sleep 4
+
 adb shell am start -n "$ACT" --ez fable_test_mem_toggle false >/dev/null 2>&1 || true
 sleep 2
 
@@ -657,6 +723,15 @@ echo "$MEM_BLINK_LINE" | grep -q 'engine=Blink x Gecko total=[2-9].*hexOk=true' 
 grep -q 'MEM_PROBE q=tag=mem_gecko&stealth=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko-stealth"; }
 grep -q 'MEM_PROBE q=tag=mem_blink&stealth=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink-stealth"; }
 
+
+MEM_XORIG_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=xorigin_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_XORIG_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=xorigin_blink' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_VECK="$(grep 'FABLE-MEM-CHECK.*scope=live_veck' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_CRAZY="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy' "$ART/logcat.txt" | tail -n 1 || true)"
+echo "$MEM_XORIG_GECKO" | grep -q 'engine=GeckoView total=[1-9].*hit=@f_.*wasm#.*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-gecko(${MEM_XORIG_GECKO:-missing})"; }
+echo "$MEM_XORIG_BLINK" | grep -q 'engine=Blink x Gecko total=[1-9].*hit=@f_.*wasm#.*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-blink(${MEM_XORIG_BLINK:-missing})"; }
+grep -q 'XORIGIN_UNITY_PROBE q=stealth=true&coins=9999999' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-write-stealth"; }
+
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
 
@@ -684,6 +759,10 @@ VERDICT="PASS"
   echo "Native: ${MEM_NATIVE_LINE:-(none)}"
   echo "Gecko:  ${MEM_GECKO_LINE:-(none)}"
   echo "Blink:  ${MEM_BLINK_LINE:-(none)}"
+  echo "XOrigG: ${MEM_XORIG_GECKO:-(none)}"
+  echo "XOrigB: ${MEM_XORIG_BLINK:-(none)}"
+  echo "LiveVk: ${MEM_LIVE_VECK:-(none)}"
+  echo "LiveCG: ${MEM_LIVE_CRAZY:-(none)}"
   echo '```'
   echo "### Website Speed Control Verification"
   echo '```'

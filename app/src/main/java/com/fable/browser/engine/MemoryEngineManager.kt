@@ -123,17 +123,19 @@ class MemoryEngineManager @Inject constructor(
         if (st.busy) return
         _state.update { it.copy(busy = true, statusText = "Scanning ${st.scope.label}...") }
         scope.launch {
+            val n1 = WebsiteMemoryEngine.normalizeNumericInput(val1, st.dataType)
+            val n2 = WebsiteMemoryEngine.normalizeNumericInput(val2, st.dataType)
             val raw = when (st.scope) {
                 MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) {
-                    NativeMemoryScanner.firstScan(st.dataType, st.scanType, val1.trim(), val2.trim(), 150)
+                    NativeMemoryScanner.firstScan(st.dataType, st.scanType, n1, n2, 150)
                 }
                 MemScope.PAGE_WASM -> {
                     val cmd = JSONObject().apply {
                         put("op", "firstScan")
                         put("dtype", st.dataType.jsCode)
                         put("scanType", st.scanType.jsCode)
-                        put("val1", val1.trim())
-                        put("val2", val2.trim())
+                        put("val1", n1)
+                        put("val2", n2)
                         put("maxReturn", 150)
                     }
                     runPageCommand(cmd)
@@ -146,7 +148,7 @@ class MemoryEngineManager @Inject constructor(
     fun nextScan(val1: String, val2: String = "") {
         val st = _state.value
         if (st.busy) return
-        val clean1 = val1.trim()
+        val clean1 = WebsiteMemoryEngine.normalizeNumericInput(val1, st.dataType)
         val effectiveScanType = when {
             (st.scanType == MemScanType.UNKNOWN || st.scanType == MemScanType.CHANGED ||
                 st.scanType == MemScanType.INCREASED || st.scanType == MemScanType.DECREASED ||
@@ -158,14 +160,14 @@ class MemoryEngineManager @Inject constructor(
         scope.launch {
             val raw = when (st.scope) {
                 MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) {
-                    NativeMemoryScanner.nextScan(effectiveScanType, clean1, val2.trim(), 150)
+                    NativeMemoryScanner.nextScan(effectiveScanType, clean1, WebsiteMemoryEngine.normalizeNumericInput(val2, st.dataType), 150)
                 }
                 MemScope.PAGE_WASM -> {
                     val cmd = JSONObject().apply {
                         put("op", "nextScan")
                         put("scanType", effectiveScanType.jsCode)
                         put("val1", clean1)
-                        put("val2", val2.trim())
+                        put("val2", WebsiteMemoryEngine.normalizeNumericInput(val2, st.dataType))
                         put("maxReturn", 150)
                     }
                     runPageCommand(cmd)
@@ -380,9 +382,11 @@ class MemoryEngineManager @Inject constructor(
                     NativeMemoryScanner.hexDump(targetHex, 128)
                 }
                 MemScope.PAGE_WASM -> {
+                    val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(addr)
                     val cmd = JSONObject().apply {
                         put("op", "hexDump")
                         put("id", addr)
+                        if (tFrame != null) put("targetFrame", tFrame)
                         if (offsetDelta != 0L && curHex.targetAddr == addr) {
                             put("offset", (curHex.baseOffset + offsetDelta).coerceAtLeast(0L))
                         }
@@ -525,10 +529,12 @@ class MemoryEngineManager @Inject constructor(
                 NativeMemoryScanner.writeValue(entry.addr, entry.dataType, newValue)
             }
             MemScope.PAGE_WASM -> {
+                val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
                 val raw = runPageCommand(JSONObject().apply {
                     put("op", "write")
                     put("id", entry.addr)
-                    put("val", newValue)
+                    if (tFrame != null) put("targetFrame", tFrame)
+                    put("val", WebsiteMemoryEngine.normalizeNumericInput(newValue, entry.dataType))
                 })
                 runCatching { JSONObject(raw).optBoolean("ok", false) }.getOrDefault(false)
             }
@@ -558,6 +564,7 @@ class MemoryEngineManager @Inject constructor(
         val canUndo = obj.optBoolean("canUndo", false)
         val wasmCnt = obj.optInt("wasmCount", 0)
         val bufCnt = obj.optInt("bufCount", 0)
+        val frameCnt = obj.optInt("frameCount", 1)
         val arr = obj.optJSONArray("items") ?: JSONArray()
         val list = ArrayList<MemScanResultItem>(arr.length())
         for (i in 0 until arr.length()) {
@@ -579,8 +586,10 @@ class MemoryEngineManager @Inject constructor(
                 "0 matches · Reload page with CE ON to hook WASM/game memory"
             total == 0 ->
                 "0 matches found"
-            curScope == MemScope.PAGE_WASM ->
-                "$total match${if (total == 1) "" else "es"} (${wasmCnt} WASM, ${bufCnt} buf) · change value & tap Next"
+            curScope == MemScope.PAGE_WASM -> {
+                val fTxt = if (frameCnt > 1) ", $frameCnt frames" else ""
+                "$total match${if (total == 1) "" else "es"} ($wasmCnt WASM, $bufCnt buf$fTxt) · change value & tap Next"
+            }
             else ->
                 "$total match${if (total == 1) "" else "es"} (showing ${list.size}) · change value & tap Next"
         }

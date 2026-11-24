@@ -56,4 +56,24 @@ class MemoryEngineTest {
         assertEquals(150, WebsiteMemoryEngine.clampPanelScalePct(300))
         assertEquals(110, WebsiteMemoryEngine.clampPanelScalePct(110))
     }
+
+    @Test
+    fun mergesMultiFrameResultsAndParsesCommas() {
+        assertEquals("4976216", WebsiteMemoryEngine.normalizeNumericInput("4,976,216", MemDataType.AUTO))
+        assertEquals("4976216", WebsiteMemoryEngine.normalizeNumericInput(" 4 976 216 ", MemDataType.INT32))
+        assertEquals("4,976,216", WebsiteMemoryEngine.normalizeNumericInput("4,976,216", MemDataType.STRING))
+
+        val (fId, rawId) = WebsiteMemoryEngine.splitFrameAddr("@f_game1|wasm#0+0x2800000:i32")
+        assertEquals("f_game1", fId)
+        assertEquals("wasm#0+0x2800000:i32", rawId)
+
+        val topFrame = """{"ok":true,"frameId":"f0","total":1,"canUndo":false,"wasmCount":0,"bufCount":0,"items":[{"addr":"js:ui.label","val":"4976216","type":"i32","kind":"js"}]}"""
+        val gameFrame = """{"ok":true,"frameId":"f_game1","total":1,"canUndo":false,"wasmCount":1,"bufCount":2,"items":[{"addr":"@f_game1|wasm#0+0x2800000:i32","val":"4976216","type":"i32","kind":"wasm"}]}"""
+        val merged = org.json.JSONObject(WebsiteMemoryEngine.mergeMultiFrameResults(listOf(topFrame, gameFrame), "firstScan", 150))
+        assertTrue(merged.getBoolean("ok"))
+        assertEquals(2, merged.getInt("total"))
+        assertEquals(1, merged.getInt("wasmCount"))
+        assertEquals(2, merged.getInt("frameCount"))
+        assertEquals("@f_game1|wasm#0+0x2800000:i32", merged.getJSONArray("items").getJSONObject(0).getString("addr"))
+    }
 }

@@ -265,6 +265,66 @@ async function applyMemoryScannerScript() {
   if (old) { try { await old.unregister(); } catch (_) {} }
 }
 
+function mergeFrameMemPayloads(rawList, op, maxReturn) {
+  const parsed = [];
+  for (const r of (rawList || [])) {
+    if (typeof r !== "string" || !r) continue;
+    try {
+      const o = JSON.parse(r);
+      if (o && !o.skippedFrame) parsed.push(o);
+    } catch (_) {}
+  }
+  if (!parsed.length) return JSON.stringify({ ok: false, error: "Page did not respond (tap Hook Reload or use Fable Process)" });
+  if (parsed.length === 1) return JSON.stringify(parsed[0]);
+  if (op === "readBatch") {
+    const vals = {};
+    for (const o of parsed) {
+      if (o.values && typeof o.values === "object") Object.assign(vals, o.values);
+    }
+    return JSON.stringify({ ok: true, values: vals });
+  }
+  if (op === "write" || op === "hexDump") {
+    const hit = parsed.find((o) => o.ok === true) || parsed[0];
+    return JSON.stringify(hit);
+  }
+  if (op === "regions") {
+    let totalKb = 0, fc = 0;
+    const regs = [];
+    for (const o of parsed) {
+      if (!o.ok) continue;
+      fc++;
+      totalKb += Number(o.totalKb || 0);
+      for (const r of (o.regions || [])) {
+        if (regs.length < 120) regs.push(r);
+      }
+    }
+    return JSON.stringify({ ok: fc > 0, count: regs.length, totalKb, frameCount: fc, regions: regs });
+  }
+  let anyOk = false, total = 0, canUndo = false, wasmCount = 0, bufCount = 0, wrote = 0, hasWrote = false, fc = 0;
+  let firstErr = null;
+  const wasmItems = [], bufItems = [], otherItems = [];
+  for (const o of parsed) {
+    if (!o.ok) { if (!firstErr && o.error) firstErr = o.error; continue; }
+    anyOk = true; fc++;
+    total += Number(o.total || 0);
+    if (o.canUndo) canUndo = true;
+    wasmCount += Number(o.wasmCount || 0);
+    bufCount += Number(o.bufCount || 0);
+    if (typeof o.wrote === "number") { hasWrote = true; wrote += o.wrote; }
+    for (const it of (o.items || [])) {
+      if (it.kind === "wasm") wasmItems.push(it);
+      else if (it.kind === "ab" || it.kind === "ta") bufItems.push(it);
+      else otherItems.push(it);
+    }
+  }
+  if (!anyOk) return JSON.stringify({ ok: false, error: firstErr || "Scan failed" });
+  const lim = maxReturn || 150;
+  const items = wasmItems.concat(bufItems, otherItems).slice(0, lim);
+  const res = { ok: true, total, canUndo, wasmCount, bufCount, frameCount: fc, items };
+  if (hasWrote) res.wrote = wrote;
+  return JSON.stringify(res);
+}
+
 async function handleMemCommand(msg) {
   const reqId = String(msg.reqId || "");
   const cmd = msg.cmd || { op: "ping" };
@@ -279,21 +339,33 @@ async function handleMemCommand(msg) {
       postNative({ type: "mem-res", reqId, payload: JSON.stringify({ ok: false, error: "No active GeckoView tab" }) });
       return;
     }
-    let resp = null;
-    try {
-      resp = await browser.tabs.sendMessage(tab.id, { type: "fable-mem-cmd", cmd });
-    } catch (_) {}
-    if ((!resp || typeof resp.payload !== "string") && browser.tabs.executeScript) {
+    const execCode = "typeof globalThis.__fableRunFrameMemCmd === 'function' ? globalThis.__fableRunFrameMemCmd(" + JSON.stringify(cmd) + ") : null";
+    let results = null;
+    if (browser.tabs.executeScript) {
       try {
-        const cfgStr = JSON.stringify({ enabled: true, ch: memScanChannel });
-        await browser.tabs.executeScript(tab.id, { code: "var __MEM_CFG = " + cfgStr + ";", allFrames: true });
-        await browser.tabs.executeScript(tab.id, { file: "memory_scanner.js", allFrames: true });
-        resp = await browser.tabs.sendMessage(tab.id, { type: "fable-mem-cmd", cmd });
+        results = await browser.tabs.executeScript(tab.id, { code: execCode, allFrames: true });
       } catch (_) {}
+      const validCount = Array.isArray(results) ? results.filter((x) => typeof x === "string" && x.length > 0).length : 0;
+      const missingAny = !Array.isArray(results) || validCount === 0 || results.some((x) => x === null);
+      if (missingAny) {
+        try {
+          const cfgStr = JSON.stringify({ enabled: true, ch: memScanChannel });
+          await browser.tabs.executeScript(tab.id, { code: "var __MEM_CFG = " + cfgStr + ";", allFrames: true });
+          await browser.tabs.executeScript(tab.id, { file: "memory_scanner.js", allFrames: true });
+          results = await browser.tabs.executeScript(tab.id, { code: execCode, allFrames: true });
+        } catch (_) {}
+      }
     }
-    const payload = (resp && typeof resp.payload === "string")
-      ? resp.payload
-      : JSON.stringify({ ok: false, error: "Page did not respond (try reloading or Fable Process scope)" });
+    let payload = null;
+    if (Array.isArray(results) && results.some((x) => typeof x === "string" && x.length > 0)) {
+      payload = mergeFrameMemPayloads(results, cmd.op, cmd.maxReturn || 150);
+    } else {
+      let resp = null;
+      try { resp = await browser.tabs.sendMessage(tab.id, { type: "fable-mem-cmd", cmd }); } catch (_) {}
+      payload = (resp && typeof resp.payload === "string")
+        ? resp.payload
+        : JSON.stringify({ ok: false, error: "Page did not respond (tap Hook Reload or use Fable Process)" });
+    }
     postNative({ type: "mem-res", reqId, payload });
   } catch (e) {
     postNative({ type: "mem-res", reqId, payload: JSON.stringify({ ok: false, error: String(e) }) });

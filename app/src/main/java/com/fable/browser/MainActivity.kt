@@ -421,18 +421,22 @@ class MainActivity : FragmentActivity() {
                                         "total2=${r2Obj?.optInt("total") ?: -1} writeOk=$writeOk readBack=$readBack hexOk=$hexOk"
                                 )
                             } else {
+                                val queryVal = intent.getStringExtra("fable_test_mem_query")?.takeIf { it.isNotBlank() } ?: "133700"
+                                val writeVal = intent.getStringExtra("fable_test_mem_write").orEmpty()
+                                val doWrite = if (intent.hasExtra("fable_test_mem_write")) writeVal.isNotBlank() else true
+                                val targetWrite = if (writeVal.isNotBlank()) writeVal else "777888"
                                 memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
                                 memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
                                 memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.EXACT)
-                                memoryEngineManager.firstScan("133700")
-                                kotlinx.coroutines.delay(1500)
+                                memoryEngineManager.firstScan(queryVal)
+                                kotlinx.coroutines.delay(1800)
                                 val st1 = memoryEngineManager.state.value
-                                val hit = st1.results.firstOrNull { it.addr.contains("wasm#") } ?: st1.results.firstOrNull { it.addr.contains("gold") }
-                                if (hit != null) {
+                                val hit = st1.results.firstOrNull { it.addr.contains("wasm#") } ?: st1.results.firstOrNull { it.addr.contains("gold") } ?: st1.results.firstOrNull()
+                                if (hit != null && doWrite) {
                                     memoryEngineManager.addToWatch(hit)
                                     val w = memoryEngineManager.state.value.watchList.lastOrNull()
                                     if (w != null) {
-                                        memoryEngineManager.setWatchValue(w.id, "777888")
+                                        memoryEngineManager.setWatchValue(w.id, targetWrite)
                                         kotlinx.coroutines.delay(700)
                                     }
                                     if (hit.kind == "wasm") {
@@ -444,7 +448,7 @@ class MainActivity : FragmentActivity() {
                                 val hexOk = st2.hex.hexBytes.isNotBlank()
                                 android.util.Log.i(
                                     "FABLE-MEM-CHECK",
-                                    "scope=$scopeName engine=${st2.activeEngineLabel} total=${st1.totalMatches} hit=${hit?.addr ?: "none"} hexOk=$hexOk"
+                                    "scope=$scopeName engine=${st2.activeEngineLabel} total=${st1.totalMatches} wasm=${st1.wasmCount} buf=${st1.bufCount} hit=${hit?.addr ?: "none"} hexOk=$hexOk status=${st1.statusText}"
                                 )
                                 memoryEngineManager.resetScan()
                             }

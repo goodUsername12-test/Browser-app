@@ -189,6 +189,16 @@ private class FableHybridJsBridge(
     private val activeJsDownloads = java.util.concurrent.ConcurrentHashMap<String, StreamingJsDownload>()
 
     @JavascriptInterface
+    fun onFrameMemResult(reqId: String?, frameId: String?, jsonStr: String?) {
+        if (reqId.isNullOrBlank() || jsonStr.isNullOrBlank()) return
+        pendingFrameMemCollectors[reqId]?.add(jsonStr)
+    }
+
+    companion object {
+        val pendingFrameMemCollectors = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CopyOnWriteArrayList<String>>()
+    }
+
+    @JavascriptInterface
     fun beginJsDownload(dlId: String?, fileName: String?, mimeType: String?) {
         val id = dlId?.takeIf { it.isNotBlank() } ?: return
         val dir = java.io.File(appContext.cacheDir, "blink_dl").apply { mkdirs() }
@@ -1126,28 +1136,60 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             }
 
             override suspend fun runMemoryCommand(cmdJson: String): String {
-                val script = com.fable.browser.engine.WebsiteMemoryEngine.buildBlinkCommandScript(cmdJson)
-                return kotlinx.coroutines.withTimeoutOrNull(8_000L) {
-                    kotlinx.coroutines.suspendCancellableCoroutine<String> { cont ->
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            runCatching {
-                                wv.evaluateJavascript(script) { raw ->
-                                    if (!cont.isActive) return@evaluateJavascript
-                                    val unquoted = if (raw.isNullOrBlank() || raw == "null") {
-                                        "{\"ok\":false,\"error\":\"Empty page response\"}"
-                                    } else {
-                                        runCatching { org.json.JSONTokener(raw).nextValue()?.toString() }.getOrNull() ?: raw
+                val cmdObj = runCatching { org.json.JSONObject(cmdJson) }.getOrNull()
+                val op = cmdObj?.optString("op").orEmpty()
+                val maxRet = cmdObj?.optInt("maxReturn", 150) ?: 150
+                val targetFrame = cmdObj?.optString("targetFrame").orEmpty()
+                val reqId = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+                val collector = java.util.concurrent.CopyOnWriteArrayList<String>()
+                FableHybridJsBridge.pendingFrameMemCollectors[reqId] = collector
+                try {
+                    val script = com.fable.browser.engine.WebsiteMemoryEngine.buildBlinkCommandScript(cmdJson, reqId)
+                    val topRaw = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
+                        kotlinx.coroutines.suspendCancellableCoroutine<String> { cont ->
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                runCatching {
+                                    wv.evaluateJavascript(script) { raw ->
+                                        if (!cont.isActive) return@evaluateJavascript
+                                        val unquoted = if (raw.isNullOrBlank() || raw == "null") {
+                                            "{\"ok\":false,\"error\":\"Empty page response\"}"
+                                        } else {
+                                            runCatching { org.json.JSONTokener(raw).nextValue()?.toString() }.getOrNull() ?: raw
+                                        }
+                                        cont.resumeWith(Result.success(unquoted))
                                     }
-                                    cont.resumeWith(Result.success(unquoted))
-                                }
-                            }.onFailure {
-                                if (cont.isActive) {
-                                    cont.resumeWith(Result.success("{\"ok\":false,\"error\":\"WebView eval failed\"}"))
+                                }.onFailure {
+                                    if (cont.isActive) {
+                                        cont.resumeWith(Result.success("{\"ok\":false,\"error\":\"WebView eval failed\"}"))
+                                    }
                                 }
                             }
                         }
+                    } ?: return "{\"ok\":false,\"error\":\"Blink scan timed out\"}"
+                    val topObj = runCatching { org.json.JSONObject(topRaw) }.getOrNull()
+                    val childFrames = topObj?.optInt("childFrames", 0) ?: 0
+                    val needsSubframes = childFrames > 0 || (targetFrame.isNotBlank() && targetFrame != "f0")
+                    if (needsSubframes) {
+                        val waitMs = when (op) {
+                            "firstScan" -> 480L
+                            "nextScan", "writeAll", "regions" -> 260L
+                            else -> 140L
+                        }
+                        val deadline = System.currentTimeMillis() + waitMs
+                        while (System.currentTimeMillis() < deadline) {
+                            if (targetFrame.isNotBlank() && targetFrame != "f0" && collector.isNotEmpty()) break
+                            kotlinx.coroutines.delay(20L)
+                        }
                     }
-                } ?: "{\"ok\":false,\"error\":\"Blink scan timed out\"}"
+                    val allPayloads = ArrayList<String>(1 + collector.size)
+                    if (topObj == null || !topObj.optBoolean("skippedFrame", false)) {
+                        allPayloads.add(topRaw)
+                    }
+                    allPayloads.addAll(collector)
+                    return com.fable.browser.engine.WebsiteMemoryEngine.mergeMultiFrameResults(allPayloads, op, maxRet)
+                } finally {
+                    FableHybridJsBridge.pendingFrameMemCollectors.remove(reqId)
+                }
             }
 
             override fun resetMemoryEngine() {

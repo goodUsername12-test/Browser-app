@@ -156,6 +156,30 @@ private class FableHybridJsBridge(
         runCatching { tab.hybridStorageVaultWrite?.invoke(host, jsonStr) }
     }
 
+    @JavascriptInterface
+    fun readSiteRestorePayload(origin: String?, token: String?): String {
+        if (tab.isIncognito || tab.isSuper || origin.isNullOrBlank() || !bridgeAuthorized(token)) return ""
+        return runCatching { tab.hybridSiteRestoreRead?.invoke(origin).orEmpty() }.getOrDefault("")
+    }
+
+    @JavascriptInterface
+    fun writeSiteSnapshot(origin: String?, jsonStr: String?, token: String?) {
+        if (tab.isIncognito || tab.isSuper || origin.isNullOrBlank() || jsonStr.isNullOrBlank() || !bridgeAuthorized(token)) return
+        runCatching { tab.hybridSiteSnapshotWrite?.invoke(origin, jsonStr) }
+    }
+
+    @JavascriptInterface
+    fun readSavedLogin(host: String?, token: String?): String {
+        if (host.isNullOrBlank() || !bridgeAuthorized(token)) return ""
+        return runCatching { tab.hybridSavedLoginRead?.invoke(host).orEmpty() }.getOrDefault("")
+    }
+
+    @JavascriptInterface
+    fun saveSiteLogin(origin: String?, username: String?, password: String?, token: String?) {
+        if (origin.isNullOrBlank() || password.isNullOrBlank() || !bridgeAuthorized(token)) return
+        runCatching { tab.hybridSavedLoginSave?.invoke(origin, username.orEmpty(), password) }
+    }
+
     private data class StreamingJsDownload(
         val file: java.io.File,
         val out: java.io.BufferedOutputStream,
@@ -1134,6 +1158,66 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                         com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(wv, freshBoot)
                         wv.evaluateJavascript(resetJs, null)
                     }
+                }
+            }
+
+            override suspend fun exportSiteStorage(): String {
+                val js = """
+                (function() {
+                    try {
+                        var orig = location.origin || "";
+                        if (!orig || orig === "null") return "";
+                        var ls = {}, ss = {};
+                        var c1 = 0, c2 = 0;
+                        for (var i = 0; i < localStorage.length && c1 < 200; i++) {
+                            var k = localStorage.key(i);
+                            if (!k || k.indexOf("__fable_") === 0) continue;
+                            var v = localStorage.getItem(k);
+                            if (typeof v === "string" && v.length <= 32768) { ls[k] = v; c1++; }
+                        }
+                        for (var j = 0; j < sessionStorage.length && c2 < 100; j++) {
+                            var k2 = sessionStorage.key(j);
+                            if (!k2 || k2.indexOf("__fable_") === 0) continue;
+                            var v2 = sessionStorage.getItem(k2);
+                            if (typeof v2 === "string" && v2.length <= 32768) { ss[k2] = v2; c2++; }
+                        }
+                        if (c1 === 0 && c2 === 0) return "";
+                        return JSON.stringify({ origin: orig, ls: ls, ss: ss });
+                    } catch (_) { return ""; }
+                })();
+                """.trimIndent()
+                return kotlinx.coroutines.withTimeoutOrNull(4_000L) {
+                    kotlinx.coroutines.suspendCancellableCoroutine<String> { cont ->
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            runCatching {
+                                wv.evaluateJavascript(js) { raw ->
+                                    if (!cont.isActive) return@evaluateJavascript
+                                    val unquoted = if (raw.isNullOrBlank() || raw == "null") "" else {
+                                        runCatching { org.json.JSONTokener(raw).nextValue()?.toString() }.getOrNull().orEmpty()
+                                    }
+                                    cont.resumeWith(Result.success(unquoted))
+                                }
+                            }.onFailure {
+                                if (cont.isActive) cont.resumeWith(Result.success(""))
+                            }
+                        }
+                    }
+                }.orEmpty()
+            }
+
+            override fun applyRestoredSiteStorage(jsonPayload: String) {
+                val q = org.json.JSONObject.quote(jsonPayload)
+                val js = """
+                (function() {
+                    try {
+                        var d = JSON.parse($q);
+                        if (d.ls) { Object.keys(d.ls).forEach(function(k) { if (typeof d.ls[k] === "string") localStorage.setItem(k, d.ls[k]); }); }
+                        if (d.ss) { Object.keys(d.ss).forEach(function(k) { if (typeof d.ss[k] === "string") sessionStorage.setItem(k, d.ss[k]); }); }
+                    } catch (_) {}
+                })();
+                """.trimIndent()
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    runCatching { wv.evaluateJavascript(js, null) }
                 }
             }
 

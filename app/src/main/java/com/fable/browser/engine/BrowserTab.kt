@@ -117,6 +117,10 @@ class BrowserTab(
     @Volatile var hybridExternalUrlHandler: ((String) -> Boolean)? = null
     @Volatile var hybridStorageVaultRead: ((String) -> String)? = null
     @Volatile var hybridStorageVaultWrite: ((String, String) -> Unit)? = null
+    @Volatile var hybridSiteRestoreRead: ((String) -> String)? = null
+    @Volatile var hybridSiteSnapshotWrite: ((String, String) -> Unit)? = null
+    @Volatile var hybridSavedLoginRead: ((String) -> String)? = null
+    @Volatile var hybridSavedLoginSave: ((String, String, String) -> Unit)? = null
     @Volatile var hybridCookieSyncHandler: ((String) -> Unit)? = null
     @Volatile var hybridCookiePullHandler: ((String) -> Unit)? = null
     @Volatile var hybridTimeScaleSyncHandler: (() -> Unit)? = null

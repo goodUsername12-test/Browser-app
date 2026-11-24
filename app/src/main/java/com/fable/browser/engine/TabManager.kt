@@ -88,6 +88,9 @@ class TabManager @Inject constructor(
     private val gameAccountVaultPrefs by lazy {
         appContext.getSharedPreferences("fable_game_account_vault", android.content.Context.MODE_PRIVATE)
     }
+    private val backupSiteStoragePrefs by lazy {
+        appContext.getSharedPreferences("fable_backup_site_storage", android.content.Context.MODE_PRIVATE)
+    }
 
     private fun saveTabHybridState(url: String, manualOverride: Boolean?) {
         if (!settings.hybridPersistTabMode) return
@@ -368,8 +371,61 @@ class TabManager @Inject constructor(
             existing.add(entry.url)
             count++
         }
-        if (count > 0) schedulePersist()
+        if (count > 0) {
+            val active = activeTab
+            if (active == null || !active.url.value.startsWith("http", ignoreCase = true)) {
+                val firstRestored = _tabs.value.firstOrNull { !it.isIncognito && it.url.value.startsWith("http", ignoreCase = true) }
+                if (firstRestored != null) selectTab(firstRestored.id)
+            }
+            schedulePersist()
+        }
         return count
+    }
+
+    suspend fun exportOpenBlinkSiteStorage(): org.json.JSONObject {
+        val out = org.json.JSONObject()
+        val snap = _tabs.value.filter { !it.isIncognito && !it.isSuper }
+        for (tab in snap) {
+            val ctrl = tab.hybridController ?: continue
+            val raw = runCatching { ctrl.exportSiteStorage() }.getOrDefault("")
+            if (raw.length > 2) {
+                runCatching {
+                    val obj = org.json.JSONObject(raw)
+                    val orig = obj.optString("origin")
+                    if (orig.startsWith("http", ignoreCase = true)) {
+                        val payload = org.json.JSONObject()
+                        payload.put("ls", obj.optJSONObject("ls") ?: org.json.JSONObject())
+                        payload.put("ss", obj.optJSONObject("ss") ?: org.json.JSONObject())
+                        out.put(orig, payload)
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    fun applyRestoredSiteStorageToOpenBlinkTabs(siteStorage: org.json.JSONObject) {
+        val snap = _tabs.value.filter { !it.isIncognito && !it.isSuper }
+        for (tab in snap) {
+            val ctrl = tab.hybridController ?: continue
+            val u = tab.url.value
+            val orig = runCatching {
+                val parsed = android.net.Uri.parse(u)
+                val sch = parsed.scheme
+                val host = parsed.host
+                val port = parsed.port
+                if (!sch.isNullOrBlank() && !host.isNullOrBlank()) {
+                    if (port > 0) "$sch://$host:$port" else "$sch://$host"
+                } else ""
+            }.getOrDefault("")
+            if (orig.isNotBlank()) {
+                val payload = siteStorage.optJSONObject(orig)
+                if (payload != null) {
+                    ctrl.applyRestoredSiteStorage(payload.toString())
+                    backupSiteStoragePrefs.edit().remove("pending_$orig").apply()
+                }
+            }
+        }
     }
 
     fun persist() {
@@ -718,6 +774,45 @@ class TabManager @Inject constructor(
                 val canonical = UrlUtils.registrableDomain(originHost) ?: originHost.lowercase().removePrefix("www.")
                 val key = if (originHost.startsWith("staging.", ignoreCase = true)) "staging.$canonical" else canonical
                 gameAccountVaultPrefs.edit().putString("ls_$key", jsonPayload).apply()
+            }
+        }
+        tab.hybridSiteRestoreRead = { origin ->
+            if (tab.isIncognito || tab.isSuper || origin.isBlank()) {
+                ""
+            } else {
+                val pending = backupSiteStoragePrefs.getBoolean("pending_$origin", false)
+                if (pending) {
+                    val payload = backupSiteStoragePrefs.getString("site_$origin", "").orEmpty()
+                    backupSiteStoragePrefs.edit().remove("pending_$origin").apply()
+                    payload
+                } else {
+                    ""
+                }
+            }
+        }
+        tab.hybridSiteSnapshotWrite = { origin, jsonPayload ->
+            if (!tab.isIncognito && !tab.isSuper && origin.isNotBlank() && jsonPayload.length in 3..524288) {
+                backupSiteStoragePrefs.edit().putString("site_$origin", jsonPayload).apply()
+            }
+        }
+        tab.hybridSavedLoginRead = { host ->
+            if (!passwordManager.canFill(tab.isIncognito)) {
+                ""
+            } else {
+                val login = passwordManager.store.forDomain(host).firstOrNull()
+                if (login != null) {
+                    org.json.JSONObject()
+                        .put("username", login.username)
+                        .put("password", login.password)
+                        .toString()
+                } else {
+                    ""
+                }
+            }
+        }
+        tab.hybridSavedLoginSave = { origin, username, password ->
+            if (passwordManager.canSave(origin, tab.isIncognito) && password.isNotBlank()) {
+                passwordManager.store.upsert(null, origin, origin, null, username, password)
             }
         }
         tab.hybridTimeScaleSyncHandler = {

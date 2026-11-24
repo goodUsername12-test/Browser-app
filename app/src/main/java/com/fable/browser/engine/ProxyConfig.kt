@@ -148,6 +148,78 @@ class ProxyConfig @Inject constructor(
         return result ?: "{\"ok\":false,\"error\":\"GeckoView page scan timed out\"}"
     }
 
+    @Volatile private var pendingBackupStorage: JSONObject? = null
+
+    suspend fun exportAllGeckoCookies(): JSONArray {
+        val p = port ?: return JSONArray()
+        val reqId = java.util.UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<String>()
+        pendingMemCalls[reqId] = deferred
+        scope.launch {
+            runCatching {
+                p.postMessage(JSONObject().apply {
+                    put("type", "backup-export-cookies")
+                    put("reqId", reqId)
+                })
+            }.onFailure { pendingMemCalls.remove(reqId)?.complete("[]") }
+        }
+        val raw = withTimeoutOrNull(8_000L) { deferred.await() }
+        pendingMemCalls.remove(reqId)
+        return runCatching { JSONArray(raw ?: "[]") }.getOrDefault(JSONArray())
+    }
+
+    suspend fun restoreGeckoCookies(cookies: JSONArray): Int {
+        if (cookies.length() == 0) return 0
+        val p = port ?: return 0
+        val reqId = java.util.UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<String>()
+        pendingMemCalls[reqId] = deferred
+        scope.launch {
+            runCatching {
+                p.postMessage(JSONObject().apply {
+                    put("type", "backup-restore-cookies")
+                    put("reqId", reqId)
+                    put("cookies", cookies)
+                })
+            }.onFailure { pendingMemCalls.remove(reqId)?.complete("0") }
+        }
+        val raw = withTimeoutOrNull(12_000L) { deferred.await() }
+        pendingMemCalls.remove(reqId)
+        return raw?.trim()?.toIntOrNull() ?: 0
+    }
+
+    suspend fun exportOpenGeckoStorage(): JSONObject {
+        val p = port ?: return JSONObject()
+        val reqId = java.util.UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<String>()
+        pendingMemCalls[reqId] = deferred
+        scope.launch {
+            runCatching {
+                p.postMessage(JSONObject().apply {
+                    put("type", "backup-export-storage")
+                    put("reqId", reqId)
+                })
+            }.onFailure { pendingMemCalls.remove(reqId)?.complete("{}") }
+        }
+        val raw = withTimeoutOrNull(8_000L) { deferred.await() }
+        pendingMemCalls.remove(reqId)
+        return runCatching { JSONObject(raw ?: "{}") }.getOrDefault(JSONObject())
+    }
+
+    fun pushPendingBackupSiteStorage(origins: JSONObject) {
+        pendingBackupStorage = if (origins.length() > 0) origins else null
+        val p = port ?: return
+        if (origins.length() == 0) return
+        scope.launch {
+            runCatching {
+                p.postMessage(JSONObject().apply {
+                    put("type", "backup-set-pending-storage")
+                    put("origins", origins)
+                })
+            }
+        }
+    }
+
     fun shouldBlockHybrid(url: String, docHost: String?, adBlockActive: Boolean): Boolean {
         if (!adBlockActive) return false
         return contentBlocker.shouldBlock(url, docHost)
@@ -427,6 +499,16 @@ class ProxyConfig @Inject constructor(
             }
         })
         port.postMessage(configJson())
+        pendingBackupStorage?.let { pending ->
+            if (pending.length() > 0) {
+                runCatching {
+                    port.postMessage(JSONObject().apply {
+                        put("type", "backup-set-pending-storage")
+                        put("origins", pending)
+                    })
+                }
+            }
+        }
         scope.launch {
             sendRules()
             maybeAutoUpdate()

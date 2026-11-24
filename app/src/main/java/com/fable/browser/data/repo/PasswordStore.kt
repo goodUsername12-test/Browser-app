@@ -169,13 +169,50 @@ class PasswordStore @Inject constructor(
     fun exportJson(): JSONArray = JSONArray().apply { all().forEach { put(it.toJson()) } }
 
     fun importJson(arr: JSONArray): Int {
+        ensureLoaded()
         var count = 0
-        for (i in 0 until arr.length()) {
-            val item = arr.optJSONObject(i)?.let(SavedLogin::fromJson) ?: continue
-            upsert(item.guid, item.origin, item.formActionOrigin, item.httpRealm, item.username, item.password)
-            count++
+        synchronized(lock) {
+            val list = _logins.value.toMutableList()
+            val now = System.currentTimeMillis()
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i)?.let(SavedLogin::fromJson) ?: continue
+                val host = hostOf(item.origin)
+                val idx = list.indexOfFirst { it.guid == item.guid || (it.host == host && it.username == item.username) }
+                if (idx >= 0) {
+                    list[idx] = list[idx].copy(
+                        origin = item.origin,
+                        formActionOrigin = item.formActionOrigin ?: list[idx].formActionOrigin,
+                        httpRealm = item.httpRealm ?: list[idx].httpRealm,
+                        username = item.username,
+                        password = item.password
+                    )
+                } else {
+                    list.add(
+                        SavedLogin(
+                            guid = item.guid.takeIf { g -> list.none { it.guid == g } } ?: UUID.randomUUID().toString(),
+                            origin = item.origin,
+                            formActionOrigin = item.formActionOrigin,
+                            httpRealm = item.httpRealm,
+                            username = item.username,
+                            password = item.password,
+                            created = if (item.created > 0L) item.created else now,
+                            lastUsed = item.lastUsed,
+                            timesUsed = item.timesUsed
+                        )
+                    )
+                }
+                count++
+            }
+            commitSync(list)
         }
         return count
+    }
+
+    private fun commitSync(list: List<SavedLogin>) {
+        val sorted = list.sortedBy { it.host }
+        _logins.value = sorted
+        val text = JSONArray().apply { sorted.forEach { put(it.toJson()) } }.toString()
+        secureStore.write(FILE, text)
     }
 
     private fun commit(list: List<SavedLogin>) {

@@ -19,6 +19,8 @@ interface HybridBlinkController {
     fun applyTimeScale(enabled: Boolean, rate: Float, css: Boolean, media: Boolean, workers: Boolean)
     suspend fun runMemoryCommand(cmdJson: String): String
     fun resetMemoryEngine()
+    suspend fun exportSiteStorage(): String
+    fun applyRestoredSiteStorage(jsonPayload: String)
     fun exitFullScreen()
 }
 
@@ -99,6 +101,8 @@ object HybridEngineBridge {
             put("stealthLowDetect", decision.stealthLowDetectability)
             put("isolateBridge", settings.isolateNativeBridge)
             put("bridgeToken", bridgeToken)
+            put("passwordAutofill", settings.passwordAutofill && (!isIncognito || settings.passwordIncognito))
+            put("passwordSave", settings.passwordSave && (!isIncognito || settings.passwordIncognito))
             put("fpCanvas", applyIdentity && decision.fpCanvas)
             put("fpWebGlVendor", applyIdentity && decision.fpWebGlVendor)
             put("fpWebGlLimits", applyIdentity && decision.fpWebGlLimits)
@@ -202,6 +206,126 @@ object HybridEngineBridge {
                     });
                 } catch (_) {}
             }
+
+            if (!CFG.isIncognito && !CFG.isSuper) try {
+                const curOrigin = (location.origin || "");
+                if (curOrigin && curOrigin !== "null" && window.FableHybridBridge) {
+                    if (typeof window.FableHybridBridge.readSiteRestorePayload === "function") {
+                        const rawRest = window.FableHybridBridge.readSiteRestorePayload(curOrigin, __fableTok);
+                        if (rawRest && rawRest.length > 2) {
+                            const parsedRest = JSON.parse(rawRest);
+                            if (parsedRest.ls && typeof parsedRest.ls === "object") {
+                                const lsKeys = Object.keys(parsedRest.ls);
+                                for (let i = 0; i < lsKeys.length; i++) {
+                                    const k = lsKeys[i];
+                                    if (typeof parsedRest.ls[k] === "string") localStorage.setItem(k, parsedRest.ls[k]);
+                                }
+                            }
+                            if (parsedRest.ss && typeof parsedRest.ss === "object") {
+                                const ssKeys = Object.keys(parsedRest.ss);
+                                for (let j = 0; j < ssKeys.length; j++) {
+                                    const k2 = ssKeys[j];
+                                    if (typeof parsedRest.ss[k2] === "string") sessionStorage.setItem(k2, parsedRest.ss[k2]);
+                                }
+                            }
+                        }
+                    }
+                    if (typeof window.FableHybridBridge.writeSiteSnapshot === "function") {
+                        const snapSiteNow = function() {
+                            try {
+                                const ls = {}, ss = {};
+                                let c1 = 0, c2 = 0;
+                                for (let i = 0; i < localStorage.length && c1 < 160; i++) {
+                                    const k = localStorage.key(i);
+                                    if (!k || k.indexOf("__fable_") === 0) continue;
+                                    const v = localStorage.getItem(k);
+                                    if (typeof v === "string" && v.length <= 24576) { ls[k] = v; c1++; }
+                                }
+                                for (let j = 0; j < sessionStorage.length && c2 < 80; j++) {
+                                    const k2 = sessionStorage.key(j);
+                                    if (!k2 || k2.indexOf("__fable_") === 0) continue;
+                                    const v2 = sessionStorage.getItem(k2);
+                                    if (typeof v2 === "string" && v2.length <= 24576) { ss[k2] = v2; c2++; }
+                                }
+                                if (c1 > 0 || c2 > 0) {
+                                    window.FableHybridBridge.writeSiteSnapshot(curOrigin, JSON.stringify({ ls, ss }), __fableTok);
+                                }
+                            } catch (_) {}
+                        };
+                        window.addEventListener("pagehide", snapSiteNow, { passive: true });
+                        document.addEventListener("visibilitychange", function() {
+                            if (document.visibilityState === "hidden") snapSiteNow();
+                        }, { passive: true });
+                        window.addEventListener("load", function() { window.setTimeout(snapSiteNow, 1500); }, { once: true, passive: true });
+                    }
+                }
+            } catch (_) {}
+
+            if ((CFG.passwordAutofill || CFG.passwordSave) && window.FableHybridBridge) try {
+                const setNativeInput = function(el, val) {
+                    try {
+                        const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+                        if (proto && proto.set) proto.set.call(el, val);
+                        else el.value = val;
+                        el.dispatchEvent(new Event("input", { bubbles: true }));
+                        el.dispatchEvent(new Event("change", { bubbles: true }));
+                    } catch (_) {}
+                };
+                const findUserInput = function(pwEl) {
+                    const form = pwEl.form || pwEl.closest("form") || document;
+                    const inputs = form.querySelectorAll("input");
+                    let best = null;
+                    for (let i = 0; i < inputs.length; i++) {
+                        const inp = inputs[i];
+                        if (inp === pwEl) break;
+                        const t = (inp.type || "text").toLowerCase();
+                        if (t === "text" || t === "email" || t === "tel" || t === "username") best = inp;
+                    }
+                    return best;
+                };
+                if (CFG.passwordAutofill && typeof window.FableHybridBridge.readSavedLogin === "function") {
+                    let filledOnce = false;
+                    const tryAutofill = function() {
+                        if (filledOnce) return;
+                        try {
+                            const pwEl = document.querySelector("input[type='password']");
+                            if (!pwEl) return;
+                            const host = (location.hostname || "").toLowerCase();
+                            if (!host) return;
+                            const raw = window.FableHybridBridge.readSavedLogin(host, __fableTok);
+                            if (!raw || raw.length < 3) return;
+                            const cred = JSON.parse(raw);
+                            if (!cred || !cred.password) return;
+                            const uEl = findUserInput(pwEl);
+                            if (uEl && !uEl.value && cred.username) setNativeInput(uEl, cred.username);
+                            if (!pwEl.value) setNativeInput(pwEl, cred.password);
+                            filledOnce = true;
+                        } catch (_) {}
+                    };
+                    if (document.readyState === "loading") {
+                        document.addEventListener("DOMContentLoaded", function() { window.setTimeout(tryAutofill, 250); }, { once: true });
+                    } else {
+                        window.setTimeout(tryAutofill, 250);
+                    }
+                    window.addEventListener("load", function() { window.setTimeout(tryAutofill, 500); }, { once: true, passive: true });
+                }
+                if (CFG.passwordSave && typeof window.FableHybridBridge.saveSiteLogin === "function") {
+                    document.addEventListener("submit", function(ev) {
+                        try {
+                            const form = ev && ev.target ? ev.target : null;
+                            if (!form || !form.querySelector) return;
+                            const pwEl = form.querySelector("input[type='password']");
+                            if (!pwEl || !pwEl.value) return;
+                            const uEl = findUserInput(pwEl);
+                            const user = uEl && uEl.value ? String(uEl.value).trim() : "";
+                            const pass = String(pwEl.value);
+                            if (pass.length > 0 && location.origin && location.origin !== "null") {
+                                window.FableHybridBridge.saveSiteLogin(location.origin, user, pass, __fableTok);
+                            }
+                        } catch (_) {}
+                    }, true);
+                }
+            } catch (_) {}
 
             // 0a. Persistent Game Account Storage Vault (prevents Bloxd / 3D games from ever resetting to a new account!)
             if (CFG.isGame && !CFG.isIncognito && !CFG.isSuper) try {

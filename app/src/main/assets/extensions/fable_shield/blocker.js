@@ -704,6 +704,14 @@ function onNativeMessage(msg) {
     syncCookiesToGecko(msg.url, msg.cookieHeader);
   } else if (msg.type === "pull-gecko-cookies") {
     pullGeckoCookies(msg.url);
+  } else if (msg.type === "backup-export-cookies") {
+    handleBackupExportCookies(msg.reqId);
+  } else if (msg.type === "backup-restore-cookies") {
+    handleBackupRestoreCookies(msg.reqId, msg.cookies);
+  } else if (msg.type === "backup-export-storage") {
+    handleBackupExportStorage(msg.reqId);
+  } else if (msg.type === "backup-set-pending-storage") {
+    handleBackupSetPendingStorage(msg.origins);
   } else if (msg.type === "rules") {
     rules = {
       blockedDomains: new Set(msg.blockedDomains || []),
@@ -1741,3 +1749,161 @@ browser.runtime.onMessage.addListener((msg, sender) => {
 });
 
 connectNative();
+
+
+const pendingBackupSiteStorage = Object.create(null);
+let backupStorageListenerAttached = false;
+
+async function handleBackupExportCookies(reqId) {
+  try {
+    if (!browser.cookies || !browser.cookies.getAll) {
+      postNative({ type: "mem-res", reqId: String(reqId || ""), payload: "[]" });
+      return;
+    }
+    const list = await browser.cookies.getAll({});
+    const out = [];
+    for (const c of (list || [])) {
+      if (!c || !c.name || !c.domain) continue;
+      out.push({
+        name: c.name,
+        value: c.value || "",
+        domain: c.domain,
+        path: c.path || "/",
+        secure: c.secure === true,
+        httpOnly: c.httpOnly === true,
+        hostOnly: c.hostOnly === true,
+        sameSite: c.sameSite || "no_restriction",
+        expirationDate: typeof c.expirationDate === "number" ? c.expirationDate : null
+      });
+    }
+    postNative({ type: "mem-res", reqId: String(reqId || ""), payload: JSON.stringify(out) });
+  } catch (_) {
+    postNative({ type: "mem-res", reqId: String(reqId || ""), payload: "[]" });
+  }
+}
+
+async function handleBackupRestoreCookies(reqId, cookies) {
+  let restored = 0;
+  try {
+    if (browser.cookies && browser.cookies.set && Array.isArray(cookies)) {
+      for (const c of cookies) {
+        if (!c || !c.name || !c.domain) continue;
+        const cleanDomain = String(c.domain).replace(/^\.+/, "");
+        if (!cleanDomain) continue;
+        const path = c.path || "/";
+        const scheme = c.secure ? "https://" : "http://";
+        const details = {
+          url: scheme + cleanDomain + path,
+          name: String(c.name),
+          value: String(c.value || ""),
+          path: path,
+          secure: c.secure === true,
+          httpOnly: c.httpOnly === true
+        };
+        if (c.hostOnly !== true) details.domain = String(c.domain);
+        if (typeof c.expirationDate === "number" && c.expirationDate > Date.now() / 1000) {
+          details.expirationDate = c.expirationDate;
+        }
+        try {
+          await browser.cookies.set(details);
+          restored++;
+        } catch (_) {
+          try {
+            delete details.domain;
+            await browser.cookies.set(details);
+            restored++;
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+  postNative({ type: "mem-res", reqId: String(reqId || ""), payload: String(restored) });
+}
+
+async function handleBackupExportStorage(reqId) {
+  const result = Object.create(null);
+  try {
+    if (browser.tabs && browser.tabs.query && browser.tabs.executeScript) {
+      const tabs = await browser.tabs.query({});
+      const code = `(() => {
+        try {
+          const orig = location.origin || "";
+          if (!orig || orig === "null") return null;
+          const ls = {}, ss = {};
+          let c1 = 0, c2 = 0;
+          for (let i = 0; i < localStorage.length && c1 < 200; i++) {
+            const k = localStorage.key(i);
+            if (!k || k.indexOf("__fable_") === 0) continue;
+            const v = localStorage.getItem(k);
+            if (typeof v === "string" && v.length <= 32768) { ls[k] = v; c1++; }
+          }
+          for (let j = 0; j < sessionStorage.length && c2 < 100; j++) {
+            const k2 = sessionStorage.key(j);
+            if (!k2 || k2.indexOf("__fable_") === 0) continue;
+            const v2 = sessionStorage.getItem(k2);
+            if (typeof v2 === "string" && v2.length <= 32768) { ss[k2] = v2; c2++; }
+          }
+          if (c1 === 0 && c2 === 0) return null;
+          return { origin: orig, ls, ss };
+        } catch (_) { return null; }
+      })()`;
+      for (const tab of (tabs || [])) {
+        if (!tab || tab.id === undefined || tab.incognito || !tab.url || !/^https?:\/\//i.test(tab.url)) continue;
+        try {
+          const arr = await browser.tabs.executeScript(tab.id, { code });
+          const item = Array.isArray(arr) && arr.length ? arr[0] : null;
+          if (item && item.origin) result[item.origin] = { ls: item.ls || {}, ss: item.ss || {} };
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  postNative({ type: "mem-res", reqId: String(reqId || ""), payload: JSON.stringify(result) });
+}
+
+async function injectBackupStorageIntoTab(tabId, url) {
+  try {
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    const orig = new URL(url).origin;
+    const data = pendingBackupSiteStorage[orig];
+    if (!data) return;
+    const payloadStr = JSON.stringify(data);
+    const code = `(() => {
+      try {
+        const d = ${payloadStr};
+        if (d.ls) { for (const [k, v] of Object.entries(d.ls)) { if (typeof v === "string") localStorage.setItem(k, v); } }
+        if (d.ss) { for (const [k, v] of Object.entries(d.ss)) { if (typeof v === "string") sessionStorage.setItem(k, v); } }
+        return true;
+      } catch (_) { return false; }
+    })()`;
+    const res = await browser.tabs.executeScript(tabId, { code, runAt: "document_start" });
+    if (Array.isArray(res) && res[0] === true) {
+      delete pendingBackupSiteStorage[orig];
+    }
+  } catch (_) {}
+}
+
+function handleBackupSetPendingStorage(origins) {
+  if (!origins || typeof origins !== "object") return;
+  for (const [k, v] of Object.entries(origins)) {
+    if (k && v && typeof v === "object") pendingBackupSiteStorage[k] = v;
+  }
+  if (!backupStorageListenerAttached && browser.tabs && browser.tabs.onUpdated) {
+    backupStorageListenerAttached = true;
+    browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      if (tab && tab.incognito) return;
+      const u = (changeInfo && changeInfo.url) || (tab && tab.url) || "";
+      if (u && (changeInfo.status === "loading" || changeInfo.status === "complete")) {
+        injectBackupStorageIntoTab(tabId, u);
+      }
+    });
+  }
+  if (browser.tabs && browser.tabs.query) {
+    browser.tabs.query({}).then((tabs) => {
+      for (const tab of (tabs || [])) {
+        if (tab && !tab.incognito && tab.id !== undefined && tab.url) {
+          injectBackupStorageIntoTab(tab.id, tab.url);
+        }
+      }
+    }).catch(() => {});
+  }
+}

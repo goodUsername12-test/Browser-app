@@ -20,6 +20,7 @@ import javax.inject.Singleton
 data class MemScanResultItem(
     val addr: String,
     val value: String,
+    val prevValue: String = "",
     val type: String = "i32",
     val kind: String = "native"
 )
@@ -61,12 +62,14 @@ data class MemoryEngineUiState(
     val hasActiveScan: Boolean = false,
     val canUndo: Boolean = false,
     val totalMatches: Int = 0,
+    val wasmCount: Int = 0,
+    val bufCount: Int = 0,
     val results: List<MemScanResultItem> = emptyList(),
     val watchList: List<MemWatchEntry> = emptyList(),
     val hex: MemHexState = MemHexState(),
     val regions: List<MemRegionItem> = emptyList(),
     val regionsTotalKb: Long = 0L,
-    val statusText: String = "Ready — choose Page & WASM or Fable Process",
+    val statusText: String = "Enter a number and tap First Scan",
     val activeEngineLabel: String = "Auto"
 )
 
@@ -164,6 +167,47 @@ class MemoryEngineManager @Inject constructor(
         }
     }
 
+    fun refreshScanResults() {
+        val st = _state.value
+        if (st.busy || !st.hasActiveScan) return
+        _state.update { it.copy(busy = true, statusText = "Refreshing values...") }
+        scope.launch {
+            val raw = when (st.scope) {
+                MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) { NativeMemoryScanner.refreshHits(150) }
+                MemScope.PAGE_WASM -> runPageCommand(JSONObject().apply {
+                    put("op", "refreshHits")
+                    put("maxReturn", 150)
+                })
+            }
+            applyScanResponse(raw, isFirst = false)
+        }
+    }
+
+    fun writeScanItem(item: MemScanResultItem, newValue: String) {
+        val curScope = _state.value.scope
+        val dt = resolveDataType(item.type, _state.value.dataType)
+        val tmp = MemWatchEntry(
+            id = "${curScope.name}|${item.addr}",
+            scope = curScope,
+            addr = item.addr,
+            label = item.addr.removePrefix("js:").takeLast(28),
+            dataType = dt,
+            currentValue = item.value,
+            originalValue = item.value
+        )
+        scope.launch {
+            val ok = writeEntry(tmp, newValue)
+            _state.update { st ->
+                st.copy(
+                    results = if (ok) st.results.map {
+                        if (it.addr == item.addr) it.copy(prevValue = it.value, value = newValue) else it
+                    } else st.results,
+                    statusText = if (ok) "Wrote ${tmp.label} = $newValue" else "Write blocked or address invalid"
+                )
+            }
+        }
+    }
+
     fun undoScan() {
         val st = _state.value
         if (st.busy || !st.canUndo) return
@@ -192,7 +236,8 @@ class MemoryEngineManager @Inject constructor(
                     canUndo = false,
                     totalMatches = 0,
                     results = emptyList(),
-                    statusText = "Scan cleared"
+                    scanType = if (it.scanType.nextOnly) MemScanType.EXACT else it.scanType,
+                    statusText = "Ready for First Scan"
                 )
             }
         }
@@ -382,13 +427,11 @@ class MemoryEngineManager @Inject constructor(
                     delay(500)
                     continue
                 }
-                // 1. Apply frozen values first
                 for (w in watches) {
                     if (w.frozen && w.frozenValue.isNotEmpty()) {
                         writeEntry(w, w.frozenValue)
                     }
                 }
-                // 2. Refresh live values
                 val pageWatches = watches.filter { it.scope == MemScope.PAGE_WASM }
                 val nativeWatches = watches.filter { it.scope == MemScope.FABLE_NATIVE }
                 val updatedMap = HashMap<String, String>()
@@ -470,18 +513,33 @@ class MemoryEngineManager @Inject constructor(
         }
         val total = obj.optInt("total", 0)
         val canUndo = obj.optBoolean("canUndo", false)
+        val wasmCnt = obj.optInt("wasmCount", 0)
+        val bufCnt = obj.optInt("bufCount", 0)
         val arr = obj.optJSONArray("items") ?: JSONArray()
         val list = ArrayList<MemScanResultItem>(arr.length())
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
+            val curVal = o.optString("val")
             list.add(
                 MemScanResultItem(
                     addr = o.optString("addr"),
-                    value = o.optString("val"),
+                    value = curVal,
+                    prevValue = o.optString("prev", curVal),
                     type = o.optString("type", _state.value.dataType.jsCode),
                     kind = o.optString("kind", if (_state.value.scope == MemScope.FABLE_NATIVE) "native" else "js")
                 )
             )
+        }
+        val curScope = _state.value.scope
+        val status = when {
+            total == 0 && curScope == MemScope.PAGE_WASM && wasmCnt == 0 ->
+                "0 matches · Reload page with CE ON to hook WASM/game memory"
+            total == 0 ->
+                "0 matches found"
+            curScope == MemScope.PAGE_WASM ->
+                "$total match${if (total == 1) "" else "es"} (${wasmCnt} WASM, ${bufCnt} buf) · change value & tap Next"
+            else ->
+                "$total match${if (total == 1) "" else "es"} (showing ${list.size}) · change value & tap Next"
         }
         _state.update {
             it.copy(
@@ -489,8 +547,10 @@ class MemoryEngineManager @Inject constructor(
                 hasActiveScan = total > 0 || !isFirst,
                 canUndo = canUndo,
                 totalMatches = total,
+                wasmCount = wasmCnt,
+                bufCount = bufCnt,
                 results = list,
-                statusText = if (total == 0) "0 matches found" else "Found $total match${if (total == 1) "" else "es"} (showing ${list.size})"
+                statusText = status
             )
         }
     }

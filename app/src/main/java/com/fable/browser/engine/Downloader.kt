@@ -297,7 +297,7 @@ class Downloader @Inject constructor(
                                     val cur = progressAtomic.addAndGet(n.toLong())
                                     val now = System.currentTimeMillis()
                                     val prevT = lastUiAtomic.get()
-                                    if (now - prevT > 400 && lastUiAtomic.compareAndSet(prevT, now)) {
+                                    if (now - prevT >= 450L && lastUiAtomic.compareAndSet(prevT, now)) {
                                         repository.updateProgress(id, cur, total)
                                         notifications.showProgress(id, target.fileName, cur, total)
                                     }
@@ -313,6 +313,7 @@ class Downloader @Inject constructor(
             if (!allOk || progressAtomic.get() != total) {
                 tmpFile.delete()
                 target.delete()
+                notifications.cancelProgress(id)
                 repository.setStatus(id, DownloadStatus.FAILED)
                 return@withContext false
             }
@@ -328,12 +329,13 @@ class Downloader @Inject constructor(
             target.finish()
             repository.updateProgress(id, total, total)
             repository.setStatus(id, DownloadStatus.COMPLETED)
-            notifications.showComplete(id, target.fileName, target.contentUri, mime)
+            notifications.showComplete(id, target.fileName, target.contentUri, mime, total)
             activityBridge.toast(context.getString(R.string.download_saved, target.locationLabel))
             true
         } catch (e: Throwable) {
             tmpFile.delete()
             target.delete()
+            notifications.cancelProgress(id)
             runCatching { repository.setStatus(id, DownloadStatus.FAILED) }
             false
         } finally {
@@ -456,18 +458,18 @@ class Downloader @Inject constructor(
             if (finished) {
                 repository.updateProgress(id, written, if (totalBytes > 0) maxOf(totalBytes, written) else written)
                 repository.setStatus(id, DownloadStatus.COMPLETED)
-                notifications.showComplete(id, target.fileName, target.contentUri, mimeType)
+                notifications.showComplete(id, target.fileName, target.contentUri, mimeType, written)
                 activityBridge.toast(context.getString(R.string.download_saved, target.locationLabel))
             } else {
                 repository.setStatus(id, DownloadStatus.FAILED)
                 target.delete()
-                reportFailure(target.fileName)
+                notifications.cancelProgress(id); reportFailure(target.fileName)
             }
         } catch (e: Throwable) {
             Log.w(TAG, "download failed", e)
             runCatching { repository.setStatus(id, DownloadStatus.FAILED) }
             target.delete()
-            reportFailure(target.fileName)
+            notifications.cancelProgress(id); reportFailure(target.fileName)
         } finally {
             _activeCount.update { (it - 1).coerceAtLeast(0) }
         }
@@ -489,7 +491,7 @@ class Downloader @Inject constructor(
                         sink.write(buffer, 0, read)
                         written += read
                         val now = System.currentTimeMillis()
-                        if (written - lastNotify > 512 * 1024 && now - lastTime > 400) {
+                        if (now - lastTime >= 450L) {
                             lastNotify = written
                             lastTime = now
                             repository.updateProgress(id, written, totalBytes)

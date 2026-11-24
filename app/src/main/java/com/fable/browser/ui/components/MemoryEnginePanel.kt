@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -65,10 +64,6 @@ import com.fable.browser.engine.MemoryEngineUiState
 import com.fable.browser.engine.WebsiteMemoryEngine
 import kotlin.math.roundToInt
 
-/**
- * Shared mobile Cheat Engine panel rendered at real scaled dp/sp metrics
- * for BOTH the live floating draggable browser panel AND Settings live size preview.
- */
 @Composable
 fun MemoryEnginePanel(
     state: MemoryEngineUiState,
@@ -94,13 +89,16 @@ fun MemoryEnginePanel(
     modifier: Modifier = Modifier,
     dragHandleModifier: Modifier = Modifier,
     maxWidthDp: Dp = 360.dp,
-    previewMode: Boolean = false
+    previewMode: Boolean = false,
+    onRefreshScan: () -> Unit = {},
+    onQuickEditResult: (MemScanResultItem, String) -> Unit = { _, _ -> }
 ) {
     val s = WebsiteMemoryEngine.clampPanelScalePct(scalePct) / 100f
     val corner = (14f * s).coerceIn(8f, 22f).dp
     val accent = Color(0xFF10B981)
-    val bg = Color(0xF20B1220)
+    val bg = Color(0xF50B1220)
     val cardBg = Color(0xFF162033)
+    val minBtnH = (34f * s).coerceIn(28f, 46f).dp
 
     if (!expanded) {
         val frozenCount = state.watchList.count { it.frozen }
@@ -116,17 +114,17 @@ fun MemoryEnginePanel(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(
-                    horizontal = (8f * s).coerceIn(5f, 15f).dp,
-                    vertical = (5f * s).coerceIn(3f, 11f).dp
+                    horizontal = (9f * s).coerceIn(6f, 15f).dp,
+                    vertical = (6f * s).coerceIn(4f, 11f).dp
                 )
             ) {
                 Icon(
                     imageVector = Icons.Filled.DragIndicator,
                     contentDescription = "Move Memory Engine",
                     tint = Color(0xFF94A3B8),
-                    modifier = Modifier.size((15f * s).coerceIn(11f, 24f).dp)
+                    modifier = Modifier.size((16f * s).coerceIn(12f, 24f).dp)
                 )
-                Spacer(Modifier.width((3f * s).dp))
+                Spacer(Modifier.width((4f * s).dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.clickable(onClick = onToggleExpanded)
@@ -134,17 +132,17 @@ fun MemoryEnginePanel(
                     Text(
                         text = pillLabel,
                         color = accent,
-                        fontSize = (12f * s).coerceIn(8.5f, 19f).sp,
+                        fontSize = (12.5f * s).coerceIn(9f, 19f).sp,
                         fontWeight = FontWeight.Bold
                     )
                     Icon(
                         imageVector = Icons.Filled.ExpandMore,
                         contentDescription = "Expand Memory Engine",
                         tint = Color(0xFFCBD5E1),
-                        modifier = Modifier.size((15f * s).coerceIn(11f, 24f).dp)
+                        modifier = Modifier.size((16f * s).coerceIn(12f, 24f).dp)
                     )
                 }
-                Spacer(Modifier.width((5f * s).dp))
+                Spacer(Modifier.width((6f * s).dp))
                 Surface(
                     shape = RoundedCornerShape((7f * s).coerceIn(4f, 11f).dp),
                     color = Color(0xFFDC2626),
@@ -153,11 +151,11 @@ fun MemoryEnginePanel(
                     Text(
                         text = "OFF",
                         color = Color.White,
-                        fontSize = (9.5f * s).coerceIn(7f, 15f).sp,
+                        fontSize = (10f * s).coerceIn(7.5f, 15f).sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(
-                            horizontal = (6f * s).coerceIn(4f, 10f).dp,
-                            vertical = (2.5f * s).coerceIn(1.5f, 5f).dp
+                            horizontal = (8f * s).coerceIn(5f, 12f).dp,
+                            vertical = (4f * s).coerceIn(2.5f, 7f).dp
                         )
                     )
                 }
@@ -166,19 +164,23 @@ fun MemoryEnginePanel(
         return
     }
 
-    var activeTab by remember { mutableIntStateOf(0) } // 0=Scan, 1=Watch, 2=Hex, 3=Map
+    var activeTab by remember { mutableIntStateOf(0) }
     var query1 by remember { mutableStateOf("") }
     var query2 by remember { mutableStateOf("") }
+    var showTypePicker by remember { mutableStateOf(false) }
+    var showModePicker by remember { mutableStateOf(false) }
+    var editingScanAddr by remember { mutableStateOf<String?>(null) }
+    var scanEditDraft by remember { mutableStateOf("") }
     var editingWatchId by remember { mutableStateOf<String?>(null) }
     var editDraft by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
 
-    val panelWidth = (292f * s).dp.coerceAtMost(maxWidthDp)
-    val hPad = (9f * s).coerceIn(6f, 15f).dp
-    val vPad = (7f * s).coerceIn(5f, 12f).dp
-    val fsTitle = (12.5f * s).coerceIn(9f, 19f).sp
-    val fsBody = (10.5f * s).coerceIn(8f, 16f).sp
-    val fsSmall = (9f * s).coerceIn(7f, 14f).sp
+    val panelWidth = (318f * s).dp.coerceAtMost(maxWidthDp)
+    val hPad = (10f * s).coerceIn(7f, 16f).dp
+    val vPad = (8f * s).coerceIn(6f, 13f).dp
+    val fsTitle = (13f * s).coerceIn(9.5f, 19f).sp
+    val fsBody = (11.5f * s).coerceIn(8.5f, 16f).sp
+    val fsSmall = (10f * s).coerceIn(7.5f, 14.5f).sp
 
     Surface(
         shape = RoundedCornerShape(corner),
@@ -189,20 +191,20 @@ fun MemoryEnginePanel(
             .border(1.dp, accent, RoundedCornerShape(corner))
     ) {
         Column(modifier = Modifier.padding(horizontal = hPad, vertical = vPad)) {
-            // 1. Draggable Header
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(min = minBtnH)
                     .then(dragHandleModifier)
             ) {
                 Icon(
                     imageVector = Icons.Filled.DragIndicator,
                     contentDescription = "Drag Memory Engine",
                     tint = Color(0xFF94A3B8),
-                    modifier = Modifier.size((16f * s).coerceIn(11f, 24f).dp)
+                    modifier = Modifier.size((18f * s).coerceIn(13f, 26f).dp)
                 )
-                Spacer(Modifier.width((3f * s).dp))
+                Spacer(Modifier.width((4f * s).dp))
                 Text(
                     text = "Memory CE · ${state.scope.label}",
                     color = accent,
@@ -213,62 +215,65 @@ fun MemoryEnginePanel(
                     modifier = Modifier.weight(1f)
                 )
                 Surface(
-                    shape = RoundedCornerShape((7f * s).coerceIn(4f, 11f).dp),
+                    shape = RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp),
                     color = cardBg,
-                    modifier = Modifier.clickable(onClick = onToggleExpanded)
+                    modifier = Modifier
+                        .heightIn(min = (30f * s).coerceIn(24f, 40f).dp)
+                        .clickable(onClick = onToggleExpanded)
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.ExpandLess,
-                        contentDescription = "Hide to mini pill",
-                        tint = Color(0xFFCBD5E1),
-                        modifier = Modifier
-                            .padding((3f * s).coerceIn(2f, 6f).dp)
-                            .size((14f * s).coerceIn(10f, 22f).dp)
-                    )
-                }
-                Spacer(Modifier.width((5f * s).dp))
-                Surface(
-                    shape = RoundedCornerShape((7f * s).coerceIn(4f, 11f).dp),
-                    color = Color(0xFFDC2626),
-                    modifier = Modifier.clickable(enabled = !previewMode, onClick = onTurnOff)
-                ) {
-                    Text(
-                        text = "OFF",
-                        color = Color.White,
-                        fontSize = fsSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(
-                            horizontal = (7f * s).coerceIn(4f, 11f).dp,
-                            vertical = (3f * s).coerceIn(1.5f, 5f).dp
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (8f * s).dp)) {
+                        Icon(
+                            imageVector = Icons.Filled.ExpandLess,
+                            contentDescription = "Hide to mini pill",
+                            tint = Color(0xFFCBD5E1),
+                            modifier = Modifier.size((16f * s).coerceIn(12f, 24f).dp)
                         )
-                    )
+                    }
+                }
+                Spacer(Modifier.width((6f * s).dp))
+                Surface(
+                    shape = RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp),
+                    color = Color(0xFFDC2626),
+                    modifier = Modifier
+                        .heightIn(min = (30f * s).coerceIn(24f, 40f).dp)
+                        .clickable(enabled = !previewMode, onClick = onTurnOff)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (10f * s).dp)) {
+                        Text(
+                            text = "OFF",
+                            color = Color.White,
+                            fontSize = fsSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.height((5f * s).dp))
+            Spacer(Modifier.height((6f * s).dp))
 
-            // 2. Scope switcher (Page & WASM vs Fable Native Process) + 4 CE Tabs
             Row(
-                horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
+                horizontalArrangement = Arrangement.spacedBy((5f * s).dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 MemScope.entries.forEach { sc ->
                     val sel = state.scope == sc
                     Surface(
-                        shape = RoundedCornerShape((7f * s).coerceIn(4f, 10f).dp),
+                        shape = RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp),
                         color = if (sel) Color(0xFF065F46) else cardBg,
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = minBtnH)
                             .clickable(enabled = !previewMode) { onSelectScope(sc) }
                     ) {
-                        Text(
-                            text = sc.label,
-                            color = if (sel) Color(0xFFA7F3D0) else Color(0xFFCBD5E1),
-                            fontSize = fsSmall,
-                            fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                            maxLines = 1,
-                            modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (4f * s).dp)
-                        )
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (6f * s).dp)) {
+                            Text(
+                                text = sc.label,
+                                color = if (sel) Color(0xFFA7F3D0) else Color(0xFFCBD5E1),
+                                fontSize = fsSmall,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1
+                            )
+                        }
                     }
                 }
             }
@@ -288,93 +293,172 @@ fun MemoryEnginePanel(
                 tabs.forEachIndexed { idx, title ->
                     val sel = activeTab == idx
                     Surface(
-                        shape = RoundedCornerShape((7f * s).coerceIn(4f, 10f).dp),
+                        shape = RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp),
                         color = if (sel) accent else cardBg,
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = minBtnH)
                             .clickable {
                                 activeTab = idx
                                 if (idx == 3 && !previewMode) onRefreshRegions()
                             }
                     ) {
-                        Text(
-                            text = title,
-                            color = if (sel) Color(0xFF042F2E) else Color.White,
-                            fontSize = fsSmall,
-                            fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = (4f * s).dp, vertical = (4f * s).dp)
-                        )
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (4f * s).dp)) {
+                            Text(
+                                text = title,
+                                color = if (sel) Color(0xFF042F2E) else Color.White,
+                                fontSize = fsSmall,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }
 
-            Spacer(Modifier.height((5f * s).dp))
+            Spacer(Modifier.height((6f * s).dp))
 
-            // 3. Active Tab Content
             when (activeTab) {
                 0 -> {
-                    // Data type chips
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
+                        horizontalArrangement = Arrangement.spacedBy((5f * s).dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        MemDataType.entries.forEach { dt ->
-                            val sel = state.dataType == dt
-                            Surface(
-                                shape = RoundedCornerShape((6f * s).coerceIn(4f, 9f).dp),
-                                color = if (sel) Color(0xFF0284C7) else cardBg,
-                                modifier = Modifier.clickable(enabled = !previewMode) { onSelectDataType(dt) }
-                            ) {
+                        Surface(
+                            shape = RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp),
+                            color = if (showTypePicker) Color(0xFF0284C7) else Color(0xFF1E293B),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = minBtnH)
+                                .border(1.dp, Color(0xFF0284C7), RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp))
+                                .clickable(enabled = !previewMode) {
+                                    showTypePicker = !showTypePicker
+                                    if (showTypePicker) showModePicker = false
+                                }
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (6f * s).dp)) {
                                 Text(
-                                    text = dt.shortLabel,
+                                    text = "Type: ${state.dataType.shortLabel} ${if (showTypePicker) "▴" else "▾"}",
                                     color = Color.White,
                                     fontSize = fsSmall,
-                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                                    modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (3f * s).dp)
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp),
+                            color = if (showModePicker) Color(0xFF7C3AED) else Color(0xFF1E293B),
+                            modifier = Modifier
+                                .weight(1.25f)
+                                .heightIn(min = minBtnH)
+                                .border(1.dp, Color(0xFF7C3AED), RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp))
+                                .clickable(enabled = !previewMode) {
+                                    showModePicker = !showModePicker
+                                    if (showModePicker) showTypePicker = false
+                                }
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (6f * s).dp)) {
+                                Text(
+                                    text = "Mode: ${state.scanType.label} ${if (showModePicker) "▴" else "▾"}",
+                                    color = Color.White,
+                                    fontSize = fsSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
                     }
 
-                    Spacer(Modifier.height((4f * s).dp))
+                    if (showTypePicker) {
+                        Spacer(Modifier.height((5f * s).dp))
+                        CeOptionGrid(
+                            items = MemDataType.entries,
+                            columns = 3,
+                            minHeight = minBtnH,
+                            selected = state.dataType,
+                            selectedColor = Color(0xFF0284C7),
+                            cardBg = cardBg,
+                            fontSize = fsSmall,
+                            labelOf = { it.shortLabel },
+                            enabled = !previewMode,
+                            onSelect = {
+                                onSelectDataType(it)
+                                showTypePicker = false
+                            }
+                        )
+                    }
 
-                    // Scan comparison type chips
                     val availableScans = if (state.hasActiveScan) {
                         MemScanType.entries.filter { it != MemScanType.UNKNOWN }
                     } else {
                         MemScanType.entries.filter { !it.nextOnly }
                     }
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                    ) {
-                        availableScans.forEach { st ->
-                            val sel = state.scanType == st
-                            Surface(
-                                shape = RoundedCornerShape((6f * s).coerceIn(4f, 9f).dp),
-                                color = if (sel) Color(0xFF7C3AED) else cardBg,
-                                modifier = Modifier.clickable(enabled = !previewMode) { onSelectScanType(st) }
-                            ) {
-                                Text(
-                                    text = st.label,
-                                    color = Color.White,
-                                    fontSize = fsSmall,
-                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                                    modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (3f * s).dp)
-                                )
+
+                    if (showModePicker) {
+                        Spacer(Modifier.height((5f * s).dp))
+                        CeOptionGrid(
+                            items = availableScans,
+                            columns = 2,
+                            minHeight = minBtnH,
+                            selected = state.scanType,
+                            selectedColor = Color(0xFF7C3AED),
+                            cardBg = cardBg,
+                            fontSize = fsSmall,
+                            labelOf = { it.label },
+                            enabled = !previewMode,
+                            onSelect = {
+                                onSelectScanType(it)
+                                showModePicker = false
+                            }
+                        )
+                    } else if (!showTypePicker) {
+                        Spacer(Modifier.height((5f * s).dp))
+                        val quickModes = if (state.hasActiveScan) {
+                            listOf(MemScanType.EXACT, MemScanType.CHANGED, MemScanType.INCREASED, MemScanType.DECREASED)
+                        } else {
+                            listOf(MemScanType.EXACT, MemScanType.UNKNOWN, MemScanType.BETWEEN)
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            quickModes.forEach { st ->
+                                val sel = state.scanType == st
+                                val shortName = when (st) {
+                                    MemScanType.EXACT -> "Exact"
+                                    MemScanType.UNKNOWN -> "Unknown"
+                                    MemScanType.INCREASED -> "Inc +"
+                                    MemScanType.DECREASED -> "Dec -"
+                                    else -> st.label
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape((7f * s).coerceIn(4f, 10f).dp),
+                                    color = if (sel) Color(0xFF7C3AED) else cardBg,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = minBtnH)
+                                        .clickable(enabled = !previewMode) { onSelectScanType(st) }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (4f * s).dp)) {
+                                        Text(
+                                            text = shortName,
+                                            color = Color.White,
+                                            fontSize = fsSmall,
+                                            fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
 
-                    Spacer(Modifier.height((5f * s).dp))
+                    Spacer(Modifier.height((6f * s).dp))
 
-                    // Value input row(s)
                     val hideInput = state.scanType == MemScanType.UNKNOWN ||
                         state.scanType == MemScanType.INCREASED ||
                         state.scanType == MemScanType.DECREASED ||
@@ -382,13 +466,13 @@ fun MemoryEnginePanel(
                         state.scanType == MemScanType.UNCHANGED
                     if (!hideInput) {
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
+                            horizontalArrangement = Arrangement.spacedBy((5f * s).dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             CeInputField(
                                 value = query1,
                                 onValueChange = { query1 = it },
-                                placeholder = if (state.dataType == MemDataType.AOB) "48 8B ?? 01" else if (state.scanType == MemScanType.BETWEEN) "Min" else "Value",
+                                placeholder = if (state.dataType == MemDataType.AOB) "48 8B ?? 01" else if (state.scanType == MemScanType.BETWEEN) "Min value" else "Enter number (e.g. 100)",
                                 fontSize = fsBody,
                                 enabled = !previewMode,
                                 onDone = {
@@ -412,10 +496,9 @@ fun MemoryEnginePanel(
                                 )
                             }
                         }
-                        Spacer(Modifier.height((5f * s).dp))
+                        Spacer(Modifier.height((6f * s).dp))
                     }
 
-                    // Action buttons: First Scan / Next Scan / Undo / Reset
                     Row(
                         horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
                         modifier = Modifier.fillMaxWidth()
@@ -425,8 +508,9 @@ fun MemoryEnginePanel(
                             bg = accent,
                             fg = Color(0xFF042F2E),
                             fontSize = fsSmall,
+                            minHeight = minBtnH,
                             enabled = !previewMode && !state.busy,
-                            onClick = { focusManager.clearFocus(); onFirstScan(query1, query2) },
+                            onClick = { focusManager.clearFocus(); showModePicker = false; showTypePicker = false; onFirstScan(query1, query2) },
                             modifier = Modifier.weight(1f)
                         )
                         CeButton(
@@ -434,8 +518,9 @@ fun MemoryEnginePanel(
                             bg = if (state.hasActiveScan) Color(0xFF0284C7) else Color(0xFF1E293B),
                             fg = Color.White,
                             fontSize = fsSmall,
+                            minHeight = minBtnH,
                             enabled = !previewMode && !state.busy && state.hasActiveScan,
-                            onClick = { focusManager.clearFocus(); onNextScan(query1, query2) },
+                            onClick = { focusManager.clearFocus(); showModePicker = false; showTypePicker = false; onNextScan(query1, query2) },
                             modifier = Modifier.weight(1f)
                         )
                         CeButton(
@@ -443,97 +528,166 @@ fun MemoryEnginePanel(
                             bg = if (state.canUndo) Color(0xFF475569) else Color(0xFF1E293B),
                             fg = Color.White,
                             fontSize = fsSmall,
+                            minHeight = minBtnH,
                             enabled = !previewMode && !state.busy && state.canUndo,
                             onClick = onUndoScan,
-                            modifier = Modifier.weight(0.85f)
+                            modifier = Modifier.weight(0.8f)
                         )
                         CeButton(
                             text = "New",
                             bg = Color(0xFF334155),
                             fg = Color.White,
                             fontSize = fsSmall,
+                            minHeight = minBtnH,
                             enabled = !previewMode && !state.busy,
-                            onClick = onResetScan,
-                            modifier = Modifier.weight(0.8f)
+                            onClick = { editingScanAddr = null; onResetScan() },
+                            modifier = Modifier.weight(0.75f)
                         )
                     }
 
-                    Spacer(Modifier.height((4f * s).dp))
+                    Spacer(Modifier.height((5f * s).dp))
 
-                    Text(
-                        text = state.statusText,
-                        color = Color(0xFF94A3B8),
-                        fontSize = fsSmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = state.statusText,
+                            color = Color(0xFF94A3B8),
+                            fontSize = fsSmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (state.hasActiveScan && state.results.isNotEmpty()) {
+                            Spacer(Modifier.width((5f * s).dp))
+                            Surface(
+                                shape = RoundedCornerShape((6f * s).dp),
+                                color = Color(0xFF1E293B),
+                                modifier = Modifier
+                                    .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
+                                    .clickable(enabled = !previewMode && !state.busy, onClick = onRefreshScan)
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (7f * s).dp)) {
+                                    Text(text = "Refresh", color = Color(0xFF38BDF8), fontSize = fsSmall, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
 
-                    // Scan results list
                     if (state.results.isNotEmpty()) {
-                        Spacer(Modifier.height((4f * s).dp))
+                        Spacer(Modifier.height((5f * s).dp))
                         Column(
-                            verticalArrangement = Arrangement.spacedBy((3f * s).dp),
+                            verticalArrangement = Arrangement.spacedBy((4f * s).dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = (150f * s).coerceIn(96f, 240f).dp)
+                                .heightIn(max = (165f * s).coerceIn(100f, 260f).dp)
                                 .verticalScroll(rememberScrollState())
                         ) {
                             state.results.take(60).forEach { item ->
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
+                                val changed = item.prevValue.isNotEmpty() && item.prevValue != item.value
+                                Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .background(cardBg, RoundedCornerShape((6f * s).dp))
-                                        .padding(horizontal = (6f * s).dp, vertical = (4f * s).dp)
+                                        .background(cardBg, RoundedCornerShape((7f * s).dp))
+                                        .padding(horizontal = (7f * s).dp, vertical = (5f * s).dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = item.addr,
-                                            color = Color(0xFF93C5FD),
-                                            fontSize = fsSmall,
-                                            fontFamily = FontFamily.Monospace,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${item.value}  (${item.type})",
-                                            color = Color.White,
-                                            fontSize = fsBody,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    if (state.scope == MemScope.FABLE_NATIVE || item.kind == "wasm" || item.kind == "ta") {
-                                        Surface(
-                                            shape = RoundedCornerShape((5f * s).dp),
-                                            color = Color(0xFF334155),
-                                            modifier = Modifier.clickable(enabled = !previewMode) {
-                                                onInspectHex(item.addr, state.scope, 0L)
-                                                activeTab = 2
-                                            }
-                                        ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = "Hex",
-                                                color = Color(0xFFE2E8F0),
+                                                text = item.addr,
+                                                color = Color(0xFF93C5FD),
                                                 fontSize = fsSmall,
-                                                modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2.5f * s).dp)
+                                                fontFamily = FontFamily.Monospace,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = if (changed) "${item.value} (was ${item.prevValue}) · ${item.type}" else "${item.value} · ${item.type}",
+                                                color = if (changed) Color(0xFF4ADE80) else Color.White,
+                                                fontSize = fsBody,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
+                                        Surface(
+                                            shape = RoundedCornerShape((6f * s).dp),
+                                            color = Color(0xFF065F46),
+                                            modifier = Modifier
+                                                .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
+                                                .clickable(enabled = !previewMode) {
+                                                    editingScanAddr = if (editingScanAddr == item.addr) null else item.addr
+                                                    scanEditDraft = item.value
+                                                }
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (7f * s).dp)) {
+                                                Text(text = "Edit", color = Color(0xFFA7F3D0), fontSize = fsSmall, fontWeight = FontWeight.SemiBold)
+                                            }
+                                        }
                                         Spacer(Modifier.width((4f * s).dp))
+                                        if (state.scope == MemScope.FABLE_NATIVE || item.kind == "wasm" || item.kind == "ta" || item.kind == "ab") {
+                                            Surface(
+                                                shape = RoundedCornerShape((6f * s).dp),
+                                                color = Color(0xFF334155),
+                                                modifier = Modifier
+                                                    .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
+                                                    .clickable(enabled = !previewMode) {
+                                                        onInspectHex(item.addr, state.scope, 0L)
+                                                        activeTab = 2
+                                                    }
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (6f * s).dp)) {
+                                                    Text(text = "Hex", color = Color(0xFFE2E8F0), fontSize = fsSmall)
+                                                }
+                                            }
+                                            Spacer(Modifier.width((4f * s).dp))
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape((6f * s).dp),
+                                            color = accent,
+                                            modifier = Modifier
+                                                .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
+                                                .clickable(enabled = !previewMode) { onAddWatch(item) }
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (7f * s).dp)) {
+                                                Text(text = "+W", color = Color(0xFF042F2E), fontSize = fsSmall, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
                                     }
-                                    Surface(
-                                        shape = RoundedCornerShape((5f * s).dp),
-                                        color = accent,
-                                        modifier = Modifier.clickable(enabled = !previewMode) { onAddWatch(item) }
-                                    ) {
-                                        Text(
-                                            text = "+Watch",
-                                            color = Color(0xFF042F2E),
-                                            fontSize = fsSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (2.5f * s).dp)
-                                        )
+                                    if (editingScanAddr == item.addr) {
+                                        Spacer(Modifier.height((5f * s).dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy((5f * s).dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            CeInputField(
+                                                value = scanEditDraft,
+                                                onValueChange = { scanEditDraft = it },
+                                                placeholder = "New value",
+                                                fontSize = fsBody,
+                                                enabled = !previewMode,
+                                                onDone = {
+                                                    onQuickEditResult(item, scanEditDraft)
+                                                    editingScanAddr = null
+                                                    focusManager.clearFocus()
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            CeButton(
+                                                text = "Write",
+                                                bg = accent,
+                                                fg = Color(0xFF042F2E),
+                                                fontSize = fsSmall,
+                                                minHeight = minBtnH,
+                                                enabled = !previewMode,
+                                                onClick = {
+                                                    onQuickEditResult(item, scanEditDraft)
+                                                    editingScanAddr = null
+                                                    focusManager.clearFocus()
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -542,7 +696,6 @@ fun MemoryEnginePanel(
                 }
 
                 1 -> {
-                    // Watch / Address Table Tab
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
@@ -556,32 +709,31 @@ fun MemoryEnginePanel(
                         )
                         if (state.watchList.any { it.frozen }) {
                             Surface(
-                                shape = RoundedCornerShape((6f * s).dp),
+                                shape = RoundedCornerShape((7f * s).dp),
                                 color = Color(0xFFB45309),
-                                modifier = Modifier.clickable(enabled = !previewMode, onClick = onUnfreezeAll)
+                                modifier = Modifier
+                                    .heightIn(min = (30f * s).coerceIn(26f, 38f).dp)
+                                    .clickable(enabled = !previewMode, onClick = onUnfreezeAll)
                             ) {
-                                Text(
-                                    text = "Unfreeze All",
-                                    color = Color.White,
-                                    fontSize = fsSmall,
-                                    modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (3f * s).dp)
-                                )
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (8f * s).dp)) {
+                                    Text(text = "Unfreeze All", color = Color.White, fontSize = fsSmall, fontWeight = FontWeight.SemiBold)
+                                }
                             }
                         }
                     }
                     Spacer(Modifier.height((5f * s).dp))
                     if (state.watchList.isEmpty()) {
                         Text(
-                            text = "No watched values yet. Run a scan and tap +Watch to monitor, edit, freeze, or restore values.",
+                            text = "No watched values yet. Run a scan and tap +W to monitor, edit, freeze, or restore values.",
                             color = Color(0xFF94A3B8),
                             fontSize = fsSmall
                         )
                     } else {
                         Column(
-                            verticalArrangement = Arrangement.spacedBy((4f * s).dp),
+                            verticalArrangement = Arrangement.spacedBy((5f * s).dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = (180f * s).coerceIn(110f, 280f).dp)
+                                .heightIn(max = (185f * s).coerceIn(110f, 280f).dp)
                                 .verticalScroll(rememberScrollState())
                         ) {
                             state.watchList.forEach { w ->
@@ -589,23 +741,21 @@ fun MemoryEnginePanel(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(cardBg, RoundedCornerShape((7f * s).dp))
-                                        .padding((6f * s).dp)
+                                        .padding((7f * s).dp)
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Surface(
-                                            shape = RoundedCornerShape((5f * s).dp),
+                                            shape = RoundedCornerShape((6f * s).dp),
                                             color = if (w.frozen) Color(0xFF0284C7) else Color(0xFF334155),
-                                            modifier = Modifier.clickable(enabled = !previewMode) { onToggleWatchFreeze(w.id) }
+                                            modifier = Modifier
+                                                .heightIn(min = (30f * s).coerceIn(26f, 38f).dp)
+                                                .clickable(enabled = !previewMode) { onToggleWatchFreeze(w.id) }
                                         ) {
-                                            Text(
-                                                text = if (w.frozen) "LOCK" else "Free",
-                                                color = Color.White,
-                                                fontSize = fsSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2f * s).dp)
-                                            )
+                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (7f * s).dp)) {
+                                                Text(text = if (w.frozen) "LOCK" else "Free", color = Color.White, fontSize = fsSmall, fontWeight = FontWeight.Bold)
+                                            }
                                         }
-                                        Spacer(Modifier.width((5f * s).dp))
+                                        Spacer(Modifier.width((6f * s).dp))
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
                                                 text = w.label,
@@ -625,48 +775,46 @@ fun MemoryEnginePanel(
                                             )
                                         }
                                         Surface(
-                                            shape = RoundedCornerShape((5f * s).dp),
+                                            shape = RoundedCornerShape((6f * s).dp),
                                             color = Color(0xFF065F46),
-                                            modifier = Modifier.clickable(enabled = !previewMode) {
-                                                editingWatchId = if (editingWatchId == w.id) null else w.id
-                                                editDraft = w.currentValue
-                                            }
-                                        ) {
-                                            Text(
-                                                text = "Edit",
-                                                color = Color(0xFFA7F3D0),
-                                                fontSize = fsSmall,
-                                                modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2.5f * s).dp)
-                                            )
-                                        }
-                                        Spacer(Modifier.width((3f * s).dp))
-                                        Surface(
-                                            shape = RoundedCornerShape((5f * s).dp),
-                                            color = Color(0xFF475569),
-                                            modifier = Modifier.clickable(enabled = !previewMode) { onRestoreWatchOriginal(w.id) }
-                                        ) {
-                                            Text(
-                                                text = "Undo",
-                                                color = Color.White,
-                                                fontSize = fsSmall,
-                                                modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2.5f * s).dp)
-                                            )
-                                        }
-                                        Spacer(Modifier.width((3f * s).dp))
-                                        Text(
-                                            text = "✕",
-                                            color = Color(0xFFF87171),
-                                            fontSize = fsBody,
-                                            fontWeight = FontWeight.Bold,
                                             modifier = Modifier
+                                                .heightIn(min = (30f * s).coerceIn(26f, 38f).dp)
+                                                .clickable(enabled = !previewMode) {
+                                                    editingWatchId = if (editingWatchId == w.id) null else w.id
+                                                    editDraft = w.currentValue
+                                                }
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (7f * s).dp)) {
+                                                Text(text = "Edit", color = Color(0xFFA7F3D0), fontSize = fsSmall)
+                                            }
+                                        }
+                                        Spacer(Modifier.width((4f * s).dp))
+                                        Surface(
+                                            shape = RoundedCornerShape((6f * s).dp),
+                                            color = Color(0xFF475569),
+                                            modifier = Modifier
+                                                .heightIn(min = (30f * s).coerceIn(26f, 38f).dp)
+                                                .clickable(enabled = !previewMode) { onRestoreWatchOriginal(w.id) }
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (7f * s).dp)) {
+                                                Text(text = "Undo", color = Color.White, fontSize = fsSmall)
+                                            }
+                                        }
+                                        Spacer(Modifier.width((4f * s).dp))
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .heightIn(min = (30f * s).coerceIn(26f, 38f).dp)
                                                 .clickable(enabled = !previewMode) { onRemoveWatch(w.id) }
-                                                .padding(horizontal = (3f * s).dp)
-                                        )
+                                                .padding(horizontal = (5f * s).dp)
+                                        ) {
+                                            Text(text = "✕", color = Color(0xFFF87171), fontSize = fsBody, fontWeight = FontWeight.Bold)
+                                        }
                                     }
                                     if (editingWatchId == w.id) {
-                                        Spacer(Modifier.height((4f * s).dp))
+                                        Spacer(Modifier.height((5f * s).dp))
                                         Row(
-                                            horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
+                                            horizontalArrangement = Arrangement.spacedBy((5f * s).dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             CeInputField(
@@ -687,6 +835,7 @@ fun MemoryEnginePanel(
                                                 bg = accent,
                                                 fg = Color(0xFF042F2E),
                                                 fontSize = fsSmall,
+                                                minHeight = minBtnH,
                                                 enabled = !previewMode,
                                                 onClick = {
                                                     onSetWatchValue(w.id, editDraft)
@@ -703,7 +852,6 @@ fun MemoryEnginePanel(
                 }
 
                 2 -> {
-                    // Hex / Memory Viewer Tab
                     val hx = state.hex
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -718,20 +866,20 @@ fun MemoryEnginePanel(
                             modifier = Modifier.weight(1f)
                         )
                         if (hx.targetAddr.isNotBlank()) {
-                            CeButton(text = "-64", bg = cardBg, fg = Color.White, fontSize = fsSmall, enabled = !previewMode, onClick = {
+                            CeButton(text = "-64", bg = cardBg, fg = Color.White, fontSize = fsSmall, minHeight = minBtnH, enabled = !previewMode, onClick = {
                                 onInspectHex(hx.targetAddr, hx.scope, -64L)
                             })
-                            CeButton(text = "+64", bg = cardBg, fg = Color.White, fontSize = fsSmall, enabled = !previewMode, onClick = {
+                            CeButton(text = "+64", bg = cardBg, fg = Color.White, fontSize = fsSmall, minHeight = minBtnH, enabled = !previewMode, onClick = {
                                 onInspectHex(hx.targetAddr, hx.scope, +64L)
                             })
                         }
                     }
-                    Spacer(Modifier.height((4f * s).dp))
+                    Spacer(Modifier.height((5f * s).dp))
                     if (hx.error != null) {
                         Text(text = hx.error, color = Color(0xFFFCA5A5), fontSize = fsSmall)
                     } else if (hx.hexBytes.isBlank()) {
                         Text(
-                            text = "Tap Hex on any scan result (Fable Process, WASM, or TypedArray) to view live raw bytes + ASCII.",
+                            text = "Tap Hex on any scan result (Fable Process, WASM, ArrayBuffer, or TypedArray) to view live raw bytes + ASCII.",
                             color = Color(0xFF94A3B8),
                             fontSize = fsSmall
                         )
@@ -741,7 +889,7 @@ fun MemoryEnginePanel(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(Color(0xFF070B14), RoundedCornerShape((6f * s).dp))
-                                .heightIn(max = (165f * s).coerceIn(100f, 250f).dp)
+                                .heightIn(max = (170f * s).coerceIn(100f, 250f).dp)
                                 .verticalScroll(rememberScrollState())
                                 .padding((6f * s).dp)
                         ) {
@@ -758,7 +906,6 @@ fun MemoryEnginePanel(
                 }
 
                 3 -> {
-                    // Memory Regions Map Tab
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
@@ -769,14 +916,14 @@ fun MemoryEnginePanel(
                             fontSize = fsSmall,
                             modifier = Modifier.weight(1f)
                         )
-                        CeButton(text = "Refresh", bg = cardBg, fg = Color.White, fontSize = fsSmall, enabled = !previewMode, onClick = onRefreshRegions)
+                        CeButton(text = "Refresh", bg = cardBg, fg = Color.White, fontSize = fsSmall, minHeight = minBtnH, enabled = !previewMode, onClick = onRefreshRegions)
                     }
-                    Spacer(Modifier.height((4f * s).dp))
+                    Spacer(Modifier.height((5f * s).dp))
                     Column(
-                        verticalArrangement = Arrangement.spacedBy((3f * s).dp),
+                        verticalArrangement = Arrangement.spacedBy((4f * s).dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = (165f * s).coerceIn(100f, 250f).dp)
+                            .heightIn(max = (170f * s).coerceIn(100f, 250f).dp)
                             .verticalScroll(rememberScrollState())
                     ) {
                         if (state.regions.isEmpty()) {
@@ -791,8 +938,8 @@ fun MemoryEnginePanel(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .background(cardBg, RoundedCornerShape((5f * s).dp))
-                                        .padding(horizontal = (6f * s).dp, vertical = (3.5f * s).dp)
+                                        .background(cardBg, RoundedCornerShape((6f * s).dp))
+                                        .padding(horizontal = (7f * s).dp, vertical = (4.5f * s).dp)
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
@@ -821,6 +968,52 @@ fun MemoryEnginePanel(
 }
 
 @Composable
+private fun <T> CeOptionGrid(
+    items: List<T>,
+    columns: Int,
+    minHeight: Dp,
+    selected: T,
+    selectedColor: Color,
+    cardBg: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    labelOf: (T) -> String,
+    enabled: Boolean,
+    onSelect: (T) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+        items.chunked(columns).forEach { rowItems ->
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                rowItems.forEach { item ->
+                    val sel = item == selected
+                    Surface(
+                        shape = RoundedCornerShape(7.dp),
+                        color = if (sel) selectedColor else cardBg,
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = minHeight)
+                            .clickable(enabled = enabled) { onSelect(item) }
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 5.dp, vertical = 4.dp)) {
+                            Text(
+                                text = labelOf(item),
+                                color = Color.White,
+                                fontSize = fontSize,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                repeat(columns - rowItems.size) {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun CeInputField(
     value: String,
     onValueChange: (String) -> Unit,
@@ -833,9 +1026,10 @@ private fun CeInputField(
     Box(
         contentAlignment = Alignment.CenterStart,
         modifier = modifier
-            .background(Color(0xFF1E293B), RoundedCornerShape(7.dp))
-            .border(1.dp, Color(0xFF475569), RoundedCornerShape(7.dp))
-            .padding(horizontal = 7.dp, vertical = 5.dp)
+            .heightIn(min = 36.dp)
+            .background(Color(0xFF1E293B), RoundedCornerShape(8.dp))
+            .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
+            .padding(horizontal = 9.dp, vertical = 7.dp)
     ) {
         if (value.isEmpty()) {
             Text(text = placeholder, color = Color(0xFF64748B), fontSize = fontSize, maxLines = 1)
@@ -860,16 +1054,19 @@ private fun CeButton(
     bg: Color,
     fg: Color,
     fontSize: androidx.compose.ui.unit.TextUnit,
+    minHeight: Dp = 34.dp,
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(7.dp),
+        shape = RoundedCornerShape(8.dp),
         color = if (enabled) bg else bg.copy(alpha = 0.45f),
-        modifier = modifier.clickable(enabled = enabled, onClick = onClick)
+        modifier = modifier
+            .heightIn(min = minHeight)
+            .clickable(enabled = enabled, onClick = onClick)
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp)) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp)) {
             Text(text = text, color = fg, fontSize = fontSize, fontWeight = FontWeight.SemiBold, maxLines = 1)
         }
     }
@@ -923,7 +1120,9 @@ fun DraggableMemoryEnginePanel(
     onPositionChangeFinished: (Float, Float) -> Unit,
     onToggleExpanded: () -> Unit,
     onTurnOff: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onRefreshScan: () -> Unit = {},
+    onQuickEditResult: (MemScanResultItem, String) -> Unit = { _, _ -> }
 ) {
     val density = LocalDensity.current
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
@@ -1004,12 +1203,14 @@ fun DraggableMemoryEnginePanel(
             onToggleExpanded = onToggleExpanded,
             onTurnOff = onTurnOff,
             dragHandleModifier = dragModifier,
-            maxWidthDp = (maxWidth - 16.dp).coerceAtLeast(180.dp),
+            maxWidthDp = (maxWidth - 12.dp).coerceAtLeast(220.dp),
+            onRefreshScan = onRefreshScan,
+            onQuickEditResult = onQuickEditResult,
             modifier = Modifier
                 .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
-                .onSizeChanged { sz ->
-                    panelW = sz.width
-                    panelH = sz.height
+                .onSizeChanged {
+                    panelW = it.width
+                    panelH = it.height
                 }
         )
     }

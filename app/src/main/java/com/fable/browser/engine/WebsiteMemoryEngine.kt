@@ -65,7 +65,7 @@ object WebsiteMemoryEngine {
             var wasmSeen = new WeakSet();
             var bufRefs = [];
             var bufSeen = new WeakSet();
-            var MAX_TRACKED_BUFS = 180;
+            var MAX_TRACKED_BUFS = 2500;
 
             function trackWasmMem(mem) {
                 try {
@@ -76,16 +76,16 @@ object WebsiteMemoryEngine {
             }
             function trackRawBuf(ab) {
                 try {
-                    if (!ab || typeof ab.byteLength !== "number" || ab.byteLength < 2048 || ab.byteLength > 64 * 1024 * 1024) return;
+                    if (!ab || typeof ab.byteLength !== "number" || ab.byteLength < 16 || ab.byteLength > 128 * 1024 * 1024) return;
                     if (bufSeen.has(ab)) return;
                     bufSeen.add(ab);
                     if (bufRefs.length >= MAX_TRACKED_BUFS) {
                         var nextB = [];
                         for (var i = 0; i < bufRefs.length; i++) {
                             var d = bufRefs[i].deref();
-                            if (d && d.byteLength >= 2048) nextB.push(bufRefs[i]);
+                            if (d && d.byteLength >= 16) nextB.push(bufRefs[i]);
                         }
-                        bufRefs = nextB.slice(-Math.floor(MAX_TRACKED_BUFS * 0.75));
+                        bufRefs = nextB.slice(-Math.floor(MAX_TRACKED_BUFS * 0.8));
                     }
                     bufRefs.push(typeof WeakRef === "function" ? new WeakRef(ab) : { deref: function() { return ab; } });
                 } catch (_) {}
@@ -172,6 +172,21 @@ object WebsiteMemoryEngine {
                     sigMap.set(ProxSAB, origToStr.call(OrigSAB));
                     window.SharedArrayBuffer = ProxSAB;
                 }
+                ["Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array", "DataView"].forEach(function(name) {
+                    try {
+                        var OrigView = window[name];
+                        if (typeof OrigView !== "function") return;
+                        var ProxView = new Proxy(OrigView, {
+                            construct: function(target, args, newTarget) {
+                                var view = Reflect.construct(target, args, newTarget);
+                                if (view && view.buffer) trackRawBuf(view.buffer);
+                                return view;
+                            }
+                        });
+                        sigMap.set(ProxView, origToStr.call(OrigView));
+                        window[name] = ProxView;
+                    } catch (_) {}
+                });
             } catch (_) {}
 
             function liveWasmMemories() {
@@ -192,7 +207,7 @@ object WebsiteMemoryEngine {
                 var kept = [];
                 for (var i = 0; i < bufRefs.length; i++) {
                     var ab = bufRefs[i].deref();
-                    if (ab && ab.byteLength >= 2048) {
+                    if (ab && ab.byteLength >= 16) {
                         kept.push(bufRefs[i]);
                         if (!excludeSet || !excludeSet.has(ab)) live.push(ab);
                     }
@@ -215,11 +230,23 @@ object WebsiteMemoryEngine {
                 "customElements", "speechSynthesis", "FableHybridBridge", "external", "console",
                 "innerWidth", "innerHeight", "outerWidth", "outerHeight", "screenX", "screenY",
                 "screenLeft", "screenTop", "scrollX", "scrollY", "pageXOffset", "pageYOffset",
-                "devicePixelRatio", "length", "isSecureContext", "crossOriginIsolated", "origin",
-                "name", "status", "closed", "toolbar", "menubar", "personalbar", "scrollbars",
-                "statusbar", "locationbar", "clientInformation", "scheduler", "navigation",
-                "cookieStore", "trustedTypes", "credentialless", "launchQueue", "documentPictureInPicture"
+                "devicePixelRatio", "length", "byteLength", "byteOffset", "BYTES_PER_ELEMENT",
+                "isSecureContext", "crossOriginIsolated", "origin", "name", "status", "closed",
+                "toolbar", "menubar", "personalbar", "scrollbars", "statusbar", "locationbar",
+                "clientInformation", "scheduler", "navigation", "cookieStore", "trustedTypes",
+                "credentialless", "launchQueue", "documentPictureInPicture", "CSS", "Intl",
+                "Reflect", "Proxy", "JSON", "Math", "Atomics", "WebAssembly"
             ]);
+            var SKIP_SUBTREE_KEYS = new Set([
+                "geometry", "material", "materials", "textures", "_textures", "_materials",
+                "_vertexBuffers", "_indexBuffer", "attributes", "index", "uv", "normals",
+                "morphAttributes", "boundingBox", "boundingSphere", "matrixWorld", "matrix",
+                "projectionMatrix", "modelViewMatrix", "normalMatrix", "_gl", "gl",
+                "programs", "shaders", "style", "classList", "dataset", "children",
+                "childNodes", "firstChild", "lastChild", "nextSibling", "previousSibling",
+                "parentNode", "parentElement", "ownerDocument", "shadowRoot"
+            ]);
+            var INTERNAL_KEY_RE = /^(__fable|_mev_|_ts_|Fable|__TS_|__MEM_|__reactInternal|__webpack)/;
             var SENSITIVE_KEY_RE = /(password|passwd|secret|token|jwt|auth|session_?id|csrf|cookie|api_?key|credit|card)/i;
 
             function parseAob(txt) {
@@ -421,7 +448,7 @@ object WebsiteMemoryEngine {
                 var dv = new DataView(buf, byteOff, scanLen);
                 if (dt === "str") {
                     var enc = new TextEncoder().encode(s1);
-                    if (!enc.length) return;
+                    if (!enc.length || scanLen < enc.length) return;
                     var u8 = new Uint8Array(buf, byteOff, scanLen);
                     var lim = scanLen - enc.length;
                     for (var o = 0; o <= lim && out.length < cap; o++) {
@@ -436,7 +463,7 @@ object WebsiteMemoryEngine {
                     return;
                 }
                 if (dt === "aob") {
-                    if (!aob.bytes.length) return;
+                    if (!aob.bytes.length || scanLen < aob.bytes.length) return;
                     var u8b = new Uint8Array(buf, byteOff, scanLen);
                     var lim2 = scanLen - aob.bytes.length;
                     for (var o2 = 0; o2 <= lim2 && out.length < cap; o2++) {
@@ -451,17 +478,70 @@ object WebsiteMemoryEngine {
                     }
                     return;
                 }
-                var types = dt === "auto" ? (sc === "unknown" ? ["i32", "f32"] : ["i32", "f32", "f64"]) : [dt];
-                for (var ti = 0; ti < types.length && out.length < cap; ti++) {
-                    var t = types[ti];
-                    var sz = t === "i8" ? 1 : (t === "i16" ? 2 : ((t === "i32" || t === "f32") ? 4 : 8));
-                    var endOff = scanLen - sz;
-                    for (var off = 0; off <= endOff && out.length < cap; off += sz) {
-                        var val = readViewVal(dv, off, t);
-                        if (matchNum(val, 0, false, t, sc, v1, v2)) {
-                            var idn = labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":" + t;
-                            out.push({ id: idn, kind: kind, bufIdx: bufIdx, off: off, dt: t, len: sz, prev: val });
+
+                if (dt === "auto") {
+                    var isIntQuery = (sc !== "unknown") && Number.isInteger(v1);
+                    var fitsI32 = isIntQuery && v1 >= -2147483648 && v1 <= 2147483647;
+                    var fitsI16 = isIntQuery && v1 >= -32768 && v1 <= 32767 && v1 !== 0;
+                    var end4 = scanLen - 4;
+                    for (var off = 0; off <= end4 && out.length < cap; off += 4) {
+                        var matchedAtOff = false;
+                        if (sc === "unknown") {
+                            var uVal = dv.getInt32(off, true);
+                            if (uVal !== 0) {
+                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i32", kind: kind, bufIdx: bufIdx, off: off, dt: "i32", len: 4, prev: uVal });
+                            }
+                            continue;
                         }
+                        if (fitsI32 || !isIntQuery) {
+                            var i32v = dv.getInt32(off, true);
+                            if (matchNum(i32v, 0, false, "i32", sc, v1, v2)) {
+                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i32", kind: kind, bufIdx: bufIdx, off: off, dt: "i32", len: 4, prev: i32v });
+                                matchedAtOff = true;
+                            }
+                        }
+                        if (!matchedAtOff && !fitsI32 && isIntQuery && (off + 8) <= scanLen) {
+                            var i64v = readViewVal(dv, off, "i64");
+                            if (matchNum(i64v, 0, false, "i64", sc, v1, v2)) {
+                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i64", kind: kind, bufIdx: bufIdx, off: off, dt: "i64", len: 8, prev: i64v });
+                                matchedAtOff = true;
+                            }
+                        }
+                        if (!matchedAtOff) {
+                            var f32v = dv.getFloat32(off, true);
+                            if (Number.isFinite(f32v) && (v1 !== 0 || f32v === 0) && (v1 === 0 || Math.abs(f32v) >= 1e-6) && matchNum(f32v, 0, false, "f32", sc, v1, v2)) {
+                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":f32", kind: kind, bufIdx: bufIdx, off: off, dt: "f32", len: 4, prev: f32v });
+                                matchedAtOff = true;
+                            }
+                        }
+                        if (!matchedAtOff && (off % 8 === 0) && (off + 8) <= scanLen) {
+                            var f64v = dv.getFloat64(off, true);
+                            if (Number.isFinite(f64v) && (v1 !== 0 || f64v === 0) && (v1 === 0 || Math.abs(f64v) >= 1e-6) && matchNum(f64v, 0, false, "f64", sc, v1, v2)) {
+                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":f64", kind: kind, bufIdx: bufIdx, off: off, dt: "f64", len: 8, prev: f64v });
+                                matchedAtOff = true;
+                            }
+                        }
+                        if (!matchedAtOff && fitsI16) {
+                            var i16a = dv.getInt16(off, true);
+                            if (matchNum(i16a, 0, false, "i16", sc, v1, v2)) {
+                                out.push({ id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i16", kind: kind, bufIdx: bufIdx, off: off, dt: "i16", len: 2, prev: i16a });
+                            }
+                            var i16b = dv.getInt16(off + 2, true);
+                            if (matchNum(i16b, 0, false, "i16", sc, v1, v2)) {
+                                out.push({ id: labelPrefix + "+0x" + (off + 2).toString(16).toUpperCase() + ":i16", kind: kind, bufIdx: bufIdx, off: off + 2, dt: "i16", len: 2, prev: i16b });
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                var sz = dt === "i8" ? 1 : (dt === "i16" ? 2 : ((dt === "i32" || dt === "f32") ? 4 : 8));
+                var endOff = scanLen - sz;
+                for (var off2 = 0; off2 <= endOff && out.length < cap; off2 += sz) {
+                    var val = readViewVal(dv, off2, dt);
+                    if (matchNum(val, 0, false, dt, sc, v1, v2)) {
+                        var idn = labelPrefix + "+0x" + off2.toString(16).toUpperCase() + ":" + dt;
+                        out.push({ id: idn, kind: kind, bufIdx: bufIdx, off: off2, dt: dt, len: sz, prev: val });
                     }
                 }
             }
@@ -470,16 +550,17 @@ object WebsiteMemoryEngine {
                 try {
                     var doc = win.document;
                     if (!doc || typeof doc.querySelectorAll !== "function") return;
-                    var els = doc.querySelectorAll("canvas,#root,#app,#game,#unity-canvas");
-                    var maxEls = Math.min(els.length, 10);
+                    var els = doc.querySelectorAll("canvas,#root,#app,#game,#unity-canvas,[id*='game'],[class*='game']");
+                    var maxEls = Math.min(els.length, 16);
                     for (var ei = 0; ei < maxEls; ei++) {
                         var el = els[ei];
                         if (!el) continue;
                         var eKeys;
-                        try { eKeys = Object.keys(el); } catch (_) { continue; }
+                        try { eKeys = Object.getOwnPropertyNames(el); } catch (_) { continue; }
                         for (var ki = 0; ki < eKeys.length; ki++) {
                             var ek = eKeys[ki];
-                            if (ek.indexOf("__react") === 0 || ek.indexOf("__vue") === 0 || ek.indexOf("_") === 0 || ek === "game" || ek === "engine" || ek === "scene") {
+                            if (INTERNAL_KEY_RE.test(ek)) continue;
+                            if (ek.indexOf("__react") === 0 || ek.indexOf("__vue") === 0 || ek.indexOf("_") === 0 || ek === "game" || ek === "engine" || ek === "scene" || ek === "state" || ek === "store") {
                                 try {
                                     var ev = el[ek];
                                     if (ev && typeof ev === "object" && !visited.has(ev)) {
@@ -492,12 +573,42 @@ object WebsiteMemoryEngine {
                 } catch (_) {}
             }
 
+            function registerAndScanFullBuffer(ab, labelHint, dt, sc, v1, v2, s1, aob, out, cap, scannedBufs) {
+                if (!ab || typeof ab.byteLength !== "number" || ab.byteLength < 4 || ab.byteLength > 128 * 1024 * 1024) return;
+                if (scannedBufs.has(ab)) return;
+                scannedBufs.add(ab);
+                trackRawBuf(ab);
+                var abIdx = abRegistry.length;
+                abRegistry.push(typeof WeakRef === "function" ? new WeakRef(ab) : { deref: function() { return ab; } });
+                var lbl = labelHint ? ("buf#" + abIdx + "(" + labelHint.slice(-20) + ")") : ("buf#" + abIdx);
+                scanBuffer(ab, 0, ab.byteLength, "ab", abIdx, lbl, dt, sc, v1, v2, s1, aob, out, cap);
+            }
+
+            function isSkippedBuiltinObject(obj) {
+                if (!obj) return true;
+                if (typeof Node === "function" && obj instanceof Node) return true;
+                if (typeof Event === "function" && obj instanceof Event) return true;
+                if (typeof Promise === "function" && obj instanceof Promise) return true;
+                if (typeof RegExp === "function" && obj instanceof RegExp) return true;
+                if (typeof Error === "function" && obj instanceof Error) return true;
+                var cname = obj.constructor && obj.constructor.name ? obj.constructor.name : "";
+                if (cname === "CSSStyleDeclaration" || cname === "DOMTokenList" || cname === "NamedNodeMap" ||
+                    cname === "HTMLCollection" || cname === "NodeList" || cname === "Performance" ||
+                    cname === "Navigator" || cname === "Screen" || cname === "History" || cname === "Location" ||
+                    cname === "WebGLRenderingContext" || cname === "WebGL2RenderingContext" ||
+                    cname === "WebGLProgram" || cname === "WebGLShader" || cname === "WebGLBuffer" ||
+                    cname === "WebGLTexture" || cname === "WebGLFramebuffer" || cname === "AudioContext") {
+                    return true;
+                }
+                return false;
+            }
+
             function collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap, scannedBufs) {
                 var visited = new WeakSet();
                 var queue = [{ obj: window, path: "window", depth: 0 }];
                 seedFrameworkRoots(window, queue, visited);
                 try {
-                    var fCount = Math.min(window.frames ? window.frames.length : 0, 8);
+                    var fCount = Math.min(window.frames ? window.frames.length : 0, 12);
                     for (var fi = 0; fi < fCount; fi++) {
                         try {
                             var fw = window.frames[fi];
@@ -509,7 +620,7 @@ object WebsiteMemoryEngine {
                     }
                 } catch (_) {}
 
-                var maxNodes = 12000;
+                var maxNodes = 45000;
                 var nodesVisited = 0;
                 var taSeen = new WeakSet();
                 taRegistry = [];
@@ -526,39 +637,36 @@ object WebsiteMemoryEngine {
                         trackWasmMem(obj);
                         continue;
                     }
-                    if (ArrayBuffer.isView(obj) && obj.byteLength >= 4 && obj.byteLength <= 32 * 1024 * 1024 && !taSeen.has(obj)) {
-                        taSeen.add(obj);
-                        if (obj.buffer) scannedBufs.add(obj.buffer);
-                        var taIdx = taRegistry.length;
-                        taRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
-                        scanBuffer(obj.buffer, obj.byteOffset, obj.byteLength, "ta", taIdx, "ta#" + taIdx + "(" + cur.path.slice(-22) + ")", dt, sc, v1, v2, s1, aob, out, cap);
-                        continue;
-                    }
-                    if (typeof ArrayBuffer === "function" && (obj instanceof ArrayBuffer || (typeof SharedArrayBuffer === "function" && obj instanceof SharedArrayBuffer))) {
-                        if (!scannedBufs.has(obj) && obj.byteLength >= 4 && obj.byteLength <= 32 * 1024 * 1024) {
-                            scannedBufs.add(obj);
-                            var abIdx = abRegistry.length;
-                            abRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
-                            scanBuffer(obj, 0, obj.byteLength, "ab", abIdx, "buf#" + abIdx + "(" + cur.path.slice(-20) + ")", dt, sc, v1, v2, s1, aob, out, cap);
+                    if (ArrayBuffer.isView(obj)) {
+                        if (obj.buffer) {
+                            registerAndScanFullBuffer(obj.buffer, cur.path, dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
+                        }
+                        if (!taSeen.has(obj) && obj.byteLength >= 4) {
+                            taSeen.add(obj);
+                            taRegistry.push(typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } });
                         }
                         continue;
                     }
-                    if (typeof Node === "function" && obj instanceof Node) continue;
+                    if (typeof ArrayBuffer === "function" && (obj instanceof ArrayBuffer || (typeof SharedArrayBuffer === "function" && obj instanceof SharedArrayBuffer))) {
+                        registerAndScanFullBuffer(obj, cur.path, dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
+                        continue;
+                    }
+                    if (cur.depth > 0 && isSkippedBuiltinObject(obj)) continue;
 
                     if (obj instanceof Map) {
                         var mCount = 0;
                         try {
                             obj.forEach(function(mv, mk) {
-                                if (mCount >= 250 || out.length >= cap) return;
+                                if (mCount >= 600 || out.length >= cap) return;
                                 mCount++;
-                                var keyLabel = String(mk).slice(0, 24);
-                                if (SENSITIVE_KEY_RE.test(keyLabel)) return;
+                                var keyLabel = String(mk).slice(0, 28);
+                                if (SENSITIVE_KEY_RE.test(keyLabel) || INTERNAL_KEY_RE.test(keyLabel)) return;
                                 if (typeof mv === "number") {
                                     if (dt !== "str" && dt !== "aob" && matchNum(mv, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
                                         var refM = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
                                         out.push({ id: "map:" + cur.path + "[" + keyLabel + "]", kind: "map", objRef: refM, key: mk, dt: Number.isInteger(mv) ? "i32" : "f64", prev: mv });
                                     }
-                                } else if (mv && typeof mv === "object" && cur.depth < 7 && !visited.has(mv)) {
+                                } else if (mv && typeof mv === "object" && cur.depth < 10 && !visited.has(mv)) {
                                     queue.push({ obj: mv, path: cur.path + "[" + keyLabel + "]", depth: cur.depth + 1 });
                                 }
                             });
@@ -569,9 +677,9 @@ object WebsiteMemoryEngine {
                         var sCount = 0;
                         try {
                             obj.forEach(function(sv) {
-                                if (sCount >= 200 || out.length >= cap) return;
+                                if (sCount >= 400 || out.length >= cap) return;
                                 sCount++;
-                                if (sv && typeof sv === "object" && cur.depth < 7 && !visited.has(sv)) {
+                                if (sv && typeof sv === "object" && cur.depth < 10 && !visited.has(sv)) {
                                     queue.push({ obj: sv, path: cur.path + "{#" + sCount + "}", depth: cur.depth + 1 });
                                 }
                             });
@@ -579,27 +687,61 @@ object WebsiteMemoryEngine {
                         continue;
                     }
 
+                    if (Array.isArray(obj)) {
+                        var arrLen = obj.length;
+                        var numScanCap = Math.min(arrLen, 4096);
+                        var objEnqueued = 0;
+                        for (var ai = 0; ai < numScanCap && out.length < cap; ai++) {
+                            var aval;
+                            try { aval = obj[ai]; } catch (_) { continue; }
+                            if (typeof aval === "number") {
+                                if (dt !== "str" && dt !== "aob" && matchNum(aval, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+                                    var refA = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
+                                    out.push({ id: "js:" + cur.path + "[" + ai + "]", kind: "js", objRef: refA, key: ai, dt: Number.isInteger(aval) ? "i32" : "f64", prev: aval });
+                                }
+                            } else if (aval && typeof aval === "object" && cur.depth < 10 && objEnqueued < 120 && !visited.has(aval)) {
+                                objEnqueued++;
+                                queue.push({ obj: aval, path: cur.path + "[" + ai + "]", depth: cur.depth + 1 });
+                            }
+                        }
+                        continue;
+                    }
+
                     var keys;
-                    try { keys = Object.keys(obj); } catch (_) { continue; }
-                    var maxKeys = cur.depth === 0 ? keys.length : Math.min(keys.length, 240);
+                    try {
+                        keys = cur.depth <= 2 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
+                    } catch (_) {
+                        try { keys = Object.keys(obj); } catch (_2) { continue; }
+                    }
+                    var maxKeys = cur.depth === 0 ? keys.length : Math.min(keys.length, 400);
                     for (var i = 0; i < maxKeys && out.length < cap; i++) {
                         var k = keys[i];
-                        if (cur.depth === 0 && (SKIP_KEYS.has(k) || (k.length > 2 && k[0] === "o" && k[1] === "n"))) continue;
-                        if (SENSITIVE_KEY_RE.test(k)) continue;
-                        var val;
-                        try { val = obj[k]; } catch (_) { continue; }
+                        if (SKIP_KEYS.has(k) || INTERNAL_KEY_RE.test(k) || SENSITIVE_KEY_RE.test(k)) continue;
+                        if (k.length > 2 && k[0] === "o" && k[1] === "n" && k[2] >= "a" && k[2] <= "z") continue;
+                        var desc = null;
+                        try { desc = Object.getOwnPropertyDescriptor(obj, k); } catch (_) {}
+                        if (desc && !("value" in desc)) continue;
+                        var isWritable = !desc || desc.writable === true;
+                        var val = desc ? desc.value : undefined;
+                        if (val === undefined && !desc) {
+                            try { val = obj[k]; } catch (_) { continue; }
+                        }
                         var nextPath = cur.depth === 0 ? k : (cur.path + "." + k);
                         if (typeof val === "number") {
+                            if (!isWritable) continue;
                             if (dt !== "str" && dt !== "aob" && matchNum(val, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
                                 var ref = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
                                 out.push({ id: "js:" + nextPath, kind: "js", objRef: ref, key: k, dt: Number.isInteger(val) ? "i32" : "f64", prev: val });
                             }
                         } else if (typeof val === "string") {
+                            if (!isWritable) continue;
                             if ((dt === "str" || dt === "auto") && s1 && val.indexOf(s1) !== -1 && val.length <= 256) {
                                 var refS = typeof WeakRef === "function" ? new WeakRef(obj) : { deref: function() { return obj; } };
                                 out.push({ id: "js:" + nextPath, kind: "js", objRef: refS, key: k, dt: "str", prev: val });
                             }
-                        } else if (val && typeof val === "object" && cur.depth < 7) {
+                        } else if (val && (typeof val === "object" || typeof val === "function") && cur.depth < 10) {
+                            if (SKIP_SUBTREE_KEYS.has(k)) continue;
+                            if (typeof val === "function" && cur.depth > 1) continue;
                             if (!visited.has(val)) queue.push({ obj: val, path: nextPath, depth: cur.depth + 1 });
                         }
                     }
@@ -614,7 +756,7 @@ object WebsiteMemoryEngine {
                     try {
                         for (var i = 0; i < st.length && out.length < cap; i++) {
                             var k = st.key(i);
-                            if (!k || SENSITIVE_KEY_RE.test(k)) continue;
+                            if (!k || SENSITIVE_KEY_RE.test(k) || INTERNAL_KEY_RE.test(k)) continue;
                             var raw = st.getItem(k);
                             if (raw === null || raw.length > 256) continue;
                             if (dt === "str") {
@@ -672,6 +814,17 @@ object WebsiteMemoryEngine {
                         hits = prevHits; prevHits = [];
                         return formatHitsResult(cmd.maxReturn || 150);
                     }
+                    if (cmd.op === "writeAll") {
+                        var valAll = String(cmd.val || "");
+                        var limW = Math.min(hits.length, cmd.maxWrite || 50);
+                        var wrote = 0;
+                        for (var wi = 0; wi < limW; wi++) {
+                            if (writeHitValue(hits[wi], valAll)) wrote++;
+                        }
+                        var resAll = formatHitsResult(cmd.maxReturn || 150);
+                        resAll.wrote = wrote;
+                        return resAll;
+                    }
                     if (cmd.op === "firstScan") {
                         prevHits = []; hits = []; abRegistry = [];
                         var dt = cmd.dtype || "auto";
@@ -714,10 +867,7 @@ object WebsiteMemoryEngine {
                         }
                         var rawBufs = liveRawBuffers(scannedBufs);
                         for (var bi = 0; bi < rawBufs.length && out.length < cap; bi++) {
-                            var rb = rawBufs[bi];
-                            var abIdx = abRegistry.length;
-                            abRegistry.push(typeof WeakRef === "function" ? new WeakRef(rb) : { deref: function() { return rb; } });
-                            scanBuffer(rb, 0, rb.byteLength, "ab", abIdx, "buf#" + abIdx, dt, sc, v1, v2, s1, aob, out, cap);
+                            registerAndScanFullBuffer(rawBufs[bi], "", dt, sc, v1, v2, s1, aob, out, cap, scannedBufs);
                         }
                         scanStorage(dt, sc, v1, v2, s1, out, cap);
                         hits = out;
@@ -729,9 +879,15 @@ object WebsiteMemoryEngine {
                         var s1n = String(cmd.val1 || "");
                         var s2n = String(cmd.val2 || "");
                         var v1n = Number(s1n), v2n = Number(s2n);
+                        if ((sc2 === "unknown" || sc2 === "changed" || sc2 === "increased" || sc2 === "decreased" || sc2 === "unchanged") &&
+                            s1n.trim() !== "" && Number.isFinite(v1n)) {
+                            sc2 = "exact";
+                        } else if (sc2 === "unknown") {
+                            sc2 = "changed";
+                        }
                         var needsV1 = (sc2 === "exact" || sc2 === "bigger" || sc2 === "smaller" || sc2 === "between" || sc2 === "increased_by" || sc2 === "decreased_by");
                         if (lastType !== "str" && lastType !== "aob" && needsV1 && (!s1n.trim() || !Number.isFinite(v1n))) {
-                            return { ok: false, error: "Enter a valid number" };
+                            return { ok: false, error: "Enter the new number (or pick Changed / Inc / Dec)" };
                         }
                         if (sc2 === "between" && (!s2n.trim() || !Number.isFinite(v2n))) {
                             return { ok: false, error: "Enter max value" };
@@ -808,7 +964,7 @@ object WebsiteMemoryEngine {
                         var seenR = new WeakSet();
                         for (var rmi2 = 0; rmi2 < memsR.length; rmi2++) seenR.add(memsR[rmi2].buffer);
                         var rawR = liveRawBuffers(seenR);
-                        for (var rbi = 0; rbi < Math.min(rawR.length, 40); rbi++) {
+                        for (var rbi = 0; rbi < Math.min(rawR.length, 60); rbi++) {
                             var bkb = Math.max(1, Math.round(rawR[rbi].byteLength / 1024));
                             totalKb += bkb;
                             regs.push({ start: "buf#" + rbi, end: "0x" + rawR[rbi].byteLength.toString(16).toUpperCase(), kb: bkb, perms: "rw-buf", label: "ArrayBuffer #" + rbi });

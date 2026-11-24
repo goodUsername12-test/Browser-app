@@ -144,6 +144,14 @@ MEM_HTML = """<!DOCTYPE html>
   window.gameState = { gold: 133700, hp: 500 };
   window.testWasmMem = new WebAssembly.Memory({ initial: 1 });
   new Int32Array(window.testWasmMem.buffer)[16] = 133700;
+  var bigPool = new ArrayBuffer(262144);
+  window.subViewNoise = new Float32Array(bigPool, 0, 16);
+  new Int32Array(bigPool)[12000] = 133700;
+  (function hiddenClosure() {
+    var smallF32 = new Float32Array(16);
+    smallF32[3] = 133700;
+    window.__readClosureF32 = function() { return smallF32[3]; };
+  })();
   function checkStealth() {
     try {
       const noLeak = Object.getOwnPropertyNames(window).filter(k => /cheat|memscan|__fableMem|__fableTimeScale/i.test(k)).length === 0;

@@ -91,7 +91,9 @@ fun MemoryEnginePanel(
     maxWidthDp: Dp = 360.dp,
     previewMode: Boolean = false,
     onRefreshScan: () -> Unit = {},
-    onQuickEditResult: (MemScanResultItem, String) -> Unit = { _, _ -> }
+    onQuickEditResult: (MemScanResultItem, String) -> Unit = { _, _ -> },
+    onWriteAllResults: (String) -> Unit = {},
+    onReloadAndHook: () -> Unit = {}
 ) {
     val s = WebsiteMemoryEngine.clampPanelScalePct(scalePct) / 100f
     val corner = (14f * s).coerceIn(8f, 22f).dp
@@ -459,11 +461,13 @@ fun MemoryEnginePanel(
 
                     Spacer(Modifier.height((6f * s).dp))
 
-                    val hideInput = state.scanType == MemScanType.UNKNOWN ||
-                        state.scanType == MemScanType.INCREASED ||
-                        state.scanType == MemScanType.DECREASED ||
+                    val hideInput = !state.hasActiveScan && state.scanType == MemScanType.UNKNOWN
+                    val isOptionalNextValue = state.hasActiveScan && (
                         state.scanType == MemScanType.CHANGED ||
-                        state.scanType == MemScanType.UNCHANGED
+                            state.scanType == MemScanType.INCREASED ||
+                            state.scanType == MemScanType.DECREASED ||
+                            state.scanType == MemScanType.UNCHANGED
+                        )
                     if (!hideInput) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy((5f * s).dp),
@@ -472,7 +476,7 @@ fun MemoryEnginePanel(
                             CeInputField(
                                 value = query1,
                                 onValueChange = { query1 = it },
-                                placeholder = if (state.dataType == MemDataType.AOB) "48 8B ?? 01" else if (state.scanType == MemScanType.BETWEEN) "Min value" else "Enter number (e.g. 100)",
+                                placeholder = if (state.dataType == MemDataType.AOB) "48 8B ?? 01" else if (state.scanType == MemScanType.BETWEEN) "Min value" else if (isOptionalNextValue) "New value (or empty for ${state.scanType.label})" else "Enter number (e.g. 100)",
                                 fontSize = fsBody,
                                 enabled = !previewMode,
                                 onDone = {
@@ -559,8 +563,22 @@ fun MemoryEnginePanel(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
+                        if (state.scope == MemScope.PAGE_WASM) {
+                            Spacer(Modifier.width((4f * s).dp))
+                            Surface(
+                                shape = RoundedCornerShape((6f * s).dp),
+                                color = Color(0xFF065F46),
+                                modifier = Modifier
+                                    .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
+                                    .clickable(enabled = !previewMode && !state.busy, onClick = onReloadAndHook)
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (6f * s).dp)) {
+                                    Text(text = "Hook Reload", color = Color(0xFFA7F3D0), fontSize = fsSmall, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
                         if (state.hasActiveScan && state.results.isNotEmpty()) {
-                            Spacer(Modifier.width((5f * s).dp))
+                            Spacer(Modifier.width((4f * s).dp))
                             Surface(
                                 shape = RoundedCornerShape((6f * s).dp),
                                 color = Color(0xFF1E293B),
@@ -568,8 +586,25 @@ fun MemoryEnginePanel(
                                     .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
                                     .clickable(enabled = !previewMode && !state.busy, onClick = onRefreshScan)
                             ) {
-                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (7f * s).dp)) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (6f * s).dp)) {
                                     Text(text = "Refresh", color = Color(0xFF38BDF8), fontSize = fsSmall, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                        if (state.results.isNotEmpty() && query1.isNotBlank()) {
+                            Spacer(Modifier.width((4f * s).dp))
+                            Surface(
+                                shape = RoundedCornerShape((6f * s).dp),
+                                color = Color(0xFFB45309),
+                                modifier = Modifier
+                                    .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
+                                    .clickable(enabled = !previewMode && !state.busy) {
+                                        focusManager.clearFocus()
+                                        onWriteAllResults(query1)
+                                    }
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (6f * s).dp)) {
+                                    Text(text = "Write All", color = Color.White, fontSize = fsSmall, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -1122,7 +1157,9 @@ fun DraggableMemoryEnginePanel(
     onTurnOff: () -> Unit,
     modifier: Modifier = Modifier,
     onRefreshScan: () -> Unit = {},
-    onQuickEditResult: (MemScanResultItem, String) -> Unit = { _, _ -> }
+    onQuickEditResult: (MemScanResultItem, String) -> Unit = { _, _ -> },
+    onWriteAllResults: (String) -> Unit = {},
+    onReloadAndHook: () -> Unit = {}
 ) {
     val density = LocalDensity.current
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
@@ -1206,6 +1243,8 @@ fun DraggableMemoryEnginePanel(
             maxWidthDp = (maxWidth - 12.dp).coerceAtLeast(220.dp),
             onRefreshScan = onRefreshScan,
             onQuickEditResult = onQuickEditResult,
+            onWriteAllResults = onWriteAllResults,
+            onReloadAndHook = onReloadAndHook,
             modifier = Modifier
                 .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
                 .onSizeChanged {

@@ -593,6 +593,8 @@ fun BrowserScreen(
                 onRefreshRegions = viewModel.memoryEngineManager::refreshRegions,
                 onRefreshScan = viewModel.memoryEngineManager::refreshScanResults,
                 onQuickEditResult = viewModel.memoryEngineManager::writeScanItem,
+                onWriteAllResults = viewModel.memoryEngineManager::writeAllScanResults,
+                onReloadAndHook = viewModel.memoryEngineManager::reloadAndHookActiveTab,
                 onPositionChangeFinished = viewModel::setMemoryEnginePanelPosition,
                 onToggleExpanded = { viewModel.setMemoryEnginePanelExpanded(!settings.memoryEnginePanelExpanded) },
                 onTurnOff = { viewModel.setMemoryEngineEnabled(false) },

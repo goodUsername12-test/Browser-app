@@ -1154,9 +1154,15 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 val resetJs = com.fable.browser.engine.WebsiteMemoryEngine.buildBlinkResetIfInstalledScript()
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     runCatching {
+                        val curSettings = tab.hybridSettingsProvider?.invoke()
                         val freshBoot = tab.hybridBootstrapProvider?.invoke(wv.url ?: tab.url.value).orEmpty()
                         com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(wv, freshBoot)
-                        wv.evaluateJavascript(resetJs, null)
+                        if (curSettings?.memoryEngineEnabled == true) {
+                            val memBoot = com.fable.browser.engine.WebsiteMemoryEngine.buildBootstrapScript(curSettings)
+                            if (memBoot.isNotBlank()) wv.evaluateJavascript(memBoot, null)
+                        } else {
+                            wv.evaluateJavascript(resetJs, null)
+                        }
                     }
                 }
             }

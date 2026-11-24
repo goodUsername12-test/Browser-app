@@ -174,7 +174,12 @@ bool is_safe_private_rw_region(const MemRegion& r) {
             lbl.find("kgsl") != std::string_view::npos ||
             lbl.find("mali") != std::string_view::npos ||
             lbl.find("dma_buf") != std::string_view::npos ||
-            lbl.find("dalvik-zygote") != std::string_view::npos) {
+            lbl.find("dalvik-zygote") != std::string_view::npos ||
+            lbl.find("dalvik-LinearAlloc") != std::string_view::npos ||
+            lbl.find("dalvik-CompilerMetadata") != std::string_view::npos ||
+            lbl.find("dalvik-jit-code-cache") != std::string_view::npos ||
+            lbl.ends_with(".dex") || lbl.ends_with(".vdex") ||
+            lbl.ends_with(".art") || lbl.ends_with(".oat")) {
             return false;
         }
     }
@@ -650,6 +655,38 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
                 }
                 const std::size_t advance = (valid > item_sz) ? (valid - item_sz + 1) : valid;
                 cursor += advance;
+            } else if (dtype == DT_AUTO) {
+                if (valid >= 4) {
+                    const std::size_t last_off = valid - 4;
+                    for (std::size_t off = 0; off <= last_off && g_hits.size() < cap; off += 4) {
+                        const std::uint64_t addr = cursor + off;
+                        if (is_inside_scanner_internal(addr, 8, chunk_start, chunk_end)) continue;
+                        const std::uint64_t raw32 = load_raw_u64(chunk.data() + off, DT_INT32);
+                        if (scan_type == SC_UNKNOWN) {
+                            if (raw32 != 0) g_hits.push_back(ScanHit{addr, raw32, DT_INT32});
+                            continue;
+                        }
+                        if (match_numeric(raw32, 0, false, DT_INT32, scan_type, v1, v2, iv1, iv2)) {
+                            g_hits.push_back(ScanHit{addr, raw32, DT_INT32});
+                            continue;
+                        }
+                        const double f32v = decode_numeric(raw32, DT_FLOAT);
+                        if (std::isfinite(f32v) && (v1 == 0.0 || std::fabs(f32v) >= 1e-6) &&
+                            match_numeric(raw32, 0, false, DT_FLOAT, scan_type, v1, v2, iv1, iv2)) {
+                            g_hits.push_back(ScanHit{addr, raw32, DT_FLOAT});
+                            continue;
+                        }
+                        if ((off % 8 == 0) && (off + 8) <= valid) {
+                            const std::uint64_t raw64 = load_raw_u64(chunk.data() + off, DT_DOUBLE);
+                            const double f64v = decode_numeric(raw64, DT_DOUBLE);
+                            if (std::isfinite(f64v) && (v1 == 0.0 || std::fabs(f64v) >= 1e-6) &&
+                                match_numeric(raw64, 0, false, DT_DOUBLE, scan_type, v1, v2, iv1, iv2)) {
+                                g_hits.push_back(ScanHit{addr, raw64, DT_DOUBLE});
+                            }
+                        }
+                    }
+                }
+                cursor += valid;
             } else {
                 for (int ti = 0; ti < scan_type_count && g_hits.size() < cap; ++ti) {
                     const int cur_dt = scan_types[ti];

@@ -249,7 +249,7 @@ async function applyMemoryScannerScript() {
         matches: ["<all_urls>"],
         js: [{ code: "var __MEM_CFG = " + cfgStr + ";" }, { file: "memory_scanner.js" }],
         runAt: "document_start",
-        allFrames: false,
+        allFrames: true,
         matchAboutBlank: true,
       });
     }
@@ -286,8 +286,8 @@ async function handleMemCommand(msg) {
     if ((!resp || typeof resp.payload !== "string") && browser.tabs.executeScript) {
       try {
         const cfgStr = JSON.stringify({ enabled: true, ch: memScanChannel });
-        await browser.tabs.executeScript(tab.id, { code: "var __MEM_CFG = " + cfgStr + ";" });
-        await browser.tabs.executeScript(tab.id, { file: "memory_scanner.js" });
+        await browser.tabs.executeScript(tab.id, { code: "var __MEM_CFG = " + cfgStr + ";", allFrames: true });
+        await browser.tabs.executeScript(tab.id, { file: "memory_scanner.js", allFrames: true });
         resp = await browser.tabs.sendMessage(tab.id, { type: "fable-mem-cmd", cmd });
       } catch (_) {}
     }

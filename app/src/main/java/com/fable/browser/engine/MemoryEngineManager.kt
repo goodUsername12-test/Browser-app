@@ -146,17 +146,25 @@ class MemoryEngineManager @Inject constructor(
     fun nextScan(val1: String, val2: String = "") {
         val st = _state.value
         if (st.busy) return
-        _state.update { it.copy(busy = true, statusText = "Filtering matches...") }
+        val clean1 = val1.trim()
+        val effectiveScanType = when {
+            (st.scanType == MemScanType.UNKNOWN || st.scanType == MemScanType.CHANGED ||
+                st.scanType == MemScanType.INCREASED || st.scanType == MemScanType.DECREASED ||
+                st.scanType == MemScanType.UNCHANGED) && clean1.isNotEmpty() -> MemScanType.EXACT
+            st.scanType == MemScanType.UNKNOWN -> MemScanType.CHANGED
+            else -> st.scanType
+        }
+        _state.update { it.copy(busy = true, scanType = effectiveScanType, statusText = "Filtering matches...") }
         scope.launch {
             val raw = when (st.scope) {
                 MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) {
-                    NativeMemoryScanner.nextScan(st.scanType, val1.trim(), val2.trim(), 150)
+                    NativeMemoryScanner.nextScan(effectiveScanType, clean1, val2.trim(), 150)
                 }
                 MemScope.PAGE_WASM -> {
                     val cmd = JSONObject().apply {
                         put("op", "nextScan")
-                        put("scanType", st.scanType.jsCode)
-                        put("val1", val1.trim())
+                        put("scanType", effectiveScanType.jsCode)
+                        put("val1", clean1)
                         put("val2", val2.trim())
                         put("maxReturn", 150)
                     }
@@ -165,6 +173,41 @@ class MemoryEngineManager @Inject constructor(
             }
             applyScanResponse(raw, isFirst = false)
         }
+    }
+
+    fun writeAllScanResults(newValue: String) {
+        val st = _state.value
+        val clean = newValue.trim()
+        if (st.busy || clean.isEmpty() || st.results.isEmpty()) return
+        _state.update { it.copy(busy = true, statusText = "Writing all matches...") }
+        scope.launch {
+            if (st.scope == MemScope.PAGE_WASM) {
+                val raw = runPageCommand(JSONObject().apply {
+                    put("op", "writeAll")
+                    put("val", clean)
+                    put("maxWrite", 50)
+                    put("maxReturn", 150)
+                })
+                applyScanResponse(raw, isFirst = false)
+            } else {
+                var wrote = 0
+                withContext(Dispatchers.IO) {
+                    for (item in st.results.take(50)) {
+                        val dt = resolveDataType(item.type, st.dataType)
+                        if (NativeMemoryScanner.writeValue(item.addr, dt, clean)) wrote++
+                    }
+                }
+                val raw = withContext(Dispatchers.IO) { NativeMemoryScanner.refreshHits(150) }
+                applyScanResponse(raw, isFirst = false)
+                _state.update { it.copy(statusText = "Wrote $wrote match${if (wrote == 1) "" else "es"} = $clean") }
+            }
+        }
+    }
+
+    fun reloadAndHookActiveTab() {
+        resetScan()
+        tabManager.reload()
+        _state.update { it.copy(statusText = "Reloading page with CE hooks active from startup...") }
     }
 
     fun refreshScanResults() {
@@ -541,6 +584,8 @@ class MemoryEngineManager @Inject constructor(
             else ->
                 "$total match${if (total == 1) "" else "es"} (showing ${list.size}) · change value & tap Next"
         }
+        val wroteCnt = obj.optInt("wrote", -1)
+        val finalStatus = if (wroteCnt >= 0) "Wrote $wroteCnt match${if (wroteCnt == 1) "" else "es"} · $status" else status
         _state.update {
             it.copy(
                 busy = false,
@@ -550,7 +595,8 @@ class MemoryEngineManager @Inject constructor(
                 wasmCount = wasmCnt,
                 bufCount = bufCnt,
                 results = list,
-                statusText = status
+                scanType = if (isFirst && it.scanType == MemScanType.UNKNOWN && total > 0) MemScanType.CHANGED else it.scanType,
+                statusText = finalStatus
             )
         }
     }

@@ -278,30 +278,61 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
   if (parsed.length === 1) return JSON.stringify(parsed[0]);
   if (op === "readBatch") {
     const vals = {};
+    const freezeStats = {};
     for (const o of parsed) {
       if (o.values && typeof o.values === "object") Object.assign(vals, o.values);
+      if (o.freezeStats && typeof o.freezeStats === "object") Object.assign(freezeStats, o.freezeStats);
     }
-    return JSON.stringify({ ok: true, values: vals });
+    return JSON.stringify({ ok: true, values: vals, freezeStats });
   }
-  if (op === "write" || op === "hexDump") {
+  if (op === "writeBatch") {
+    let wrote = 0;
+    const vals = {};
+    for (const o of parsed) {
+      if (!o.ok) continue;
+      wrote += Number(o.wrote || 0);
+      if (o.values && typeof o.values === "object") Object.assign(vals, o.values);
+    }
+    return JSON.stringify({ ok: true, wrote, values: vals });
+  }
+  if (op === "freezeBatch") {
+    let locked = 0;
+    const freezeStats = {};
+    for (const o of parsed) {
+      if (!o.ok) continue;
+      locked += Number(o.locked || 0);
+      if (o.freezeStats && typeof o.freezeStats === "object") Object.assign(freezeStats, o.freezeStats);
+    }
+    return JSON.stringify({ ok: true, locked, freezeStats });
+  }
+  if (op === "unfreeze" || op === "unfreezeBatch" || op === "unfreezeAll") {
+    return JSON.stringify({ ok: true });
+  }
+  if (op === "write" || op === "hexDump" || op === "setFreeze") {
     const hit = parsed.find((o) => o.ok === true) || parsed[0];
     return JSON.stringify(hit);
   }
   if (op === "regions") {
-    let totalKb = 0, fc = 0;
+    let totalKb = 0, fc = 0, workerCount = 0;
     const regs = [];
+    const engSet = new Set();
     for (const o of parsed) {
       if (!o.ok) continue;
       fc++;
       totalKb += Number(o.totalKb || 0);
+      workerCount += Number(o.workerCount || 0);
+      for (const e of (o.engines || [])) { if (e) engSet.add(e); }
       for (const r of (o.regions || [])) {
-        if (regs.length < 120) regs.push(r);
+        if (regs.length < 160) regs.push(r);
       }
     }
-    return JSON.stringify({ ok: fc > 0, count: regs.length, totalKb, frameCount: fc, regions: regs });
+    return JSON.stringify({ ok: fc > 0, count: regs.length, totalKb, workerCount, frameCount: fc, engines: Array.from(engSet), regions: regs });
   }
-  let anyOk = false, total = 0, canUndo = false, wasmCount = 0, bufCount = 0, wrote = 0, hasWrote = false, fc = 0;
+  let anyOk = false, total = 0, canUndo = false, wasmCount = 0, bufCount = 0, workerCount = 0, skippedXOrigin = 0;
+  let maxElapsedMs = 0, anyTimedOut = false, anyFallback = false, anySnapshot = false;
+  let wrote = 0, hasWrote = false, fc = 0;
   let firstErr = null;
+  const engSet = new Set();
   const wasmItems = [], bufItems = [], otherItems = [];
   for (const o of parsed) {
     if (!o.ok) { if (!firstErr && o.error) firstErr = o.error; continue; }
@@ -310,6 +341,13 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
     if (o.canUndo) canUndo = true;
     wasmCount += Number(o.wasmCount || 0);
     bufCount += Number(o.bufCount || 0);
+    workerCount += Number(o.workerCount || 0);
+    skippedXOrigin += Number(o.skippedXOrigin || 0);
+    if (Number(o.elapsedMs || 0) > maxElapsedMs) maxElapsedMs = Number(o.elapsedMs || 0);
+    if (o.timedOut) anyTimedOut = true;
+    if (o.fallbackUsed) anyFallback = true;
+    if (o.snapshotActive) anySnapshot = true;
+    for (const e of (o.engines || [])) { if (e) engSet.add(e); }
     if (typeof o.wrote === "number") { hasWrote = true; wrote += o.wrote; }
     for (const it of (o.items || [])) {
       if (it.kind === "wasm") wasmItems.push(it);
@@ -318,9 +356,13 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
     }
   }
   if (!anyOk) return JSON.stringify({ ok: false, error: firstErr || "Scan failed" });
-  const lim = maxReturn || 150;
+  const lim = maxReturn || 300;
   const items = wasmItems.concat(bufItems, otherItems).slice(0, lim);
-  const res = { ok: true, total, canUndo, wasmCount, bufCount, frameCount: fc, items };
+  const res = {
+    ok: true, total, canUndo, wasmCount, bufCount, workerCount, skippedXOrigin,
+    frameCount: fc, elapsedMs: maxElapsedMs, timedOut: anyTimedOut, complete: !anyTimedOut,
+    fallbackUsed: anyFallback, snapshotActive: anySnapshot, engines: Array.from(engSet), items
+  };
   if (hasWrote) res.wrote = wrote;
   return JSON.stringify(res);
 }
@@ -358,7 +400,7 @@ async function handleMemCommand(msg) {
     }
     let payload = null;
     if (Array.isArray(results) && results.some((x) => typeof x === "string" && x.length > 0)) {
-      payload = mergeFrameMemPayloads(results, cmd.op, cmd.maxReturn || 150);
+      payload = mergeFrameMemPayloads(results, cmd.op, cmd.maxReturn || 300);
     } else {
       let resp = null;
       try { resp = await browser.tabs.sendMessage(tab.id, { type: "fable-mem-cmd", cmd }); } catch (_) {}

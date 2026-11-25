@@ -188,14 +188,35 @@ private class FableHybridJsBridge(
     )
     private val activeJsDownloads = java.util.concurrent.ConcurrentHashMap<String, StreamingJsDownload>()
 
+    class FrameMemReqState {
+        val results = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val ackedFrames: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+        val doneFrames: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+        val expectedExtraChildren = java.util.concurrent.atomic.AtomicInteger(0)
+        @Volatile var lastActivityMs: Long = System.currentTimeMillis()
+    }
+
+    @JavascriptInterface
+    fun onFrameMemAck(reqId: String?, frameId: String?, childCount: Int) {
+        if (reqId.isNullOrBlank() || frameId.isNullOrBlank()) return
+        val st = pendingFrameMemCollectors[reqId] ?: return
+        if (st.ackedFrames.add(frameId) && childCount > 0) {
+            st.expectedExtraChildren.addAndGet(childCount)
+        }
+        st.lastActivityMs = System.currentTimeMillis()
+    }
+
     @JavascriptInterface
     fun onFrameMemResult(reqId: String?, frameId: String?, jsonStr: String?) {
         if (reqId.isNullOrBlank() || jsonStr.isNullOrBlank()) return
-        pendingFrameMemCollectors[reqId]?.add(jsonStr)
+        val st = pendingFrameMemCollectors[reqId] ?: return
+        st.results.add(jsonStr)
+        if (!frameId.isNullOrBlank()) st.doneFrames.add(frameId)
+        st.lastActivityMs = System.currentTimeMillis()
     }
 
     companion object {
-        val pendingFrameMemCollectors = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CopyOnWriteArrayList<String>>()
+        val pendingFrameMemCollectors = java.util.concurrent.ConcurrentHashMap<String, FrameMemReqState>()
     }
 
     @JavascriptInterface
@@ -1136,16 +1157,19 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
             }
 
             override suspend fun runMemoryCommand(cmdJson: String): String {
+                val startMs = System.currentTimeMillis()
                 val cmdObj = runCatching { org.json.JSONObject(cmdJson) }.getOrNull()
                 val op = cmdObj?.optString("op").orEmpty()
-                val maxRet = cmdObj?.optInt("maxReturn", 150) ?: 150
+                val maxRet = cmdObj?.optInt("maxReturn", 300) ?: 300
                 val targetFrame = cmdObj?.optString("targetFrame").orEmpty()
+                val isHeavyOp = op == "firstScan" || op == "nextScan" || op == "writeAll" || op == "writeBatch" || op == "freezeBatch" || op == "regions"
+                val timeoutMs = (cmdObj?.optLong("timeoutMs", if (isHeavyOp) 15_000L else 4_000L) ?: 15_000L).coerceIn(1_000L, 80_000L)
                 val reqId = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
-                val collector = java.util.concurrent.CopyOnWriteArrayList<String>()
-                FableHybridJsBridge.pendingFrameMemCollectors[reqId] = collector
+                val reqState = FableHybridJsBridge.FrameMemReqState()
+                FableHybridJsBridge.pendingFrameMemCollectors[reqId] = reqState
                 try {
                     val script = com.fable.browser.engine.WebsiteMemoryEngine.buildBlinkCommandScript(cmdJson, reqId)
-                    val topRaw = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
+                    val topRaw = kotlinx.coroutines.withTimeoutOrNull(timeoutMs + 2_000L) {
                         kotlinx.coroutines.suspendCancellableCoroutine<String> { cont ->
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 runCatching {
@@ -1165,27 +1189,38 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                                 }
                             }
                         }
-                    } ?: return "{\"ok\":false,\"error\":\"Blink scan timed out\"}"
+                    } ?: return "{\"ok\":false,\"error\":\"Blink scan timed out (${timeoutMs / 1000L}s)\"}"
                     val topObj = runCatching { org.json.JSONObject(topRaw) }.getOrNull()
                     val childFrames = topObj?.optInt("childFrames", 0) ?: 0
                     val needsSubframes = childFrames > 0 || (targetFrame.isNotBlank() && targetFrame != "f0")
                     if (needsSubframes) {
-                        val waitMs = when (op) {
-                            "firstScan" -> 480L
-                            "nextScan", "writeAll", "regions" -> 260L
-                            else -> 140L
+                        val discoveryMs = when (op) {
+                            "firstScan" -> 260L
+                            "nextScan", "writeAll", "writeBatch", "freezeBatch", "regions" -> 180L
+                            else -> 110L
                         }
-                        val deadline = System.currentTimeMillis() + waitMs
-                        while (System.currentTimeMillis() < deadline) {
-                            if (targetFrame.isNotBlank() && targetFrame != "f0" && collector.isNotEmpty()) break
-                            kotlinx.coroutines.delay(20L)
+                        val minWaitUntil = System.currentTimeMillis() + discoveryMs
+                        val hardDeadline = startMs + timeoutMs + 1_500L
+                        while (System.currentTimeMillis() < hardDeadline) {
+                            val now = System.currentTimeMillis()
+                            if (targetFrame.isNotBlank() && targetFrame != "f0" && reqState.results.isNotEmpty()) break
+                            val acked = reqState.ackedFrames.size
+                            val done = reqState.doneFrames.size
+                            val expectedTotal = childFrames + reqState.expectedExtraChildren.get()
+                            if (acked > 0 && done >= acked && (done >= expectedTotal || (now >= minWaitUntil && (now - reqState.lastActivityMs) >= 50L))) {
+                                break
+                            }
+                            if (acked == 0 && now >= minWaitUntil) {
+                                break
+                            }
+                            kotlinx.coroutines.delay(16L)
                         }
                     }
-                    val allPayloads = ArrayList<String>(1 + collector.size)
+                    val allPayloads = ArrayList<String>(1 + reqState.results.size)
                     if (topObj == null || !topObj.optBoolean("skippedFrame", false)) {
                         allPayloads.add(topRaw)
                     }
-                    allPayloads.addAll(collector)
+                    allPayloads.addAll(reqState.results)
                     return com.fable.browser.engine.WebsiteMemoryEngine.mergeMultiFrameResults(allPayloads, op, maxRet)
                 } finally {
                     FableHybridJsBridge.pendingFrameMemCollectors.remove(reqId)

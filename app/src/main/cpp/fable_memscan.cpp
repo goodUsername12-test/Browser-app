@@ -9,7 +9,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <chrono>
 #include <mutex>
+#include <pthread.h>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -154,6 +157,8 @@ private:
 };
 
 std::mutex g_scan_mu;
+std::atomic<std::uint64_t> g_freeze_buf_start{0};
+std::atomic<std::uint64_t> g_freeze_buf_end{0};
 std::vector<ScanHit> g_hits;
 std::vector<ScanHit> g_prev_hits;
 int g_last_type = DT_INT32;
@@ -237,6 +242,9 @@ bool is_inside_scanner_internal(std::uint64_t addr, std::size_t size,
         const std::uint64_t ve = vs + v.capacity() * sizeof(ScanHit);
         return addr < ve && (addr + size) > vs;
     };
+    const std::uint64_t f_lo = g_freeze_buf_start.load(std::memory_order_relaxed);
+    const std::uint64_t f_hi = g_freeze_buf_end.load(std::memory_order_relaxed);
+    if (f_hi > f_lo && addr + size > f_lo && addr < f_hi) return true;
     return overlaps_vec(g_hits) || overlaps_vec(g_prev_hits);
 }
 
@@ -510,7 +518,7 @@ std::string json_escape(std::string_view s) {
     return out;
 }
 
-std::string build_results_json(SafeMemIo& io, std::size_t max_return) {
+std::string build_results_json(SafeMemIo& io, std::size_t max_return, std::int64_t elapsed_ms = 0, bool timed_out = false) {
     std::string json;
     json.reserve(4096);
     json += "{\"ok\":true,\"mode\":\"";
@@ -519,6 +527,12 @@ std::string build_results_json(SafeMemIo& io, std::size_t max_return) {
     json += std::to_string(g_hits.size());
     json += ",\"canUndo\":";
     json += (g_prev_hits.empty() ? "false" : "true");
+    json += ",\"elapsedMs\":";
+    json += std::to_string(elapsed_ms);
+    json += ",\"timedOut\":";
+    json += (timed_out ? "true" : "false");
+    json += ",\"complete\":";
+    json += (timed_out ? "false" : "true");
     json += ",\"items\":[";
     const std::size_t limit = std::min(g_hits.size(), max_return);
     std::uint8_t tmp[64];
@@ -555,8 +569,12 @@ std::string build_results_json(SafeMemIo& io, std::size_t max_return) {
     return json;
 }
 
-std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1, const std::string& s2, std::size_t max_return) {
+std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1, const std::string& s2, std::size_t max_return, int timeout_ms = 15000) {
     std::lock_guard<std::mutex> lk(g_scan_mu);
+    const auto t_start = std::chrono::steady_clock::now();
+    const int clamped_timeout = std::clamp(timeout_ms, 1000, 80000);
+    const auto t_deadline = t_start + std::chrono::milliseconds(clamped_timeout);
+    bool timed_out = false;
     g_prev_hits.clear();
     g_hits.clear();
     g_last_type = dtype;
@@ -607,8 +625,10 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
 
     for (const auto& reg : regions) {
         if (g_hits.size() >= cap) break;
+        if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
         std::uint64_t cursor = reg.start;
         while (cursor < reg.end && g_hits.size() < cap) {
+            if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
             const std::size_t to_read = static_cast<std::size_t>(std::min<std::uint64_t>(CHUNK_BYTES, reg.end - cursor));
             if (to_read < 1) break;
             const ssize_t got = io.read_at(cursor, chunk.data(), to_read);
@@ -676,12 +696,28 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
                             g_hits.push_back(ScanHit{addr, raw32, DT_FLOAT});
                             continue;
                         }
-                        if ((off % 8 == 0) && (off + 8) <= valid) {
+                        if ((off + 8) <= valid) {
                             const std::uint64_t raw64 = load_raw_u64(chunk.data() + off, DT_DOUBLE);
+                            if (scan_type == SC_EXACT && (iv1 < -2147483648LL || iv1 > 2147483647LL) &&
+                                match_numeric(raw64, 0, false, DT_INT64, scan_type, v1, v2, iv1, iv2)) {
+                                g_hits.push_back(ScanHit{addr, raw64, DT_INT64});
+                                continue;
+                            }
                             const double f64v = decode_numeric(raw64, DT_DOUBLE);
                             if (std::isfinite(f64v) && (v1 == 0.0 || std::fabs(f64v) >= 1e-6) &&
                                 match_numeric(raw64, 0, false, DT_DOUBLE, scan_type, v1, v2, iv1, iv2)) {
                                 g_hits.push_back(ScanHit{addr, raw64, DT_DOUBLE});
+                                continue;
+                            }
+                        }
+                        if (scan_type == SC_EXACT && iv1 >= -32768 && iv1 <= 32767 && iv1 != 0 && std::floor(v1) == v1) {
+                            const std::uint64_t s16a = load_raw_u64(chunk.data() + off, DT_INT16);
+                            if (match_numeric(s16a, 0, false, DT_INT16, scan_type, v1, v2, iv1, iv2)) {
+                                g_hits.push_back(ScanHit{addr, s16a, DT_INT16});
+                            }
+                            const std::uint64_t s16b = load_raw_u64(chunk.data() + off + 2, DT_INT16);
+                            if (match_numeric(s16b, 0, false, DT_INT16, scan_type, v1, v2, iv1, iv2)) {
+                                g_hits.push_back(ScanHit{addr + 2, s16b, DT_INT16});
                             }
                         }
                     }
@@ -708,11 +744,16 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
         }
     }
 
-    return build_results_json(io, max_return);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_start).count();
+    return build_results_json(io, max_return, elapsed_ms, timed_out);
 }
 
-std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::string& s2, std::size_t max_return) {
+std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::string& s2, std::size_t max_return, int timeout_ms = 15000) {
     std::lock_guard<std::mutex> lk(g_scan_mu);
+    const auto t_start = std::chrono::steady_clock::now();
+    const auto t_deadline = t_start + std::chrono::milliseconds(std::clamp(timeout_ms, 1000, 80000));
+    bool timed_out = false;
     if (g_hits.empty()) {
         return "{\"ok\":false,\"error\":\"Run First Scan before Next Scan\"}";
     }
@@ -745,7 +786,12 @@ std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::
     next.reserve(std::min<std::size_t>(g_hits.size(), 4096));
     std::uint8_t buf[64];
 
+    std::size_t checked = 0;
     for (const auto& h : g_hits) {
+        if ((++checked & 1023U) == 0 && std::chrono::steady_clock::now() >= t_deadline) {
+            timed_out = true;
+            break;
+        }
         const int htype = static_cast<int>(h.hit_type);
         const std::size_t rd_sz = std::min<std::size_t>(type_size(htype, g_last_str_len), sizeof(buf));
         const ssize_t got = io.read_at(h.addr, buf, rd_sz);
@@ -769,7 +815,9 @@ std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::
         }
     }
     g_hits.swap(next);
-    return build_results_json(io, max_return);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_start).count();
+    return build_results_json(io, max_return, elapsed_ms, timed_out);
 }
 
 std::string mem_refresh_hits_impl(std::size_t max_return) {
@@ -894,6 +942,191 @@ std::string mem_regions_json_impl() {
     return out;
 }
 
+
+struct NativeFreezeEntry {
+    std::uint64_t addr = 0;
+    int dtype = DT_INT32;
+    std::uint8_t bytes[64] = {0};
+    std::size_t len = 0;
+    std::uint64_t blocked_writes = 0;
+    bool detached = false;
+};
+
+std::mutex g_freeze_mu;
+std::vector<NativeFreezeEntry> g_freezes;
+std::atomic<bool> g_freeze_running{false};
+pthread_t g_freeze_thread{};
+bool g_freeze_thread_valid = false;
+
+bool encode_value_bytes(int dtype, const std::string& val_str, std::uint8_t out_buf[64], std::size_t& out_sz) {
+    out_sz = 0;
+    std::memset(out_buf, 0, 64);
+    if (dtype == DT_STRING) {
+        if (val_str.empty()) return false;
+        out_sz = std::min<std::size_t>(val_str.size(), 64);
+        std::memcpy(out_buf, val_str.data(), out_sz);
+        return true;
+    }
+    if (dtype == DT_AOB) {
+        const auto pat = parse_aob(val_str);
+        if (pat.bytes.empty()) return false;
+        out_sz = std::min<std::size_t>(pat.bytes.size(), 64);
+        std::memcpy(out_buf, pat.bytes.data(), out_sz);
+        return true;
+    }
+    double dv = 0.0;
+    std::int64_t iv = 0;
+    if (!parse_double_strict(val_str.c_str(), dv)) return false;
+    parse_i64_strict(val_str.c_str(), iv);
+    switch (dtype) {
+        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(iv); std::memcpy(out_buf, &v, 1); out_sz = 1; return true; }
+        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(iv); std::memcpy(out_buf, &v, 2); out_sz = 2; return true; }
+        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(iv); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
+        case DT_INT64:  { std::memcpy(out_buf, &iv, 8); out_sz = 8; return true; }
+        case DT_FLOAT:  { float v = static_cast<float>(dv); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
+        case DT_DOUBLE: { std::memcpy(out_buf, &dv, 8); out_sz = 8; return true; }
+        default: return false;
+    }
+}
+
+void* native_freeze_worker(void*) {
+    SafeMemIo io(true);
+    std::uint8_t cur[64];
+    while (g_freeze_running.load(std::memory_order_acquire)) {
+        {
+            std::lock_guard<std::mutex> lk(g_freeze_mu);
+            if (g_freezes.empty()) {
+                g_freeze_running.store(false, std::memory_order_release);
+                break;
+            }
+            if (io.valid()) {
+                for (auto& f : g_freezes) {
+                    if (f.len == 0 || f.len > sizeof(cur)) continue;
+                    const ssize_t got = io.read_at(f.addr, cur, f.len);
+                    if (got != static_cast<ssize_t>(f.len)) {
+                        f.detached = true;
+                        continue;
+                    }
+                    f.detached = false;
+                    if (std::memcmp(cur, f.bytes, f.len) != 0) {
+                        const ssize_t wrote = io.write_at(f.addr, f.bytes, f.len);
+                        if (wrote == static_cast<ssize_t>(f.len)) {
+                            f.blocked_writes++;
+                        } else {
+                            f.detached = true;
+                        }
+                    }
+                }
+            }
+        }
+        ::usleep(2000); // 500 Hz enforcement loop
+    }
+    return nullptr;
+}
+
+void stop_freeze_thread_locked(std::unique_lock<std::mutex>& lk) {
+    g_freeze_running.store(false, std::memory_order_release);
+    if (g_freeze_thread_valid) {
+        pthread_t th = g_freeze_thread;
+        g_freeze_thread_valid = false;
+        lk.unlock();
+        ::pthread_join(th, nullptr);
+        lk.lock();
+    }
+}
+
+bool mem_set_freeze_impl(std::uint64_t addr, int dtype, const std::string& val_str) {
+    std::uint8_t buf[64];
+    std::size_t sz = 0;
+    if (!encode_value_bytes(dtype, val_str, buf, sz)) return false;
+    if (!is_addr_in_safe_rw_region(addr, sz)) return false;
+    {
+        SafeMemIo io(true);
+        if (!io.valid() || io.write_at(addr, buf, sz) != static_cast<ssize_t>(sz)) return false;
+    }
+    std::unique_lock<std::mutex> lk(g_freeze_mu);
+    bool updated = false;
+    for (auto& f : g_freezes) {
+        if (f.addr == addr) {
+            f.dtype = dtype;
+            std::memcpy(f.bytes, buf, sz);
+            f.len = sz;
+            f.detached = false;
+            updated = true;
+            break;
+        }
+    }
+    if (!updated) {
+        NativeFreezeEntry e;
+        e.addr = addr;
+        e.dtype = dtype;
+        std::memcpy(e.bytes, buf, sz);
+        e.len = sz;
+        g_freezes.push_back(e);
+        const std::uint64_t fl = reinterpret_cast<std::uint64_t>(g_freezes.data());
+        g_freeze_buf_start.store(fl, std::memory_order_relaxed);
+        g_freeze_buf_end.store(fl + g_freezes.capacity() * sizeof(NativeFreezeEntry), std::memory_order_relaxed);
+    }
+    if (!g_freeze_running.load(std::memory_order_acquire)) {
+        if (g_freeze_thread_valid) {
+            pthread_t old_th = g_freeze_thread;
+            g_freeze_thread_valid = false;
+            lk.unlock();
+            ::pthread_join(old_th, nullptr);
+            lk.lock();
+        }
+        if (!g_freezes.empty()) {
+            g_freeze_running.store(true, std::memory_order_release);
+            if (::pthread_create(&g_freeze_thread, nullptr, native_freeze_worker, nullptr) == 0) {
+                g_freeze_thread_valid = true;
+            } else {
+                g_freeze_running.store(false, std::memory_order_release);
+            }
+        }
+    }
+    return true;
+}
+
+void mem_unfreeze_impl(std::uint64_t addr) {
+    std::unique_lock<std::mutex> lk(g_freeze_mu);
+    g_freezes.erase(
+        std::remove_if(g_freezes.begin(), g_freezes.end(),
+                       [addr](const NativeFreezeEntry& e) { return e.addr == addr; }),
+        g_freezes.end()
+    );
+    if (g_freezes.empty()) {
+        stop_freeze_thread_locked(lk);
+    }
+}
+
+void mem_unfreeze_all_impl() {
+    std::unique_lock<std::mutex> lk(g_freeze_mu);
+    g_freezes.clear();
+    stop_freeze_thread_locked(lk);
+}
+
+std::string mem_freeze_stats_json_impl() {
+    std::lock_guard<std::mutex> lk(g_freeze_mu);
+    std::string out = "{\"ok\":true,\"stats\":{";
+    bool first = true;
+    for (const auto& f : g_freezes) {
+        if (!first) out += ",";
+        first = false;
+        char addr_hex[32];
+        std::snprintf(addr_hex, sizeof(addr_hex), "0x%llX", static_cast<unsigned long long>(f.addr));
+        const char* st = f.detached ? "detached" : (f.blocked_writes > 0 ? "enforcing" : "locked");
+        out += "\"";
+        out += addr_hex;
+        out += "\":{\"mode\":\"500Hz\",\"blocked\":";
+        out += std::to_string(f.blocked_writes);
+        out += ",\"status\":\"";
+        out += st;
+        out += "\"}";
+    }
+    out += "}}";
+    return out;
+}
+
 std::string jstr_to_std(JNIEnv* env, jstring js) {
     if (!js) return {};
     const char* c = env->GetStringUTFChars(js, nullptr);
@@ -909,27 +1142,29 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeFirstScan(
-    JNIEnv* env, jclass, jint dtype, jint scan_type, jstring val1, jstring val2, jint max_return
+    JNIEnv* env, jclass, jint dtype, jint scan_type, jstring val1, jstring val2, jint max_return, jint timeout_ms
 ) {
     const std::string res = mem_first_scan_impl(
         static_cast<int>(dtype),
         static_cast<int>(scan_type),
         jstr_to_std(env, val1),
         jstr_to_std(env, val2),
-        static_cast<std::size_t>(max_return > 0 ? max_return : 150)
+        static_cast<std::size_t>(max_return > 0 ? max_return : 300),
+        static_cast<int>(timeout_ms > 0 ? timeout_ms : 15000)
     );
     return env->NewStringUTF(res.c_str());
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeNextScan(
-    JNIEnv* env, jclass, jint scan_type, jstring val1, jstring val2, jint max_return
+    JNIEnv* env, jclass, jint scan_type, jstring val1, jstring val2, jint max_return, jint timeout_ms
 ) {
     const std::string res = mem_next_scan_impl(
         static_cast<int>(scan_type),
         jstr_to_std(env, val1),
         jstr_to_std(env, val2),
-        static_cast<std::size_t>(max_return > 0 ? max_return : 150)
+        static_cast<std::size_t>(max_return > 0 ? max_return : 300),
+        static_cast<int>(timeout_ms > 0 ? timeout_ms : 15000)
     );
     return env->NewStringUTF(res.c_str());
 }
@@ -995,6 +1230,34 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeHexDump(
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeListRegions(JNIEnv* env, jclass) {
     const std::string res = mem_regions_json_impl();
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeSetFreeze(
+    JNIEnv* env, jclass, jlong addr, jint dtype, jstring val_str
+) {
+    const bool ok = mem_set_freeze_impl(
+        static_cast<std::uint64_t>(addr),
+        static_cast<int>(dtype),
+        jstr_to_std(env, val_str)
+    );
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeUnfreeze(JNIEnv*, jclass, jlong addr) {
+    mem_unfreeze_impl(static_cast<std::uint64_t>(addr));
+}
+
+JNIEXPORT void JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeUnfreezeAll(JNIEnv*, jclass) {
+    mem_unfreeze_all_impl();
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeGetFreezeStats(JNIEnv* env, jclass) {
+    const std::string res = mem_freeze_stats_json_impl();
     return env->NewStringUTF(res.c_str());
 }
 

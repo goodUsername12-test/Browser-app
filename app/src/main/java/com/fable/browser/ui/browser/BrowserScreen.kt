@@ -567,6 +567,9 @@ fun BrowserScreen(
             )
         }
 
+        LaunchedEffect(settings.memoryEngineTimeoutSec) {
+            viewModel.memoryEngineManager.setScanTimeoutSec(settings.memoryEngineTimeoutSec)
+        }
         if (settings.memoryEngineEnabled && settings.memoryEngineShowPanel) {
             com.fable.browser.ui.components.DraggableMemoryEnginePanel(
                 state = memState,
@@ -595,6 +598,20 @@ fun BrowserScreen(
                 onQuickEditResult = viewModel.memoryEngineManager::writeScanItem,
                 onWriteAllResults = viewModel.memoryEngineManager::writeAllScanResults,
                 onReloadAndHook = viewModel.memoryEngineManager::reloadAndHookActiveTab,
+                onSetScanTimeoutSec = viewModel::setMemoryEngineTimeoutSec,
+                onCancelScan = viewModel.memoryEngineManager::cancelActiveScan,
+                onToggleSelectScanAddr = viewModel.memoryEngineManager::toggleSelectScanAddr,
+                onSelectAllScanResults = viewModel.memoryEngineManager::selectAllScanResults,
+                onClearScanSelection = viewModel.memoryEngineManager::clearScanSelection,
+                onAddSelectedToWatch = viewModel.memoryEngineManager::addSelectedScanResultsToWatch,
+                onEditSelectedScanResults = viewModel.memoryEngineManager::editSelectedScanResults,
+                onToggleSelectWatchId = viewModel.memoryEngineManager::toggleSelectWatchId,
+                onSelectAllWatchEntries = viewModel.memoryEngineManager::selectAllWatchEntries,
+                onClearWatchSelection = viewModel.memoryEngineManager::clearWatchSelection,
+                onEditSelectedWatchEntries = viewModel.memoryEngineManager::editSelectedWatchEntries,
+                onFreezeSelectedWatchEntries = viewModel.memoryEngineManager::freezeSelectedWatchEntries,
+                onRestoreSelectedWatchEntries = viewModel.memoryEngineManager::restoreSelectedWatchEntries,
+                onRemoveSelectedWatchEntries = viewModel.memoryEngineManager::removeSelectedWatchEntries,
                 onPositionChangeFinished = viewModel::setMemoryEnginePanelPosition,
                 onToggleExpanded = { viewModel.setMemoryEnginePanelExpanded(!settings.memoryEnginePanelExpanded) },
                 onTurnOff = { viewModel.setMemoryEngineEnabled(false) },

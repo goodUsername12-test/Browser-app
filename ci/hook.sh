@@ -277,6 +277,89 @@ SPEED_HTML = """<!DOCTYPE html>
 })();
 </script></body></html>"""
 
+
+MULTI_ENGINE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable Multi-Engine Lab</title></head>
+<body><pre id="out">multi-engine-lab</pre>
+<script>
+(function() {
+  const qs = new URLSearchParams(location.search);
+  const tag = qs.get("tag") || "multi";
+  // 1. Unity/Godot WASM Memory (i32 + 4B-aligned f64)
+  const wMem = new WebAssembly.Memory({ initial: 4 });
+  const wI32 = new Int32Array(wMem.buffer);
+  wI32[16] = 777111;
+  new DataView(wMem.buffer).setFloat64(0x104, 777111.0, true);
+  // 2. Phaser reactive getter/setter
+  let _pCoins = 777111;
+  window.Phaser = { GAMES: [{ scene: { scenes: [{ registry: { get coins(){ return _pCoins; }, set coins(v){ _pCoins = v; } } }] } }] };
+  // 3. PlayCanvas getApplication()
+  const _pcApp = { root: { gold: 777111 } };
+  window.pc = { Application: { getApplication(){ return _pcApp; } } };
+  // 4. Cocos director.getScene()
+  const _ccScene = { hero: { hp: 777111 } };
+  window.cc = { director: { getScene(){ return _ccScene; } } };
+  // 5. Babylon Engine.Instances
+  window.BABYLON = { Engine: { Instances: [{ score: 777111 }] } };
+  // 6. RPG Maker
+  window.$gameParty = { _gold: 777111 };
+  // 7. Closure JSON.parse & Map
+  const hiddenSave = JSON.parse('{"hiddenCoins":777111}');
+  const hiddenMap = new Map([["gems", 777111]]);
+  // 8. localStorage JSON save blob
+  try { localStorage.setItem("saveV63", JSON.stringify({ coins: 777111 })); } catch (_) {}
+  window.__keepMulti = function(){ return wI32[16] + hiddenSave.hiddenCoins + hiddenMap.get("gems"); };
+
+  function checkStealth() {
+    try {
+      const noLeak = Object.getOwnPropertyNames(window).every(k => !/^(__fable|_mev_|cheat|memscan)/i.test(k));
+      const natW = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
+      const natM = Function.prototype.toString.call(Map).indexOf("[native code]") !== -1;
+      const natJ = Function.prototype.toString.call(JSON.parse).indexOf("[native code]") !== -1;
+      return noLeak && natW && natM && natJ;
+    } catch (_) { return false; }
+  }
+
+  let reported = false;
+  const poll = setInterval(function() {
+    if (reported) return;
+    if (window.$gameParty._gold === 888222) {
+      reported = true;
+      clearInterval(poll);
+      // Wait 550ms for bulk freeze to engage, then hammer values aggressively!
+      setTimeout(function() {
+        let jsSlips = 0, lsSlips = 0;
+        let ticks = 0;
+        const hammer = setInterval(function() {
+          ticks++;
+          window.$gameParty._gold = 1;
+          if (window.$gameParty._gold !== 888222) jsSlips++;
+          try {
+            localStorage.setItem("saveV63", JSON.stringify({ coins: 1 }));
+            if (JSON.parse(localStorage.getItem("saveV63")).coins !== 888222) lsSlips++;
+          } catch (_) {}
+          wI32[16] = 1;
+          if (ticks >= 12) {
+            clearInterval(hammer);
+            setTimeout(function() {
+              const wasmHeld = (wI32[16] === 888222);
+              const allEdited = (_pcApp.root.gold === 888222 && _ccScene.hero.hp === 888222 &&
+                window.BABYLON.Engine.Instances[0].score === 888222 &&
+                hiddenSave.hiddenCoins === 888222 && hiddenMap.get("gems") === 888222);
+              const stealth = checkStealth();
+              const q = "tag=" + encodeURIComponent(tag) + "&stealth=" + stealth +
+                "&jsLocked=" + (jsSlips === 0) + "&lsLocked=" + (lsSlips === 0) +
+                "&wasmLocked=" + wasmHeld + "&allEdited=" + allEdited;
+              document.getElementById("out").textContent = q;
+              fetch("/multi-engine-probe?" + q).catch(() => {});
+            }, 60);
+          }
+        }, 30);
+      }, 550);
+    }
+  }, 80);
+})();
+</script></body></html>"""
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -327,6 +410,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, "application/json", b'{"ok":true}')
         elif p == "/mem.html":
             self._send(200, "text/html; charset=utf-8", MEM_HTML.encode())
+        elif p == "/multi-engine-lab.html":
+            self._send(200, "text/html; charset=utf-8", MULTI_ENGINE_HTML.encode())
+        elif p == "/multi-engine-probe":
+            print(f"MULTI_ENGINE_PROBE q={parsed.query}", flush=True)
+            self._send(200, "application/json", b'{"ok":true}')
         elif p == "/mem-probe":
             print(f"MEM_PROBE q={parsed.query}", flush=True)
             self._send(200, "application/json", b'{"ok":true}')
@@ -630,9 +718,29 @@ sleep 8
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_veck --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
 sleep 4
 
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/multi-engine-lab.html?tag=multi_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck multi_gecko --es fable_test_mem_mode multi_freeze --es fable_test_mem_query "777111" --es fable_test_mem_write "888222" --ei fable_test_mem_timeout_sec 25 >/dev/null 2>&1 || true
+sleep 7; step "memory engine ALL-IN-ONE multi-engine + Titanium Freeze (GeckoView)"
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/multi-engine-lab.html?tag=multi_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck multi_blink --es fable_test_mem_mode multi_freeze --es fable_test_mem_query "777111" --es fable_test_mem_write "888222" --ei fable_test_mem_timeout_sec 25 >/dev/null 2>&1 || true
+sleep 7; step "memory engine ALL-IN-ONE multi-engine + Titanium Freeze (Blink x Gecko)"
+
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/turbo-trail-txl' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 8
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
+sleep 7
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_turbo --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
+sleep 4
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/ragdoll-archers' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
+sleep 7
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_archers --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
+sleep 4
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/space-waves' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
+sleep 7
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_waves --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
 sleep 4
 
 adb shell am start -n "$ACT" --ez fable_test_mem_toggle false >/dev/null 2>&1 || true
@@ -724,19 +832,28 @@ MEM_NATIVE_LINE="$(grep 'FABLE-MEM-CHECK.*scope=native' "$ART/logcat.txt" | tail
 MEM_GECKO_LINE="$(grep 'FABLE-MEM-CHECK.*scope=page_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
 MEM_BLINK_LINE="$(grep 'FABLE-MEM-CHECK.*scope=page_blink' "$ART/logcat.txt" | tail -n 1 || true)"
 echo "$MEM_NATIVE_LINE" | grep -q 'okReg=true.*writeOk=true readBack=987654321 hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-native(${MEM_NATIVE_LINE:-missing})"; }
-echo "$MEM_GECKO_LINE" | grep -q 'engine=GeckoView total=[2-9].*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko(${MEM_GECKO_LINE:-missing})"; }
-echo "$MEM_BLINK_LINE" | grep -q 'engine=Blink x Gecko total=[2-9].*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink(${MEM_BLINK_LINE:-missing})"; }
+echo "$MEM_GECKO_LINE" | grep -qE 'engine=GeckoView total=([2-9]|[1-9][0-9]+).*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko(${MEM_GECKO_LINE:-missing})"; }
+echo "$MEM_BLINK_LINE" | grep -qE 'engine=Blink x Gecko total=([2-9]|[1-9][0-9]+).*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink(${MEM_BLINK_LINE:-missing})"; }
 grep -q 'MEM_PROBE q=tag=mem_gecko&stealth=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-gecko-stealth"; }
 grep -q 'MEM_PROBE q=tag=mem_blink&stealth=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-blink-stealth"; }
 
 
 MEM_XORIG_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=xorigin_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
 MEM_XORIG_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=xorigin_blink' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_MULTI_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=multi_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_MULTI_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=multi_blink' "$ART/logcat.txt" | tail -n 1 || true)"
 MEM_LIVE_VECK="$(grep 'FABLE-MEM-CHECK.*scope=live_veck' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_CRAZY="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_CRAZY_TURBO="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_turbo' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_CRAZY_ARCHERS="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_archers' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_CRAZY_WAVES="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_waves' "$ART/logcat.txt" | tail -n 1 || true)"
+echo "$MEM_NATIVE_LINE" | grep -q 'freezeOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-native-freeze(${MEM_NATIVE_LINE:-missing})"; }
 echo "$MEM_XORIG_GECKO" | grep -q 'engine=GeckoView total=[1-9].*hit=@f_.*wasm#.*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-gecko(${MEM_XORIG_GECKO:-missing})"; }
 echo "$MEM_XORIG_BLINK" | grep -q 'engine=Blink x Gecko total=[1-9].*hit=@f_.*wasm#.*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-blink(${MEM_XORIG_BLINK:-missing})"; }
 grep -q 'XORIGIN_UNITY_PROBE q=stealth=true&coins=9999999' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-write-stealth"; }
+echo "$MEM_MULTI_GECKO" | grep -qE 'engine=GeckoView total=([5-9]|[1-9][0-9]+).*bulkFreezeOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-gecko(${MEM_MULTI_GECKO:-missing})"; }
+echo "$MEM_MULTI_BLINK" | grep -qE 'engine=Blink x Gecko total=([5-9]|[1-9][0-9]+).*bulkFreezeOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-blink(${MEM_MULTI_BLINK:-missing})"; }
+grep -q 'MULTI_ENGINE_PROBE q=tag=multi_gecko&stealth=true&jsLocked=true&lsLocked=true&wasmLocked=true&allEdited=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-gecko-probe"; }
+grep -q 'MULTI_ENGINE_PROBE q=tag=multi_blink&stealth=true&jsLocked=true&lsLocked=true&wasmLocked=true&allEdited=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-blink-probe"; }
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
@@ -767,8 +884,12 @@ VERDICT="PASS"
   echo "Blink:  ${MEM_BLINK_LINE:-(none)}"
   echo "XOrigG: ${MEM_XORIG_GECKO:-(none)}"
   echo "XOrigB: ${MEM_XORIG_BLINK:-(none)}"
+  echo "MultiG: ${MEM_MULTI_GECKO:-(none)}"
+  echo "MultiB: ${MEM_MULTI_BLINK:-(none)}"
   echo "LiveVk: ${MEM_LIVE_VECK:-(none)}"
-  echo "LiveCG: ${MEM_LIVE_CRAZY:-(none)}"
+  echo "LiveTT: ${MEM_LIVE_CRAZY_TURBO:-(none)}"
+  echo "LiveRA: ${MEM_LIVE_CRAZY_ARCHERS:-(none)}"
+  echo "LiveSW: ${MEM_LIVE_CRAZY_WAVES:-(none)}"
   echo '```'
   echo "### Website Speed Control Verification"
   echo '```'

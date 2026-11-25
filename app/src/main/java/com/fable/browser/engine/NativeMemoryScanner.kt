@@ -35,10 +35,10 @@ object NativeMemoryScanner {
     val isAvailable: Boolean get() = NativeFastEngine.isNativeAvailable
 
     @JvmStatic
-    private external fun nativeFirstScan(dtype: Int, scanType: Int, val1: String, val2: String, maxReturn: Int): String
+    private external fun nativeFirstScan(dtype: Int, scanType: Int, val1: String, val2: String, maxReturn: Int, timeoutMs: Int): String
 
     @JvmStatic
-    private external fun nativeNextScan(scanType: Int, val1: String, val2: String, maxReturn: Int): String
+    private external fun nativeNextScan(scanType: Int, val1: String, val2: String, maxReturn: Int, timeoutMs: Int): String
 
     @JvmStatic
     private external fun nativeRefreshHits(maxReturn: Int): String
@@ -61,25 +61,50 @@ object NativeMemoryScanner {
     @JvmStatic
     private external fun nativeListRegions(): String
 
-    fun firstScan(dtype: MemDataType, scanType: MemScanType, val1: String, val2: String = "", maxReturn: Int = 150): String {
+    @JvmStatic
+    private external fun nativeSetFreeze(addr: Long, dtype: Int, valStr: String): Boolean
+
+    @JvmStatic
+    private external fun nativeUnfreeze(addr: Long)
+
+    @JvmStatic
+    private external fun nativeUnfreezeAll()
+
+    @JvmStatic
+    private external fun nativeGetFreezeStats(): String
+
+    fun firstScan(
+        dtype: MemDataType,
+        scanType: MemScanType,
+        val1: String,
+        val2: String = "",
+        maxReturn: Int = 300,
+        timeoutMs: Int = 15_000
+    ): String {
         if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
-        return runCatching { nativeFirstScan(dtype.code, scanType.code, val1, val2, maxReturn) }
+        return runCatching { nativeFirstScan(dtype.code, scanType.code, val1, val2, maxReturn, timeoutMs.coerceIn(1_000, 80_000)) }
             .getOrElse { "{\"ok\":false,\"error\":\"Native scan error\"}" }
     }
 
-    fun nextScan(scanType: MemScanType, val1: String, val2: String = "", maxReturn: Int = 150): String {
+    fun nextScan(
+        scanType: MemScanType,
+        val1: String,
+        val2: String = "",
+        maxReturn: Int = 300,
+        timeoutMs: Int = 15_000
+    ): String {
         if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
-        return runCatching { nativeNextScan(scanType.code, val1, val2, maxReturn) }
+        return runCatching { nativeNextScan(scanType.code, val1, val2, maxReturn, timeoutMs.coerceIn(1_000, 80_000)) }
             .getOrElse { "{\"ok\":false,\"error\":\"Native next scan error\"}" }
     }
 
-    fun refreshHits(maxReturn: Int = 150): String {
+    fun refreshHits(maxReturn: Int = 300): String {
         if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
         return runCatching { nativeRefreshHits(maxReturn) }
             .getOrElse { "{\"ok\":false,\"error\":\"Refresh failed\"}" }
     }
 
-    fun undoScan(maxReturn: Int = 150): String {
+    fun undoScan(maxReturn: Int = 300): String {
         if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
         return runCatching { nativeUndoScan(maxReturn) }
             .getOrElse { "{\"ok\":false,\"error\":\"Undo failed\"}" }
@@ -101,6 +126,28 @@ object NativeMemoryScanner {
         val addr = parseHexAddress(addrHex) ?: return false
         val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
         return runCatching { nativeWriteValue(addr, nativeType, valStr) }.getOrDefault(false)
+    }
+
+    fun setFreeze(addrHex: String, dtype: MemDataType, valStr: String): Boolean {
+        if (!isAvailable) return false
+        val addr = parseHexAddress(addrHex) ?: return false
+        val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
+        return runCatching { nativeSetFreeze(addr, nativeType, valStr) }.getOrDefault(false)
+    }
+
+    fun unfreeze(addrHex: String) {
+        if (!isAvailable) return
+        val addr = parseHexAddress(addrHex) ?: return
+        runCatching { nativeUnfreeze(addr) }
+    }
+
+    fun unfreezeAll() {
+        if (isAvailable) runCatching { nativeUnfreezeAll() }
+    }
+
+    fun getFreezeStats(): String {
+        if (!isAvailable) return "{\"ok\":true,\"stats\":{}}"
+        return runCatching { nativeGetFreezeStats() }.getOrDefault("{\"ok\":true,\"stats\":{}}")
     }
 
     fun hexDump(addrHex: String, len: Int = 128): String {

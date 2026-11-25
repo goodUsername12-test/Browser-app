@@ -354,6 +354,12 @@ class BrowserViewModel @Inject constructor(
         viewModelScope.launch { settingsStore.setMemoryEnginePanelExpanded(expanded) }
     }
 
+    fun setMemoryEngineTimeoutSec(sec: Int) {
+        val clamped = com.fable.browser.engine.WebsiteMemoryEngine.clampTimeoutSec(sec)
+        memoryEngineManager.setScanTimeoutSec(clamped)
+        viewModelScope.launch { settingsStore.setMemoryEngineTimeoutSec(clamped) }
+    }
+
 
     fun saveAsPdf() {
         val tab = activeTab ?: return

@@ -387,14 +387,20 @@ class MainActivity : FragmentActivity() {
                                     com.fable.browser.engine.NativeMemoryScanner.firstScan(
                                         com.fable.browser.engine.MemDataType.INT32,
                                         com.fable.browser.engine.MemScanType.EXACT,
-                                        sentinel1.toString()
+                                        sentinel1.toString(),
+                                        "",
+                                        300,
+                                        15_000
                                     )
                                 }
                                 buf.putInt(0, sentinel2)
                                 val r2 = withContext(Dispatchers.IO) {
                                     com.fable.browser.engine.NativeMemoryScanner.nextScan(
                                         com.fable.browser.engine.MemScanType.INCREASED_BY,
-                                        "100"
+                                        "100",
+                                        "",
+                                        300,
+                                        15_000
                                     )
                                 }
                                 val r2Obj = runCatching { org.json.JSONObject(r2) }.getOrNull()
@@ -414,25 +420,71 @@ class MainActivity : FragmentActivity() {
                                         com.fable.browser.engine.NativeMemoryScanner.hexDump(firstAddr, 32).contains("\"ok\":true")
                                     }
                                 } else false
+                                var freezeOk = false
+                                if (firstAddr.isNotEmpty()) {
+                                    withContext(Dispatchers.IO) {
+                                        val locked = com.fable.browser.engine.NativeMemoryScanner.setFreeze(
+                                            firstAddr,
+                                            com.fable.browser.engine.MemDataType.INT32,
+                                            "555444333"
+                                        )
+                                        if (locked) {
+                                            repeat(5) {
+                                                buf.putInt(0, 111)
+                                                Thread.sleep(10)
+                                            }
+                                            Thread.sleep(15)
+                                            val held = buf.getInt(0) == 555444333
+                                            val stats = com.fable.browser.engine.NativeMemoryScanner.getFreezeStats()
+                                            freezeOk = held && stats.contains("\"mode\":\"500Hz\"")
+                                        }
+                                        com.fable.browser.engine.NativeMemoryScanner.unfreezeAll()
+                                    }
+                                }
                                 withContext(Dispatchers.IO) { com.fable.browser.engine.NativeMemoryScanner.resetScan() }
                                 android.util.Log.i(
                                     "FABLE-MEM-CHECK",
                                     "scope=native okReg=$okReg total1=${runCatching { org.json.JSONObject(r1).optInt("total") }.getOrDefault(-1)} " +
-                                        "total2=${r2Obj?.optInt("total") ?: -1} writeOk=$writeOk readBack=$readBack hexOk=$hexOk"
+                                        "total2=${r2Obj?.optInt("total") ?: -1} writeOk=$writeOk readBack=$readBack hexOk=$hexOk freezeOk=$freezeOk"
                                 )
                             } else {
                                 val queryVal = intent.getStringExtra("fable_test_mem_query")?.takeIf { it.isNotBlank() } ?: "133700"
                                 val writeVal = intent.getStringExtra("fable_test_mem_write").orEmpty()
+                                val testMode = intent.getStringExtra("fable_test_mem_mode").orEmpty()
+                                val timeoutSec = intent.getIntExtra("fable_test_mem_timeout_sec", 20)
                                 val doWrite = if (intent.hasExtra("fable_test_mem_write")) (writeVal.isNotBlank() && !writeVal.equals("skip", ignoreCase = true)) else true
                                 val targetWrite = if (writeVal.isNotBlank()) writeVal else "777888"
+                                memoryEngineManager.setScanTimeoutSec(timeoutSec)
                                 memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
                                 memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
                                 memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.EXACT)
                                 memoryEngineManager.firstScan(queryVal)
-                                kotlinx.coroutines.delay(1800)
+                                var waitCnt = 0
+                                while (waitCnt < 45) {
+                                    kotlinx.coroutines.delay(150)
+                                    waitCnt++
+                                    if (!memoryEngineManager.state.value.busy && waitCnt >= 3) break
+                                }
                                 val st1 = memoryEngineManager.state.value
                                 val hit = st1.results.firstOrNull { it.addr.contains("wasm#") } ?: st1.results.firstOrNull { it.addr.contains("gold") } ?: st1.results.firstOrNull()
-                                if (hit != null && doWrite) {
+                                var bulkFreezeOk = false
+                                var blockedSum = 0L
+                                if (testMode == "multi_freeze" && st1.results.isNotEmpty()) {
+                                    // Select All -> Place All into Watch -> Select All in Watch -> Bulk Edit -> Bulk Titanium Lock -> Hold while page hammers!
+                                    memoryEngineManager.selectAllScanResults()
+                                    memoryEngineManager.addSelectedScanResultsToWatch(freezeImmediately = false)
+                                    memoryEngineManager.selectAllWatchEntries()
+                                    memoryEngineManager.editSelectedWatchEntries(targetWrite)
+                                    kotlinx.coroutines.delay(450)
+                                    memoryEngineManager.freezeSelectedWatchEntries(true)
+                                    kotlinx.coroutines.delay(2000)
+                                    val stF = memoryEngineManager.state.value
+                                    blockedSum = stF.watchList.sumOf { it.blockedWrites }
+                                    bulkFreezeOk = stF.watchList.size >= 4 && stF.watchList.all { it.frozen }
+                                    memoryEngineManager.unfreezeAll()
+                                    memoryEngineManager.selectAllWatchEntries()
+                                    memoryEngineManager.removeSelectedWatchEntries()
+                                } else if (hit != null && doWrite) {
                                     memoryEngineManager.addToWatch(hit)
                                     val w = memoryEngineManager.state.value.watchList.lastOrNull()
                                     if (w != null) {
@@ -446,9 +498,12 @@ class MainActivity : FragmentActivity() {
                                 }
                                 val st2 = memoryEngineManager.state.value
                                 val hexOk = st2.hex.hexBytes.isNotBlank()
+                                val engStr = st1.detectedEngines.joinToString("+").ifBlank { "none" }
                                 android.util.Log.i(
                                     "FABLE-MEM-CHECK",
-                                    "scope=$scopeName engine=${st2.activeEngineLabel} total=${st1.totalMatches} wasm=${st1.wasmCount} buf=${st1.bufCount} hit=${hit?.addr ?: "none"} hexOk=$hexOk status=${st1.statusText}"
+                                    "scope=$scopeName engine=${st2.activeEngineLabel} total=${st1.totalMatches} wasm=${st1.wasmCount} buf=${st1.bufCount} " +
+                                        "frames=${st1.frameCount} workers=${st1.workerCount} ms=${st1.lastScanDurationMs} engines=$engStr " +
+                                        "hit=${hit?.addr ?: "none"} hexOk=$hexOk bulkFreezeOk=$bulkFreezeOk blocked=$blockedSum status=${st1.statusText}"
                                 )
                                 memoryEngineManager.resetScan()
                             }

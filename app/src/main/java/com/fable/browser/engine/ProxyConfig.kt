@@ -143,9 +143,12 @@ class ProxyConfig @Inject constructor(
                 pendingMemCalls.remove(reqId)?.complete("{\"ok\":false,\"error\":\"Failed to send GeckoView command\"}")
             }
         }
-        val result = withTimeoutOrNull(8_000L) { deferred.await() }
+        val op = cmd.optString("op")
+        val isHeavy = op == "firstScan" || op == "nextScan" || op == "writeAll" || op == "writeBatch" || op == "freezeBatch" || op == "regions"
+        val budgetMs = cmd.optLong("timeoutMs", if (isHeavy) 15_000L else 5_000L).coerceIn(1_000L, 80_000L)
+        val result = withTimeoutOrNull(budgetMs + 2_500L) { deferred.await() }
         pendingMemCalls.remove(reqId)
-        return result ?: "{\"ok\":false,\"error\":\"GeckoView page scan timed out\"}"
+        return result ?: "{\"ok\":false,\"error\":\"GeckoView page scan timed out (${budgetMs / 1000L}s)\"}"
     }
 
     @Volatile private var pendingBackupStorage: JSONObject? = null

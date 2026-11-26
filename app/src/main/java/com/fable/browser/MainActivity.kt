@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -455,16 +456,203 @@ class MainActivity : FragmentActivity() {
                                                 minRuleOk = allowedUp && clampedFloor
                                             }
                                             val structOk = com.fable.browser.engine.NativeMemoryScanner.peekStruct(firstAddr, 64).contains("\"ok\":true")
-                                            freezeOk = held && natBlocked > 0L && minRuleOk && structOk && stats.contains("\"mode\":\"500Hz\"")
+                                            var rangeRuleOk = false
+                                            val rngLocked = com.fable.browser.engine.NativeMemoryScanner.setFreeze(
+                                                firstAddr,
+                                                com.fable.browser.engine.MemDataType.INT32,
+                                                "50..100",
+                                                com.fable.browser.engine.MemFreezeRule.RANGE.nativeCode
+                                            )
+                                            if (rngLocked) {
+                                                buf.putInt(0, 10)
+                                                Thread.sleep(15)
+                                                val loClamp = buf.getInt(0) == 50
+                                                buf.putInt(0, 82)
+                                                Thread.sleep(15)
+                                                val midKeep = buf.getInt(0) == 82
+                                                buf.putInt(0, 250)
+                                                Thread.sleep(15)
+                                                val hiClamp = buf.getInt(0) == 100
+                                                rangeRuleOk = loClamp && midKeep && hiClamp
+                                            }
+                                            freezeOk = held && natBlocked > 0L && minRuleOk && rangeRuleOk && structOk && stats.contains("\"mode\":\"500Hz\"")
                                         }
                                         com.fable.browser.engine.NativeMemoryScanner.unfreezeAll()
                                     }
                                 }
-                                withContext(Dispatchers.IO) { com.fable.browser.engine.NativeMemoryScanner.resetScan() }
+                                // Ultra native checks: Group Search, XOR Auto-Key + Write, Live Hex Write, Size Manager persistence
+                                var groupOk = false
+                                var xorOk = false
+                                var hexWriteOk = false
+                                withContext(Dispatchers.IO) {
+                                    buf.putInt(16, -12345)
+                                    buf.putFloat(20, 77.5f)
+                                    buf.putInt(24, 888999)
+                                    val rg = com.fable.browser.engine.NativeMemoryScanner.firstScan(
+                                        com.fable.browser.engine.MemDataType.AUTO,
+                                        com.fable.browser.engine.MemScanType.GROUP,
+                                        "-12345i;77.5f;888999i:32",
+                                        "",
+                                        100,
+                                        10_000
+                                    )
+                                    groupOk = (runCatching { org.json.JSONObject(rg).optInt("total", 0) }.getOrDefault(0)) >= 3
+
+                                    val xKey = 0x5A3C91E7
+                                    buf.putInt(32, xKey)
+                                    buf.putInt(36, 55443322 xor xKey)
+                                    val rx = com.fable.browser.engine.NativeMemoryScanner.firstScan(
+                                        com.fable.browser.engine.MemDataType.INT32,
+                                        com.fable.browser.engine.MemScanType.XOR_ENCRYPTED,
+                                        "55443322",
+                                        "",
+                                        100,
+                                        10_000
+                                    )
+                                    val rxItems = runCatching { org.json.JSONObject(rx).optJSONArray("items") }.getOrNull()
+                                    if (rxItems != null && rxItems.length() > 0) {
+                                        for (xi in 0 until rxItems.length()) {
+                                            val xo = rxItems.optJSONObject(xi) ?: continue
+                                            if (xo.optInt("xorMode", 0) == 2) {
+                                                val wroteX = com.fable.browser.engine.NativeMemoryScanner.writeValue(
+                                                    xo.optString("addr"),
+                                                    com.fable.browser.engine.MemDataType.INT32,
+                                                    "9990001",
+                                                    2,
+                                                    xo.optLong("xorKey", 0L),
+                                                    xo.optString("xorKeyAddr", "")
+                                                )
+                                                if (wroteX && (buf.getInt(36) xor xKey) == 9990001) {
+                                                    xorOk = true
+                                                    break
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (firstAddr.isNotEmpty()) {
+                                        buf.putInt(0, 0x11223344)
+                                        val whRes = com.fable.browser.engine.NativeMemoryScanner.writeHex(firstAddr, "AA ?? CC DD")
+                                        hexWriteOk = whRes.contains("\"ok\":true") && (buf.get(0).toInt() and 0xFF) == 0xAA && (buf.get(1).toInt() and 0xFF) == 0x33 && (buf.get(2).toInt() and 0xFF) == 0xCC
+                                    }
+                                    com.fable.browser.engine.NativeMemoryScanner.resetScan()
+                                }
+                                settingsStore.setMemoryEnginePanelSize(75, 80, 115)
+                                val s1Set = settingsStore.settings.first()
+                                settingsStore.setMemoryEnginePanelSize(10, 200, 999)
+                                val s2Clamp = settingsStore.settings.first()
+                                settingsStore.resetMemoryEnginePanelLayout()
+                                val s3Reset = settingsStore.settings.first()
+                                val sizeMgrOk = (s1Set.memoryEnginePanelWidthPct == 75 && s1Set.memoryEnginePanelHeightPct == 80 && s1Set.memoryEnginePanelScalePct == 115) &&
+                                    (s2Clamp.memoryEnginePanelWidthPct == 55 && s2Clamp.memoryEnginePanelHeightPct == 95 && s2Clamp.memoryEnginePanelScalePct == 140) &&
+                                    (s3Reset.memoryEnginePanelWidthPct == 88 && s3Reset.memoryEnginePanelHeightPct == 62 && s3Reset.memoryEnginePanelScalePct == 100)
+                                val ultraNativeOk = groupOk && xorOk && hexWriteOk && sizeMgrOk
                                 android.util.Log.i(
                                     "FABLE-MEM-CHECK",
                                     "scope=native okReg=$okReg total1=${runCatching { org.json.JSONObject(r1).optInt("total") }.getOrDefault(-1)} " +
-                                        "total2=${r2Obj?.optInt("total") ?: -1} writeOk=$writeOk readBack=$readBack hexOk=$hexOk freezeOk=$freezeOk"
+                                        "total2=${r2Obj?.optInt("total") ?: -1} writeOk=$writeOk readBack=$readBack hexOk=$hexOk freezeOk=$freezeOk " +
+                                        "ultraNativeOk=$ultraNativeOk groupOk=$groupOk xorOk=$xorOk hexWriteOk=$hexWriteOk sizeMgrOk=$sizeMgrOk"
+                                )
+                            } else if (intent.getStringExtra("fable_test_mem_mode") == "ultra_ce") {
+                                suspend fun waitScanDone() {
+                                    var wc = 0
+                                    while (wc < 45) {
+                                        kotlinx.coroutines.delay(120)
+                                        wc++
+                                        if (!memoryEngineManager.state.value.busy && wc >= 2) break
+                                    }
+                                }
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.setScanTimeoutSec(20)
+                                memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
+
+                                // 1. Group Search (ordered)
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
+                                memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.GROUP)
+                                memoryEngineManager.firstScan("-500i;33.5f;7777i:32")
+                                waitScanDone()
+                                val stGrp = memoryEngineManager.state.value
+                                val grpHit = stGrp.results.firstOrNull { it.addr.contains("wasm#0+0x208") }
+                                val groupOk = grpHit != null && stGrp.results.size >= 3
+
+                                // 2. Pointer Scan on WASM target
+                                var ptrOk = false
+                                if (grpHit != null) {
+                                    memoryEngineManager.pointerScan(grpHit.addr, com.fable.browser.engine.MemScope.PAGE_WASM, 64)
+                                    waitScanDone()
+                                    ptrOk = memoryEngineManager.state.value.pointerResults.any {
+                                        it.ptrAddr.contains("0x400") && it.offset == "+0x8"
+                                    }
+                                }
+
+                                // 3. Exact 100 scan + Live Hex Write at +0x10 (0x50) + Deterministic Handshake for Bug #1 & Trace
+                                var hexWOk = false
+                                var nextBugFixOk = false
+                                var traceOk = false
+                                var tableOk = false
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
+                                memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.EXACT)
+                                memoryEngineManager.firstScan("100")
+                                waitScanDone()
+                                val w40 = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("wasm#0+0x40") }
+                                if (w40 != null) {
+                                    memoryEngineManager.inspectHex(w40.addr, com.fable.browser.engine.MemScope.PAGE_WASM, 0L)
+                                    kotlinx.coroutines.delay(350)
+                                    memoryEngineManager.writeHexBytes("DE ?? AD BE", 16L)
+                                    kotlinx.coroutines.delay(450)
+                                    hexWOk = memoryEngineManager.state.value.hex.hexBytes.contains("DE00ADBE", ignoreCase = true)
+
+                                    // Signal page (0x40 = 200) -> page immediately sets ultraHero.hp = 250!
+                                    memoryEngineManager.writeScanItem(w40, "200")
+                                    kotlinx.coroutines.delay(350)
+                                    memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.INCREASED)
+                                    // Pass stale "100" intentionally to prove Bug #1 fix!
+                                    memoryEngineManager.nextScan("100")
+                                    waitScanDone()
+                                    val hpHit = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("ultraHero.hp") }
+                                    nextBugFixOk = hpHit != null
+
+                                    if (hpHit != null) {
+                                        memoryEngineManager.addToWatch(hpHit, "Hero HP")
+                                        val wHp = memoryEngineManager.state.value.watchList.lastOrNull()
+                                        if (wHp != null) {
+                                            memoryEngineManager.toggleWatchTrace(wHp.id)
+                                            kotlinx.coroutines.delay(250)
+                                            // Signal page (0x40 = 300) -> page calls applyHeroDamage()!
+                                            memoryEngineManager.writeScanItem(w40, "300")
+                                            kotlinx.coroutines.delay(750)
+                                            val wAfter = memoryEngineManager.state.value.watchList.firstOrNull { it.id == wHp.id }
+                                            traceOk = (wAfter?.traceCount ?: 0) > 0
+                                            memoryEngineManager.toggleWatchTrace(wHp.id)
+                                            val exported = memoryEngineManager.exportWatchTableJson()
+                                            memoryEngineManager.clearWatchList()
+                                            kotlinx.coroutines.delay(200)
+                                            memoryEngineManager.importCheatTableJson(exported)
+                                            kotlinx.coroutines.delay(500)
+                                            tableOk = memoryEngineManager.state.value.watchList.any { it.addr == hpHit.addr && it.attached }
+                                        }
+                                    }
+                                }
+
+                                // 4. XOR Auto-Key Scan + Transparent Write (triggers final /ce-ultra-probe on page!)
+                                var xorOk = false
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.INT32)
+                                memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.XOR_ENCRYPTED)
+                                memoryEngineManager.firstScan("123456", "")
+                                waitScanDone()
+                                val xHit = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("wasm#0+0x304") }
+                                if (xHit != null) {
+                                    memoryEngineManager.writeScanItem(xHit, "999888")
+                                    kotlinx.coroutines.delay(450)
+                                    xorOk = true
+                                }
+
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.resetScan()
+                                val engLbl = memoryEngineManager.state.value.activeEngineLabel
+                                val ultraOk = groupOk && ptrOk && hexWOk && xorOk && nextBugFixOk && traceOk && tableOk
+                                android.util.Log.i(
+                                    "FABLE-MEM-CHECK",
+                                    "scope=$scopeName engine=$engLbl ultraOk=$ultraOk groupOk=$groupOk ptrOk=$ptrOk hexWOk=$hexWOk xorOk=$xorOk nextBugFixOk=$nextBugFixOk traceOk=$traceOk tableOk=$tableOk"
                                 )
                             } else {
                                 val queryVal = intent.getStringExtra("fable_test_mem_query")?.takeIf { it.isNotBlank() } ?: "133700"

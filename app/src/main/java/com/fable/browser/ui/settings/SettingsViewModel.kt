@@ -212,9 +212,10 @@ class SettingsViewModel @Inject constructor(
     fun resetTimeScalePanelLayout() = edit { store.resetTimeScalePanelLayout() }
     fun setMemoryEngineEnabled(v: Boolean) = edit { store.setMemoryEngineEnabled(v) }
     fun setMemoryEngineShowPanel(v: Boolean) = edit { store.setMemoryEngineShowPanel(v) }
+    fun setMemoryEnginePanelWidthPct(v: Int) = edit { store.setMemoryEnginePanelWidthPct(v) }
     fun setMemoryEnginePanelScalePct(v: Int) = edit { store.setMemoryEnginePanelScalePct(v) }
     fun setMemoryEnginePanelHeightPct(v: Int) = edit { store.setMemoryEnginePanelHeightPct(v) }
-    fun setMemoryEnginePanelSize(scalePct: Int, heightPct: Int) = edit { store.setMemoryEnginePanelSize(scalePct, heightPct) }
+    fun setMemoryEnginePanelSize(widthPct: Int, heightPct: Int, scalePct: Int) = edit { store.setMemoryEnginePanelSize(widthPct, heightPct, scalePct) }
     fun setMemoryEnginePanelExpanded(v: Boolean) = edit { store.setMemoryEnginePanelExpanded(v) }
     fun resetMemoryEnginePanelLayout() = edit { store.resetMemoryEnginePanelLayout() }
 

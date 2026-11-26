@@ -227,8 +227,10 @@ data class Settings(
     val timeScalePanelExpanded: Boolean = true,
     val memoryEngineEnabled: Boolean = false,
     val memoryEngineShowPanel: Boolean = true,
-    val memoryEnginePanelScalePct: Int = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT,
+    val memoryEnginePanelWidthPct: Int = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_WIDTH_PCT,
     val memoryEnginePanelHeightPct: Int = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_HEIGHT_PCT,
+    val memoryEnginePanelScalePct: Int = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT,
+    val memoryEngineSavedTablesJson: String = "[]",
     val memoryEnginePanelPosX: Float = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_X,
     val memoryEnginePanelPosY: Float = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_Y,
     val memoryEnginePanelExpanded: Boolean = true,
@@ -453,8 +455,10 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val TIME_SCALE_PANEL_EXPANDED = booleanPreferencesKey("time_scale_panel_expanded")
         val MEM_ENGINE_ENABLED = booleanPreferencesKey("mem_engine_enabled")
         val MEM_ENGINE_SHOW_PANEL = booleanPreferencesKey("mem_engine_show_panel")
+        val MEM_ENGINE_WIDTH = intPreferencesKey("mem_engine_width_pct")
+        val MEM_ENGINE_HEIGHT = intPreferencesKey("mem_engine_height_vp_pct")
         val MEM_ENGINE_SCALE = intPreferencesKey("mem_engine_scale_pct")
-        val MEM_ENGINE_HEIGHT = intPreferencesKey("mem_engine_height_pct")
+        val MEM_ENGINE_SAVED_TABLES = stringPreferencesKey("mem_engine_saved_tables_v1")
         val MEM_ENGINE_X = floatPreferencesKey("mem_engine_pos_x")
         val MEM_ENGINE_Y = floatPreferencesKey("mem_engine_pos_y")
         val MEM_ENGINE_EXPANDED = booleanPreferencesKey("mem_engine_expanded")
@@ -651,8 +655,10 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             timeScalePanelExpanded = p[Keys.TIME_SCALE_PANEL_EXPANDED] ?: true,
             memoryEngineEnabled = p[Keys.MEM_ENGINE_ENABLED] ?: false,
             memoryEngineShowPanel = p[Keys.MEM_ENGINE_SHOW_PANEL] ?: true,
-            memoryEnginePanelScalePct = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(p[Keys.MEM_ENGINE_SCALE] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT),
+            memoryEnginePanelWidthPct = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelWidthPct(p[Keys.MEM_ENGINE_WIDTH] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_WIDTH_PCT),
             memoryEnginePanelHeightPct = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelHeightPct(p[Keys.MEM_ENGINE_HEIGHT] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_HEIGHT_PCT),
+            memoryEnginePanelScalePct = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(p[Keys.MEM_ENGINE_SCALE] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT),
+            memoryEngineSavedTablesJson = p[Keys.MEM_ENGINE_SAVED_TABLES] ?: "[]",
             memoryEnginePanelPosX = (p[Keys.MEM_ENGINE_X] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_X).coerceIn(0f, 1f),
             memoryEnginePanelPosY = (p[Keys.MEM_ENGINE_Y] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_Y).coerceIn(0f, 1f),
             memoryEnginePanelExpanded = p[Keys.MEM_ENGINE_EXPANDED] ?: true,
@@ -932,13 +938,18 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     }
     suspend fun setMemoryEngineEnabled(v: Boolean) = set(Keys.MEM_ENGINE_ENABLED, v)
     suspend fun setMemoryEngineShowPanel(v: Boolean) = set(Keys.MEM_ENGINE_SHOW_PANEL, v)
+    suspend fun setMemoryEnginePanelWidthPct(v: Int) = set(Keys.MEM_ENGINE_WIDTH, com.fable.browser.engine.WebsiteMemoryEngine.clampPanelWidthPct(v))
     suspend fun setMemoryEnginePanelScalePct(v: Int) = set(Keys.MEM_ENGINE_SCALE, com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(v))
     suspend fun setMemoryEnginePanelHeightPct(v: Int) = set(Keys.MEM_ENGINE_HEIGHT, com.fable.browser.engine.WebsiteMemoryEngine.clampPanelHeightPct(v))
-    suspend fun setMemoryEnginePanelSize(scalePct: Int, heightPct: Int) {
+    suspend fun setMemoryEnginePanelSize(widthPct: Int, heightPct: Int, scalePct: Int) {
         context.dataStore.edit {
-            it[Keys.MEM_ENGINE_SCALE] = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(scalePct)
+            it[Keys.MEM_ENGINE_WIDTH] = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelWidthPct(widthPct)
             it[Keys.MEM_ENGINE_HEIGHT] = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelHeightPct(heightPct)
+            it[Keys.MEM_ENGINE_SCALE] = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(scalePct)
         }
+    }
+    suspend fun setMemoryEngineSavedTablesJson(json: String) {
+        if (json.length <= 65_536) set(Keys.MEM_ENGINE_SAVED_TABLES, json)
     }
     suspend fun setMemoryEnginePanelExpanded(v: Boolean) = set(Keys.MEM_ENGINE_EXPANDED, v)
     suspend fun setMemoryEngineTimeoutSec(v: Int) = set(Keys.MEM_ENGINE_TIMEOUT_SEC, com.fable.browser.engine.WebsiteMemoryEngine.clampTimeoutSec(v))
@@ -950,8 +961,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     }
     suspend fun resetMemoryEnginePanelLayout() {
         context.dataStore.edit {
-            it[Keys.MEM_ENGINE_SCALE] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT
+            it[Keys.MEM_ENGINE_WIDTH] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_WIDTH_PCT
             it[Keys.MEM_ENGINE_HEIGHT] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_HEIGHT_PCT
+            it[Keys.MEM_ENGINE_SCALE] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT
             it[Keys.MEM_ENGINE_X] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_X
             it[Keys.MEM_ENGINE_Y] = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_Y
             it[Keys.MEM_ENGINE_EXPANDED] = true

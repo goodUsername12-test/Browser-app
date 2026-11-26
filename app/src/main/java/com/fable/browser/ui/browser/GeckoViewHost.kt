@@ -1162,7 +1162,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                 val op = cmdObj?.optString("op").orEmpty()
                 val maxRet = cmdObj?.optInt("maxReturn", 300) ?: 300
                 val targetFrame = cmdObj?.optString("targetFrame").orEmpty()
-                val isHeavyOp = op == "firstScan" || op == "nextScan" || op == "writeAll" || op == "writeBatch" || op == "freezeBatch" || op == "regions"
+                val isHeavyOp = op == "firstScan" || op == "nextScan" || op == "writeAll" || op == "writeBatch" || op == "freezeBatch" || op == "regions" || op == "pointerScan"
                 val timeoutMs = (cmdObj?.optLong("timeoutMs", if (isHeavyOp) 15_000L else 4_000L) ?: 15_000L).coerceIn(1_000L, 80_000L)
                 val reqId = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
                 val reqState = FableHybridJsBridge.FrameMemReqState()

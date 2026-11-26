@@ -4,13 +4,14 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <atomic>
-#include <chrono>
+#include <deque>
 #include <mutex>
 #include <pthread.h>
 #include <string>
@@ -28,6 +29,7 @@ constexpr int DT_DOUBLE = 5;
 constexpr int DT_STRING = 6;
 constexpr int DT_AOB    = 7;
 constexpr int DT_AUTO   = 8;
+constexpr int DT_UINT32 = 9;
 
 constexpr int SC_EXACT        = 0;
 constexpr int SC_BIGGER       = 1;
@@ -40,12 +42,21 @@ constexpr int SC_INCREASED_BY = 7;
 constexpr int SC_DECREASED_BY = 8;
 constexpr int SC_CHANGED      = 9;
 constexpr int SC_UNCHANGED    = 10;
+constexpr int SC_GROUP        = 11;
+constexpr int SC_XOR          = 12;
 
-constexpr std::size_t MAX_RESULTS_CAP = 200000;
-constexpr std::size_t MAX_UNKNOWN_CAP = 120000;
-constexpr std::size_t CHUNK_BYTES     = 256 * 1024;
-constexpr std::size_t PIPE_STEP_BYTES = 4096;
-constexpr std::size_t MAX_REGION_BYTES = 128 * 1024 * 1024;
+constexpr int FR_EXACT = 0;
+constexpr int FR_MIN   = 1;
+constexpr int FR_MAX   = 2;
+constexpr int FR_RANGE = 3;
+constexpr int FR_STEP  = 4;
+
+constexpr std::size_t MAX_RESULTS_CAP        = 200000;
+constexpr std::size_t MAX_UNKNOWN_SNAP_BYTES = 48 * 1024 * 1024;
+constexpr std::size_t MAX_UNDO_DEPTH         = 5;
+constexpr std::size_t CHUNK_BYTES            = 256 * 1024;
+constexpr std::size_t PIPE_STEP_BYTES        = 4096;
+constexpr std::size_t MAX_REGION_BYTES       = 128 * 1024 * 1024;
 
 struct MemRegion {
     std::uint64_t start = 0;
@@ -58,11 +69,44 @@ struct ScanHit {
     std::uint64_t addr = 0;
     std::uint64_t prev_raw = 0;
     std::uint8_t hit_type = DT_INT32;
+    std::uint8_t xor_mode = 0; // 0=none, 1=explicit const key, 2=neighbor key addr
+    std::uint32_t xor_key = 0;
+    std::uint64_t xor_key_addr = 0;
+    std::uint8_t prev_bytes[16] = {0};
+    std::uint8_t prev_bytes_len = 0;
+};
+
+struct UnknownRegionSnap {
+    std::uint64_t start = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
+struct ScanGeneration {
+    std::vector<ScanHit> hits;
+    std::vector<UnknownRegionSnap> snaps;
+    int last_type = DT_INT32;
+    std::size_t last_str_len = 0;
+    bool snap_active = false;
+    bool snap_truncated = false;
+    std::size_t snap_bytes = 0;
 };
 
 struct AobPattern {
     std::vector<std::uint8_t> bytes;
     std::vector<std::uint8_t> mask;
+};
+
+struct GroupTerm {
+    int dtype = DT_AUTO; // DT_AUTO or explicit DT_INT8..DT_UINT32
+    double dval = 0.0;
+    std::int64_t ival = 0;
+    bool is_int = false;
+};
+
+struct GroupQuery {
+    std::vector<GroupTerm> terms;
+    std::size_t range_bytes = 64;
+    bool ordered = false;
 };
 
 class SafeMemIo {
@@ -157,12 +201,18 @@ private:
 };
 
 std::mutex g_scan_mu;
+std::atomic<bool> g_cancel_scan{false};
 std::atomic<std::uint64_t> g_freeze_buf_start{0};
 std::atomic<std::uint64_t> g_freeze_buf_end{0};
+
 std::vector<ScanHit> g_hits;
-std::vector<ScanHit> g_prev_hits;
+std::vector<UnknownRegionSnap> g_unknown_snaps;
+bool g_snap_active = false;
+bool g_snap_truncated = false;
+std::size_t g_snap_bytes = 0;
 int g_last_type = DT_INT32;
 std::size_t g_last_str_len = 0;
+std::deque<ScanGeneration> g_undo_stack;
 
 bool is_safe_private_rw_region(const MemRegion& r) {
     if (r.perms[0] != 'r' || r.perms[1] != 'w' || r.perms[2] != '-' || r.perms[3] != 'p') {
@@ -233,19 +283,34 @@ bool is_addr_in_safe_rw_region(std::uint64_t addr, std::size_t len) {
     return false;
 }
 
+bool range_overlaps(std::uint64_t addr, std::size_t size, std::uint64_t lo, std::uint64_t hi) {
+    return hi > lo && addr < hi && (addr + size) > lo;
+}
+
 bool is_inside_scanner_internal(std::uint64_t addr, std::size_t size,
                                 std::uint64_t buf_start, std::uint64_t buf_end) {
-    if (buf_start != 0 && addr < buf_end && (addr + size) > buf_start) return true;
-    auto overlaps_vec = [&](const std::vector<ScanHit>& v) -> bool {
-        if (v.empty() && v.capacity() == 0) return false;
+    if (range_overlaps(addr, size, buf_start, buf_end)) return true;
+    auto overlaps_hits = [&](const std::vector<ScanHit>& v) -> bool {
+        if (v.capacity() == 0) return false;
         const std::uint64_t vs = reinterpret_cast<std::uint64_t>(v.data());
-        const std::uint64_t ve = vs + v.capacity() * sizeof(ScanHit);
-        return addr < ve && (addr + size) > vs;
+        return range_overlaps(addr, size, vs, vs + v.capacity() * sizeof(ScanHit));
+    };
+    auto overlaps_snaps = [&](const std::vector<UnknownRegionSnap>& sn) -> bool {
+        for (const auto& s : sn) {
+            if (s.bytes.capacity() == 0) continue;
+            const std::uint64_t bs = reinterpret_cast<std::uint64_t>(s.bytes.data());
+            if (range_overlaps(addr, size, bs, bs + s.bytes.capacity())) return true;
+        }
+        return false;
     };
     const std::uint64_t f_lo = g_freeze_buf_start.load(std::memory_order_relaxed);
     const std::uint64_t f_hi = g_freeze_buf_end.load(std::memory_order_relaxed);
-    if (f_hi > f_lo && addr + size > f_lo && addr < f_hi) return true;
-    return overlaps_vec(g_hits) || overlaps_vec(g_prev_hits);
+    if (range_overlaps(addr, size, f_lo, f_hi)) return true;
+    if (overlaps_hits(g_hits) || overlaps_snaps(g_unknown_snaps)) return true;
+    for (const auto& gen : g_undo_stack) {
+        if (overlaps_hits(gen.hits) || overlaps_snaps(gen.snaps)) return true;
+    }
+    return false;
 }
 
 std::size_t type_size(int dtype, std::size_t str_len) {
@@ -253,6 +318,7 @@ std::size_t type_size(int dtype, std::size_t str_len) {
         case DT_INT8:   return 1;
         case DT_INT16:  return 2;
         case DT_INT32:  return 4;
+        case DT_UINT32: return 4;
         case DT_INT64:  return 8;
         case DT_FLOAT:  return 4;
         case DT_DOUBLE: return 8;
@@ -267,6 +333,7 @@ std::size_t type_align(int dtype) {
         case DT_INT8:   return 1;
         case DT_INT16:  return 2;
         case DT_INT32:  return 4;
+        case DT_UINT32: return 4;
         case DT_INT64:  return 8;
         case DT_FLOAT:  return 4;
         case DT_DOUBLE: return 8;
@@ -279,6 +346,7 @@ const char* type_code_str(int dtype) {
         case DT_INT8:   return "i8";
         case DT_INT16:  return "i16";
         case DT_INT32:  return "i32";
+        case DT_UINT32: return "u32";
         case DT_INT64:  return "i64";
         case DT_FLOAT:  return "f32";
         case DT_DOUBLE: return "f64";
@@ -290,6 +358,8 @@ const char* type_code_str(int dtype) {
 
 bool parse_double_strict(const char* s, double& out) {
     if (!s || !*s) return false;
+    while (*s == ' ' || *s == '\t') ++s;
+    if (!*s) return false;
     char* end = nullptr;
     out = std::strtod(s, &end);
     if (end == s || !std::isfinite(out)) return false;
@@ -298,8 +368,19 @@ bool parse_double_strict(const char* s, double& out) {
 
 bool parse_i64_strict(const char* s, std::int64_t& out) {
     if (!s || !*s) return false;
+    while (*s == ' ' || *s == '\t') ++s;
+    if (!*s) return false;
     char* end = nullptr;
-    const int base = (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? 16 : 10;
+    const bool neg = (*s == '-');
+    const char* p = neg ? (s + 1) : s;
+    const int base = (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) ? 16 : 10;
+    if (base == 16 && !neg) {
+        unsigned long long uv = std::strtoull(s, &end, 16);
+        if (end != s && (*end == '\0' || *end == ' ')) {
+            out = static_cast<std::int64_t>(uv);
+            return true;
+        }
+    }
     long long v = std::strtoll(s, &end, base);
     if (end != s && (*end == '\0' || *end == ' ')) {
         out = static_cast<std::int64_t>(v);
@@ -341,12 +422,95 @@ AobPattern parse_aob(std::string_view text) {
     return pat;
 }
 
+bool parse_range_pair(const std::string& s, double& lo, double& hi) {
+    std::size_t pos = s.find("..");
+    std::size_t sep_len = 2;
+    if (pos == std::string::npos) {
+        pos = s.find(',');
+        sep_len = 1;
+    }
+    if (pos == std::string::npos) return false;
+    std::string a = s.substr(0, pos);
+    std::string b = s.substr(pos + sep_len);
+    if (!parse_double_strict(a.c_str(), lo) || !parse_double_strict(b.c_str(), hi)) return false;
+    if (hi < lo) std::swap(lo, hi);
+    return true;
+}
+
+bool parse_group_query(const std::string& raw, GroupQuery& out) {
+    out = GroupQuery{};
+    std::string body = raw;
+    // Check :: (unordered) or : (ordered) range suffix
+    std::size_t dbl = raw.rfind("::");
+    if (dbl != std::string::npos) {
+        out.ordered = false;
+        body = raw.substr(0, dbl);
+        std::int64_t rng = 64;
+        if (parse_i64_strict(raw.substr(dbl + 2).c_str(), rng)) {
+            out.range_bytes = static_cast<std::size_t>(std::clamp<std::int64_t>(rng, 4, 4096));
+        }
+    } else {
+        std::size_t sgl = raw.rfind(':');
+        if (sgl != std::string::npos) {
+            out.ordered = true;
+            body = raw.substr(0, sgl);
+            std::int64_t rng = 64;
+            if (parse_i64_strict(raw.substr(sgl + 1).c_str(), rng)) {
+                out.range_bytes = static_cast<std::size_t>(std::clamp<std::int64_t>(rng, 4, 4096));
+            }
+        }
+    }
+    std::size_t start = 0;
+    while (start <= body.size()) {
+        std::size_t sep = body.find(';', start);
+        std::string tok = (sep == std::string::npos) ? body.substr(start) : body.substr(start, sep - start);
+        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.erase(tok.begin());
+        while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t')) tok.pop_back();
+        if (!tok.empty()) {
+            GroupTerm term;
+            char last = tok.back();
+            bool has_suffix = false;
+            if (tok.size() >= 2 && !(tok.size() >= 2 && tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X'))) {
+                switch (last) {
+                    case 'b': case 'B': term.dtype = DT_INT8;   has_suffix = true; break;
+                    case 's': case 'S': term.dtype = DT_INT16;  has_suffix = true; break;
+                    case 'i': case 'I': term.dtype = DT_INT32;  has_suffix = true; break;
+                    case 'u': case 'U': term.dtype = DT_UINT32; has_suffix = true; break;
+                    case 'q': case 'Q': term.dtype = DT_INT64;  has_suffix = true; break;
+                    case 'f': case 'F': term.dtype = DT_FLOAT;  has_suffix = true; break;
+                    case 'd': case 'D': term.dtype = DT_DOUBLE; has_suffix = true; break;
+                    default: break;
+                }
+            }
+            if (has_suffix) tok.pop_back();
+            std::string clean;
+            clean.reserve(tok.size());
+            for (char c : tok) {
+                if (c != ',' && c != '_' && c != ' ') clean.push_back(c);
+            }
+            if (!parse_double_strict(clean.c_str(), term.dval)) {
+                if (!parse_i64_strict(clean.c_str(), term.ival)) return false;
+                term.dval = static_cast<double>(term.ival);
+                term.is_int = true;
+            } else {
+                parse_i64_strict(clean.c_str(), term.ival);
+                term.is_int = (std::floor(term.dval) == term.dval && term.dval >= -9e15 && term.dval <= 9e15);
+            }
+            out.terms.push_back(term);
+        }
+        if (sep == std::string::npos) break;
+        start = sep + 1;
+    }
+    return out.terms.size() >= 2 && out.terms.size() <= 12;
+}
+
 std::uint64_t load_raw_u64(const std::uint8_t* ptr, int dtype) {
     std::uint64_t raw = 0;
     switch (dtype) {
         case DT_INT8:   std::memcpy(&raw, ptr, 1); break;
         case DT_INT16:  std::memcpy(&raw, ptr, 2); break;
         case DT_INT32:  std::memcpy(&raw, ptr, 4); break;
+        case DT_UINT32: std::memcpy(&raw, ptr, 4); break;
         case DT_INT64:  std::memcpy(&raw, ptr, 8); break;
         case DT_FLOAT:  std::memcpy(&raw, ptr, 4); break;
         case DT_DOUBLE: std::memcpy(&raw, ptr, 8); break;
@@ -358,33 +522,31 @@ std::uint64_t load_raw_u64(const std::uint8_t* ptr, int dtype) {
 double decode_numeric(std::uint64_t raw, int dtype) {
     switch (dtype) {
         case DT_INT8: {
-            std::int8_t v = 0;
-            std::memcpy(&v, &raw, 1);
+            std::int8_t v = 0; std::memcpy(&v, &raw, 1);
             return static_cast<double>(v);
         }
         case DT_INT16: {
-            std::int16_t v = 0;
-            std::memcpy(&v, &raw, 2);
+            std::int16_t v = 0; std::memcpy(&v, &raw, 2);
             return static_cast<double>(v);
         }
         case DT_INT32: {
-            std::int32_t v = 0;
-            std::memcpy(&v, &raw, 4);
+            std::int32_t v = 0; std::memcpy(&v, &raw, 4);
+            return static_cast<double>(v);
+        }
+        case DT_UINT32: {
+            std::uint32_t v = 0; std::memcpy(&v, &raw, 4);
             return static_cast<double>(v);
         }
         case DT_INT64: {
-            std::int64_t v = 0;
-            std::memcpy(&v, &raw, 8);
+            std::int64_t v = 0; std::memcpy(&v, &raw, 8);
             return static_cast<double>(v);
         }
         case DT_FLOAT: {
-            float v = 0.0f;
-            std::memcpy(&v, &raw, 4);
+            float v = 0.0f; std::memcpy(&v, &raw, 4);
             return static_cast<double>(v);
         }
         case DT_DOUBLE: {
-            double v = 0.0;
-            std::memcpy(&v, &raw, 8);
+            double v = 0.0; std::memcpy(&v, &raw, 8);
             return v;
         }
         default:
@@ -455,6 +617,12 @@ std::string format_value(const std::uint8_t* bytes, std::size_t len, int dtype) 
             std::snprintf(buf, sizeof(buf), "%d", v);
             return buf;
         }
+        case DT_UINT32: {
+            if (len < 4) return "?";
+            std::uint32_t v = 0; std::memcpy(&v, bytes, 4);
+            std::snprintf(buf, sizeof(buf), "%u", v);
+            return buf;
+        }
         case DT_INT64: {
             if (len < 8) return "?";
             std::int64_t v = 0; std::memcpy(&v, bytes, 8);
@@ -500,6 +668,21 @@ std::string format_value(const std::uint8_t* bytes, std::size_t len, int dtype) 
     }
 }
 
+bool read_live_xor_key(SafeMemIo& io, int xor_mode, std::uint32_t const_key, std::uint64_t key_addr, std::uint32_t& out_key) {
+    if (xor_mode == 1) {
+        out_key = const_key;
+        return true;
+    }
+    if (xor_mode == 2 && key_addr != 0) {
+        std::uint32_t k = 0;
+        if (io.read_at(key_addr, &k, 4) != 4) return false;
+        out_key = k;
+        return true;
+    }
+    out_key = 0;
+    return true;
+}
+
 std::string json_escape(std::string_view s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -518,21 +701,51 @@ std::string json_escape(std::string_view s) {
     return out;
 }
 
-std::string build_results_json(SafeMemIo& io, std::size_t max_return, std::int64_t elapsed_ms = 0, bool timed_out = false) {
+void push_undo_generation_locked() {
+    if (g_hits.empty() && !g_snap_active) return;
+    if (g_undo_stack.size() >= MAX_UNDO_DEPTH) {
+        g_undo_stack.pop_front();
+    }
+    ScanGeneration gen;
+    gen.hits = g_hits;
+    if (g_snap_active) {
+        // Move snapshots rather than duplicating 48MB when leaving snapshot mode
+        gen.snaps = std::move(g_unknown_snaps);
+        g_unknown_snaps.clear();
+    }
+    gen.last_type = g_last_type;
+    gen.last_str_len = g_last_str_len;
+    gen.snap_active = g_snap_active;
+    gen.snap_truncated = g_snap_truncated;
+    gen.snap_bytes = g_snap_bytes;
+    g_undo_stack.push_back(std::move(gen));
+}
+
+std::string build_results_json(SafeMemIo& io, std::size_t max_return, std::int64_t elapsed_ms = 0,
+                               bool timed_out = false, bool cancelled = false) {
     std::string json;
     json.reserve(4096);
     json += "{\"ok\":true,\"mode\":\"";
     json += (io.using_pipe() ? "pipe" : "proc");
     json += "\",\"total\":";
-    json += std::to_string(g_hits.size());
+    const std::size_t total_count = g_snap_active ? (g_hits.size() + (g_snap_bytes / 4)) : g_hits.size();
+    json += std::to_string(total_count);
+    json += ",\"snapshotActive\":";
+    json += (g_snap_active ? "true" : "false");
+    json += ",\"snapTruncated\":";
+    json += (g_snap_truncated ? "true" : "false");
     json += ",\"canUndo\":";
-    json += (g_prev_hits.empty() ? "false" : "true");
+    json += (g_undo_stack.empty() ? "false" : "true");
+    json += ",\"undoDepth\":";
+    json += std::to_string(g_undo_stack.size());
     json += ",\"elapsedMs\":";
     json += std::to_string(elapsed_ms);
     json += ",\"timedOut\":";
     json += (timed_out ? "true" : "false");
+    json += ",\"cancelled\":";
+    json += (cancelled ? "true" : "false");
     json += ",\"complete\":";
-    json += (timed_out ? "false" : "true");
+    json += ((timed_out || cancelled) ? "false" : "true");
     json += ",\"items\":[";
     const std::size_t limit = std::min(g_hits.size(), max_return);
     std::uint8_t tmp[64];
@@ -546,15 +759,29 @@ std::string build_results_json(SafeMemIo& io, std::size_t max_return, std::int64
         if (io.valid() && rd_len > 0) {
             const ssize_t got = io.read_at(h.addr, tmp, rd_len);
             ok_rd = (got == static_cast<ssize_t>(rd_len));
+            if (ok_rd && h.xor_mode != 0 && rd_len == 4) {
+                std::uint32_t k = 0;
+                if (read_live_xor_key(io, h.xor_mode, h.xor_key, h.xor_key_addr, k)) {
+                    std::uint32_t raw32 = 0;
+                    std::memcpy(&raw32, tmp, 4);
+                    raw32 ^= k;
+                    std::memcpy(tmp, &raw32, 4);
+                } else {
+                    ok_rd = false;
+                }
+            }
         }
         char addr_hex[32];
         std::snprintf(addr_hex, sizeof(addr_hex), "0x%llX", static_cast<unsigned long long>(h.addr));
         const std::string val_str = ok_rd ? format_value(tmp, rd_len, htype) : "<unreadable>";
-        std::uint8_t prev_bytes[8] = {0};
-        std::memcpy(prev_bytes, &h.prev_raw, 8);
-        const std::string prev_str = (htype == DT_STRING || htype == DT_AOB)
-            ? val_str
-            : format_value(prev_bytes, std::min<std::size_t>(rd_len, 8), htype);
+        std::string prev_str;
+        if (htype == DT_STRING || htype == DT_AOB) {
+            prev_str = h.prev_bytes_len > 0 ? format_value(h.prev_bytes, h.prev_bytes_len, htype) : val_str;
+        } else {
+            std::uint8_t prev_bytes[8] = {0};
+            std::memcpy(prev_bytes, &h.prev_raw, 8);
+            prev_str = format_value(prev_bytes, std::min<std::size_t>(rd_len, 8), htype);
+        }
         json += "{\"addr\":\"";
         json += addr_hex;
         json += "\",\"val\":\"";
@@ -563,26 +790,209 @@ std::string build_results_json(SafeMemIo& io, std::size_t max_return, std::int64
         json += json_escape(prev_str);
         json += "\",\"type\":\"";
         json += type_code_str(htype);
-        json += "\",\"kind\":\"native\"}";
+        json += "\",\"kind\":\"";
+        json += (h.xor_mode != 0 ? "native_xor" : "native");
+        json += "\"";
+        if (h.xor_mode != 0) {
+            char kaddr_hex[32];
+            std::snprintf(kaddr_hex, sizeof(kaddr_hex), "0x%llX", static_cast<unsigned long long>(h.xor_key_addr));
+            json += ",\"xorMode\":";
+            json += std::to_string(static_cast<int>(h.xor_mode));
+            json += ",\"xorKey\":";
+            json += std::to_string(static_cast<unsigned long long>(h.xor_key));
+            json += ",\"xorKeyAddr\":\"";
+            json += kaddr_hex;
+            json += "\"";
+        }
+        json += "}";
     }
     json += "]}";
     return json;
 }
 
-std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1, const std::string& s2, std::size_t max_return, int timeout_ms = 15000) {
+bool match_group_term_at(const std::uint8_t* data, std::size_t valid, std::size_t off,
+                         const GroupTerm& term, int& matched_dt, std::uint64_t& matched_raw) {
+    if (term.dtype != DT_AUTO) {
+        const std::size_t sz = type_size(term.dtype, 0);
+        if (off + sz > valid) return false;
+        const std::uint64_t raw = load_raw_u64(data + off, term.dtype);
+        if (match_numeric(raw, 0, false, term.dtype, SC_EXACT, term.dval, 0.0, term.ival, 0)) {
+            matched_dt = term.dtype;
+            matched_raw = raw;
+            return true;
+        }
+        return false;
+    }
+    // Auto term: i32 -> u32 -> f32 -> f64
+    if (off + 4 <= valid) {
+        const std::uint64_t raw32 = load_raw_u64(data + off, DT_INT32);
+        if (term.is_int && term.ival >= -2147483648LL && term.ival <= 2147483647LL &&
+            match_numeric(raw32, 0, false, DT_INT32, SC_EXACT, term.dval, 0.0, term.ival, 0)) {
+            matched_dt = DT_INT32;
+            matched_raw = raw32;
+            return true;
+        }
+        if (term.is_int && term.ival > 2147483647LL && term.ival <= 4294967295LL &&
+            match_numeric(raw32, 0, false, DT_UINT32, SC_EXACT, term.dval, 0.0, term.ival, 0)) {
+            matched_dt = DT_UINT32;
+            matched_raw = raw32;
+            return true;
+        }
+        const double f32v = decode_numeric(raw32, DT_FLOAT);
+        if (std::isfinite(f32v) && (term.dval == 0.0 || std::fabs(f32v) >= 1e-6) &&
+            match_numeric(raw32, 0, false, DT_FLOAT, SC_EXACT, term.dval, 0.0, term.ival, 0)) {
+            matched_dt = DT_FLOAT;
+            matched_raw = raw32;
+            return true;
+        }
+    }
+    if (off + 8 <= valid) {
+        const std::uint64_t raw64 = load_raw_u64(data + off, DT_DOUBLE);
+        const double f64v = decode_numeric(raw64, DT_DOUBLE);
+        if (std::isfinite(f64v) && (term.dval == 0.0 || std::fabs(f64v) >= 1e-6) &&
+            match_numeric(raw64, 0, false, DT_DOUBLE, SC_EXACT, term.dval, 0.0, term.ival, 0)) {
+            matched_dt = DT_DOUBLE;
+            matched_raw = raw64;
+            return true;
+        }
+    }
+    return false;
+}
+
+void diff_unknown_snapshots_locked(const std::vector<UnknownRegionSnap>& snaps, int dtype,
+                                   int scan_type, double v1, double v2, std::int64_t iv1, std::int64_t iv2,
+                                   SafeMemIo& io, std::vector<ScanHit>& out,
+                                   std::chrono::steady_clock::time_point deadline,
+                                   bool& timed_out, bool& cancelled) {
+    std::vector<std::uint8_t> live(CHUNK_BYTES);
+    for (const auto& s : snaps) {
+        if (out.size() >= MAX_RESULTS_CAP) break;
+        if (g_cancel_scan.load(std::memory_order_acquire)) { cancelled = true; break; }
+        if (std::chrono::steady_clock::now() >= deadline) { timed_out = true; break; }
+        const std::size_t total_len = s.bytes.size();
+        std::size_t pos = 0;
+        while (pos < total_len && out.size() < MAX_RESULTS_CAP) {
+            if (g_cancel_scan.load(std::memory_order_acquire)) { cancelled = true; break; }
+            if (std::chrono::steady_clock::now() >= deadline) { timed_out = true; break; }
+            const std::size_t to_read = std::min<std::size_t>(CHUNK_BYTES, total_len - pos);
+            const ssize_t got = io.read_at(s.start + pos, live.data(), to_read);
+            if (got <= 0) {
+                pos += std::min<std::size_t>(PIPE_STEP_BYTES, to_read);
+                continue;
+            }
+            const std::size_t valid = static_cast<std::size_t>(got);
+            const std::uint8_t* old_ptr = s.bytes.data() + pos;
+            const std::uint8_t* new_ptr = live.data();
+
+            if (dtype == DT_AUTO) {
+                if (valid >= 4) {
+                    const std::size_t last_off = valid - 4;
+                    for (std::size_t off = 0; off <= last_off && out.size() < MAX_RESULTS_CAP; off += 4) {
+                        const std::uint64_t old32 = load_raw_u64(old_ptr + off, DT_INT32);
+                        const std::uint64_t new32 = load_raw_u64(new_ptr + off, DT_INT32);
+                        if (old32 == new32 && (scan_type == SC_CHANGED || scan_type == SC_INCREASED ||
+                            scan_type == SC_DECREASED || (scan_type == SC_INCREASED_BY && v1 > 0.0) ||
+                            (scan_type == SC_DECREASED_BY && v1 > 0.0))) {
+                            continue;
+                        }
+                        const double of = decode_numeric(old32, DT_FLOAT);
+                        const double nf = decode_numeric(new32, DT_FLOAT);
+                        std::int32_t oi = 0, ni = 0;
+                        std::memcpy(&oi, &old32, 4);
+                        std::memcpy(&ni, &new32, 4);
+                        const bool looks_f = std::isfinite(of) && std::isfinite(nf) &&
+                            ((std::fabs(of) >= 0.001 && std::fabs(of) <= 1e8) || (std::fabs(nf) >= 0.001 && std::fabs(nf) <= 1e8)) &&
+                            (std::abs(oi) > 100000000 || std::abs(ni) > 100000000);
+                        if (looks_f) {
+                            if (match_numeric(new32, old32, true, DT_FLOAT, scan_type, v1, v2, iv1, iv2)) {
+                                ScanHit h;
+                                h.addr = s.start + pos + off;
+                                h.prev_raw = new32;
+                                h.hit_type = DT_FLOAT;
+                                out.push_back(h);
+                            }
+                        } else if (match_numeric(new32, old32, true, DT_INT32, scan_type, v1, v2, iv1, iv2)) {
+                            ScanHit h;
+                            h.addr = s.start + pos + off;
+                            h.prev_raw = new32;
+                            h.hit_type = DT_INT32;
+                            out.push_back(h);
+                        }
+                    }
+                }
+            } else {
+                const std::size_t item_sz = type_size(dtype, 0);
+                const std::size_t step = type_align(dtype);
+                if (valid >= item_sz) {
+                    const std::size_t last_off = valid - item_sz;
+                    for (std::size_t off = 0; off <= last_off && out.size() < MAX_RESULTS_CAP; off += step) {
+                        const std::uint64_t old_raw = load_raw_u64(old_ptr + off, dtype);
+                        const std::uint64_t new_raw = load_raw_u64(new_ptr + off, dtype);
+                        if (old_raw == new_raw && (scan_type == SC_CHANGED || scan_type == SC_INCREASED ||
+                            scan_type == SC_DECREASED || (scan_type == SC_INCREASED_BY && v1 > 0.0) ||
+                            (scan_type == SC_DECREASED_BY && v1 > 0.0))) {
+                            continue;
+                        }
+                        if (match_numeric(new_raw, old_raw, true, dtype, scan_type, v1, v2, iv1, iv2)) {
+                            ScanHit h;
+                            h.addr = s.start + pos + off;
+                            h.prev_raw = new_raw;
+                            h.hit_type = static_cast<std::uint8_t>(dtype);
+                            out.push_back(h);
+                        }
+                    }
+                }
+            }
+            pos += valid;
+        }
+    }
+}
+
+std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1, const std::string& s2,
+                                std::size_t max_return, int timeout_ms = 15000) {
+    g_cancel_scan.store(false, std::memory_order_release);
     std::lock_guard<std::mutex> lk(g_scan_mu);
     const auto t_start = std::chrono::steady_clock::now();
     const int clamped_timeout = std::clamp(timeout_ms, 1000, 80000);
     const auto t_deadline = t_start + std::chrono::milliseconds(clamped_timeout);
     bool timed_out = false;
-    g_prev_hits.clear();
+    bool cancelled = false;
+
+    g_undo_stack.clear();
     g_hits.clear();
+    g_unknown_snaps.clear();
+    g_snap_active = false;
+    g_snap_truncated = false;
+    g_snap_bytes = 0;
     g_last_type = dtype;
+    g_last_str_len = 0;
 
     double v1 = 0.0, v2 = 0.0;
     std::int64_t iv1 = 0, iv2 = 0;
     AobPattern aob;
-    if (dtype == DT_STRING) {
+    GroupQuery gq;
+    bool xor_has_explicit_key = false;
+    std::uint32_t xor_explicit_key = 0;
+
+    if (scan_type == SC_GROUP) {
+        if (!parse_group_query(s1, gq)) {
+            return "{\"ok\":false,\"error\":\"Invalid group syntax (use e.g. 100;200;50::64 or 100;200:32)\"}";
+        }
+        g_last_type = DT_AUTO;
+    } else if (scan_type == SC_XOR) {
+        if (!parse_i64_strict(s1.c_str(), iv1)) {
+            return "{\"ok\":false,\"error\":\"Enter target integer value for XOR scan\"}";
+        }
+        if (!s2.empty()) {
+            std::int64_t kv = 0;
+            if (!parse_i64_strict(s2.c_str(), kv)) {
+                return "{\"ok\":false,\"error\":\"Invalid XOR key (use number or 0xHEX)\"}";
+            }
+            xor_has_explicit_key = true;
+            xor_explicit_key = static_cast<std::uint32_t>(kv);
+        }
+        g_last_type = DT_INT32;
+    } else if (dtype == DT_STRING) {
         if (s1.empty()) return "{\"ok\":false,\"error\":\"Empty string query\"}";
         g_last_str_len = std::min<std::size_t>(s1.size(), 64);
     } else if (dtype == DT_AOB) {
@@ -590,7 +1000,6 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
         if (aob.bytes.empty()) return "{\"ok\":false,\"error\":\"Invalid hex byte pattern\"}";
         g_last_str_len = aob.bytes.size();
     } else {
-        g_last_str_len = 0;
         if (scan_type != SC_UNKNOWN) {
             if (!parse_double_strict(s1.c_str(), v1)) return "{\"ok\":false,\"error\":\"Invalid numeric value\"}";
             parse_i64_strict(s1.c_str(), iv1);
@@ -606,28 +1015,58 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
     if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self process memory\"}";
 
     const auto regions = parse_self_maps();
+
+    // Canonical byte snapshot for Unknown Initial (zero-inclusive, all numeric types!)
+    if (scan_type == SC_UNKNOWN && dtype != DT_STRING && dtype != DT_AOB) {
+        std::size_t used = 0;
+        for (const auto& reg : regions) {
+            if (g_cancel_scan.load(std::memory_order_acquire)) { cancelled = true; break; }
+            if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
+            if (used >= MAX_UNKNOWN_SNAP_BYTES) { g_snap_truncated = true; break; }
+            const std::uint64_t rlen = reg.end - reg.start;
+            const std::size_t take = static_cast<std::size_t>(std::min<std::uint64_t>(rlen, MAX_UNKNOWN_SNAP_BYTES - used));
+            if (take < 4) continue;
+            UnknownRegionSnap snap;
+            snap.start = reg.start;
+            snap.bytes.resize(take);
+            std::size_t filled = 0;
+            while (filled < take) {
+                if (g_cancel_scan.load(std::memory_order_acquire)) { cancelled = true; break; }
+                if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
+                const std::size_t step = std::min<std::size_t>(CHUNK_BYTES, take - filled);
+                const ssize_t got = io.read_at(reg.start + filled, snap.bytes.data() + filled, step);
+                if (got <= 0) break;
+                filled += static_cast<std::size_t>(got);
+            }
+            if (filled >= 4) {
+                snap.bytes.resize(filled);
+                used += filled;
+                g_unknown_snaps.push_back(std::move(snap));
+            }
+            if (take < rlen) g_snap_truncated = true;
+            if (cancelled || timed_out) break;
+        }
+        g_snap_active = !g_unknown_snaps.empty();
+        g_snap_bytes = used;
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t_start).count();
+        return build_results_json(io, max_return, elapsed_ms, timed_out, cancelled);
+    }
+
     std::vector<std::uint8_t> chunk(CHUNK_BYTES);
     const std::uint64_t chunk_start = reinterpret_cast<std::uint64_t>(chunk.data());
     const std::uint64_t chunk_end = chunk_start + chunk.size();
-    const std::size_t cap = (scan_type == SC_UNKNOWN) ? MAX_UNKNOWN_CAP : MAX_RESULTS_CAP;
-
+    const std::size_t cap = MAX_RESULTS_CAP;
     const std::uint64_t s1_start = reinterpret_cast<std::uint64_t>(s1.data());
     const std::uint64_t s1_end = s1_start + s1.capacity() + 1;
 
-    int scan_types[3] = { dtype, 0, 0 };
-    int scan_type_count = 1;
-    if (dtype == DT_AUTO) {
-        scan_types[0] = DT_INT32;
-        scan_types[1] = DT_FLOAT;
-        scan_types[2] = DT_DOUBLE;
-        scan_type_count = (scan_type == SC_UNKNOWN) ? 1 : 3;
-    }
-
     for (const auto& reg : regions) {
         if (g_hits.size() >= cap) break;
+        if (g_cancel_scan.load(std::memory_order_acquire)) { cancelled = true; break; }
         if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
         std::uint64_t cursor = reg.start;
         while (cursor < reg.end && g_hits.size() < cap) {
+            if (g_cancel_scan.load(std::memory_order_acquire)) { cancelled = true; break; }
             if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
             const std::size_t to_read = static_cast<std::size_t>(std::min<std::uint64_t>(CHUNK_BYTES, reg.end - cursor));
             if (to_read < 1) break;
@@ -638,7 +1077,121 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
             }
             const std::size_t valid = static_cast<std::size_t>(got);
 
-            if (dtype == DT_STRING) {
+            if (scan_type == SC_GROUP) {
+                const auto& t0 = gq.terms[0];
+                const std::size_t step0 = (t0.dtype == DT_INT8) ? 1 : (t0.dtype == DT_INT16 ? 2 : 4);
+                if (valid >= 4) {
+                    const std::size_t last0 = valid - std::min<std::size_t>(4, valid);
+                    for (std::size_t off0 = 0; off0 <= last0 && g_hits.size() < cap; off0 += step0) {
+                        int dt0 = DT_INT32;
+                        std::uint64_t raw0 = 0;
+                        if (!match_group_term_at(chunk.data(), valid, off0, t0, dt0, raw0)) continue;
+                        const std::uint64_t a0 = cursor + off0;
+                        if (is_inside_scanner_internal(a0, 8, chunk_start, chunk_end)) continue;
+
+                        std::vector<ScanHit> group_found;
+                        group_found.reserve(gq.terms.size());
+                        {
+                            ScanHit h0; h0.addr = a0; h0.prev_raw = raw0; h0.hit_type = static_cast<std::uint8_t>(dt0);
+                            group_found.push_back(h0);
+                        }
+                        std::vector<std::size_t> used_offs;
+                        used_offs.push_back(off0);
+                        bool all_matched = true;
+                        std::size_t prev_off = off0;
+
+                        for (std::size_t ti = 1; ti < gq.terms.size(); ++ti) {
+                            const auto& tk = gq.terms[ti];
+                            const std::size_t stepk = (tk.dtype == DT_INT8) ? 1 : (tk.dtype == DT_INT16 ? 2 : 4);
+                            const std::size_t win_lo = gq.ordered
+                                ? (prev_off + 1)
+                                : (off0 > gq.range_bytes ? (off0 - gq.range_bytes) : 0);
+                            const std::size_t win_hi = std::min<std::size_t>(valid, off0 + gq.range_bytes + 1);
+                            std::size_t aligned_lo = (win_lo + stepk - 1) / stepk * stepk;
+                            bool matched_k = false;
+                            for (std::size_t ok_off = aligned_lo; ok_off < win_hi; ok_off += stepk) {
+                                bool dup = false;
+                                for (std::size_t uo : used_offs) { if (uo == ok_off) { dup = true; break; } }
+                                if (dup) continue;
+                                int dtk = DT_INT32;
+                                std::uint64_t rawk = 0;
+                                if (match_group_term_at(chunk.data(), valid, ok_off, tk, dtk, rawk)) {
+                                    ScanHit hk;
+                                    hk.addr = cursor + ok_off;
+                                    hk.prev_raw = rawk;
+                                    hk.hit_type = static_cast<std::uint8_t>(dtk);
+                                    group_found.push_back(hk);
+                                    used_offs.push_back(ok_off);
+                                    prev_off = ok_off;
+                                    matched_k = true;
+                                    break;
+                                }
+                            }
+                            if (!matched_k) { all_matched = false; break; }
+                        }
+                        if (all_matched) {
+                            for (const auto& gh : group_found) {
+                                if (g_hits.size() < cap) g_hits.push_back(gh);
+                            }
+                        }
+                    }
+                }
+                const std::size_t overlap = std::min<std::size_t>(gq.range_bytes, valid > 64 ? valid / 2 : 0);
+                cursor += (valid > overlap && cursor + valid < reg.end) ? (valid - overlap) : valid;
+            } else if (scan_type == SC_XOR) {
+                const std::uint32_t target_u32 = static_cast<std::uint32_t>(static_cast<std::int32_t>(iv1));
+                if (valid >= 4) {
+                    const std::size_t slots = valid / 4;
+                    if (xor_has_explicit_key) {
+                        const std::uint32_t enc = target_u32 ^ xor_explicit_key;
+                        for (std::size_t si = 0; si < slots && g_hits.size() < cap; ++si) {
+                            std::uint32_t w = 0;
+                            std::memcpy(&w, chunk.data() + si * 4, 4);
+                            if (w == enc) {
+                                const std::uint64_t addr = cursor + si * 4;
+                                if (is_inside_scanner_internal(addr, 4, chunk_start, chunk_end)) continue;
+                                ScanHit h;
+                                h.addr = addr;
+                                h.prev_raw = target_u32;
+                                h.hit_type = DT_INT32;
+                                h.xor_mode = 1;
+                                h.xor_key = xor_explicit_key;
+                                g_hits.push_back(h);
+                            }
+                        }
+                    } else {
+                        // Auto-Key discovery: check neighbor keys at +-4, +-8, +-12, +-16 bytes
+                        static constexpr int kDeltas[8] = { -4, 4, -8, 8, -12, 12, -16, 16 };
+                        for (std::size_t si = 0; si < slots && g_hits.size() < cap; ++si) {
+                            std::uint32_t w = 0;
+                            std::memcpy(&w, chunk.data() + si * 4, 4);
+                            if (w == 0 || w == 0xFFFFFFFFu || w == target_u32) continue;
+                            const std::uint32_t needed_key = w ^ target_u32;
+                            if (needed_key == 0 || needed_key == 0xFFFFFFFFu || needed_key == w) continue;
+                            for (int d : kDeltas) {
+                                const std::int64_t nslot = static_cast<std::int64_t>(si) + (d / 4);
+                                if (nslot < 0 || static_cast<std::size_t>(nslot) >= slots) continue;
+                                std::uint32_t cand_k = 0;
+                                std::memcpy(&cand_k, chunk.data() + static_cast<std::size_t>(nslot) * 4, 4);
+                                if (cand_k == needed_key) {
+                                    const std::uint64_t addr = cursor + si * 4;
+                                    if (is_inside_scanner_internal(addr, 4, chunk_start, chunk_end)) break;
+                                    ScanHit h;
+                                    h.addr = addr;
+                                    h.prev_raw = target_u32;
+                                    h.hit_type = DT_INT32;
+                                    h.xor_mode = 2;
+                                    h.xor_key = cand_k;
+                                    h.xor_key_addr = cursor + static_cast<std::size_t>(nslot) * 4;
+                                    g_hits.push_back(h);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                cursor += valid;
+            } else if (dtype == DT_STRING) {
                 const std::size_t item_sz = type_size(DT_STRING, g_last_str_len);
                 if (valid >= item_sz) {
                     const std::size_t last_off = valid - item_sz;
@@ -648,7 +1201,12 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
                             const std::uint64_t addr = cursor + off;
                             if (addr >= s1_start && addr < s1_end) continue;
                             if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
-                            g_hits.push_back(ScanHit{addr, 0, DT_STRING});
+                            ScanHit h;
+                            h.addr = addr;
+                            h.hit_type = DT_STRING;
+                            h.prev_bytes_len = static_cast<std::uint8_t>(std::min<std::size_t>(item_sz, sizeof(h.prev_bytes)));
+                            std::memcpy(h.prev_bytes, chunk.data() + off, h.prev_bytes_len);
+                            g_hits.push_back(h);
                         }
                     }
                 }
@@ -669,7 +1227,12 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
                         if (ok) {
                             const std::uint64_t addr = cursor + off;
                             if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
-                            g_hits.push_back(ScanHit{addr, 0, DT_AOB});
+                            ScanHit h;
+                            h.addr = addr;
+                            h.hit_type = DT_AOB;
+                            h.prev_bytes_len = static_cast<std::uint8_t>(std::min<std::size_t>(item_sz, sizeof(h.prev_bytes)));
+                            std::memcpy(h.prev_bytes, chunk.data() + off, h.prev_bytes_len);
+                            g_hits.push_back(h);
                         }
                     }
                 }
@@ -682,92 +1245,110 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
                         const std::uint64_t addr = cursor + off;
                         if (is_inside_scanner_internal(addr, 8, chunk_start, chunk_end)) continue;
                         const std::uint64_t raw32 = load_raw_u64(chunk.data() + off, DT_INT32);
-                        if (scan_type == SC_UNKNOWN) {
-                            if (raw32 != 0) g_hits.push_back(ScanHit{addr, raw32, DT_INT32});
+                        if (match_numeric(raw32, 0, false, DT_INT32, scan_type, v1, v2, iv1, iv2)) {
+                            ScanHit h; h.addr = addr; h.prev_raw = raw32; h.hit_type = DT_INT32;
+                            g_hits.push_back(h);
                             continue;
                         }
-                        if (match_numeric(raw32, 0, false, DT_INT32, scan_type, v1, v2, iv1, iv2)) {
-                            g_hits.push_back(ScanHit{addr, raw32, DT_INT32});
+                        if (v1 > 2147483647.0 && v1 <= 4294967295.0 &&
+                            match_numeric(raw32, 0, false, DT_UINT32, scan_type, v1, v2, iv1, iv2)) {
+                            ScanHit h; h.addr = addr; h.prev_raw = raw32; h.hit_type = DT_UINT32;
+                            g_hits.push_back(h);
                             continue;
                         }
                         const double f32v = decode_numeric(raw32, DT_FLOAT);
                         if (std::isfinite(f32v) && (v1 == 0.0 || std::fabs(f32v) >= 1e-6) &&
                             match_numeric(raw32, 0, false, DT_FLOAT, scan_type, v1, v2, iv1, iv2)) {
-                            g_hits.push_back(ScanHit{addr, raw32, DT_FLOAT});
+                            ScanHit h; h.addr = addr; h.prev_raw = raw32; h.hit_type = DT_FLOAT;
+                            g_hits.push_back(h);
                             continue;
                         }
                         if ((off + 8) <= valid) {
                             const std::uint64_t raw64 = load_raw_u64(chunk.data() + off, DT_DOUBLE);
                             if (scan_type == SC_EXACT && (iv1 < -2147483648LL || iv1 > 2147483647LL) &&
                                 match_numeric(raw64, 0, false, DT_INT64, scan_type, v1, v2, iv1, iv2)) {
-                                g_hits.push_back(ScanHit{addr, raw64, DT_INT64});
+                                ScanHit h; h.addr = addr; h.prev_raw = raw64; h.hit_type = DT_INT64;
+                                g_hits.push_back(h);
                                 continue;
                             }
                             const double f64v = decode_numeric(raw64, DT_DOUBLE);
                             if (std::isfinite(f64v) && (v1 == 0.0 || std::fabs(f64v) >= 1e-6) &&
                                 match_numeric(raw64, 0, false, DT_DOUBLE, scan_type, v1, v2, iv1, iv2)) {
-                                g_hits.push_back(ScanHit{addr, raw64, DT_DOUBLE});
+                                ScanHit h; h.addr = addr; h.prev_raw = raw64; h.hit_type = DT_DOUBLE;
+                                g_hits.push_back(h);
                                 continue;
                             }
                         }
                         if (scan_type == SC_EXACT && iv1 >= -32768 && iv1 <= 32767 && iv1 != 0 && std::floor(v1) == v1) {
                             const std::uint64_t s16a = load_raw_u64(chunk.data() + off, DT_INT16);
                             if (match_numeric(s16a, 0, false, DT_INT16, scan_type, v1, v2, iv1, iv2)) {
-                                g_hits.push_back(ScanHit{addr, s16a, DT_INT16});
+                                ScanHit h; h.addr = addr; h.prev_raw = s16a; h.hit_type = DT_INT16;
+                                g_hits.push_back(h);
                             }
                             const std::uint64_t s16b = load_raw_u64(chunk.data() + off + 2, DT_INT16);
                             if (match_numeric(s16b, 0, false, DT_INT16, scan_type, v1, v2, iv1, iv2)) {
-                                g_hits.push_back(ScanHit{addr + 2, s16b, DT_INT16});
+                                ScanHit h; h.addr = addr + 2; h.prev_raw = s16b; h.hit_type = DT_INT16;
+                                g_hits.push_back(h);
                             }
                         }
                     }
                 }
                 cursor += valid;
             } else {
-                for (int ti = 0; ti < scan_type_count && g_hits.size() < cap; ++ti) {
-                    const int cur_dt = scan_types[ti];
-                    const std::size_t item_sz = type_size(cur_dt, 0);
-                    const std::size_t step = type_align(cur_dt);
-                    if (valid < item_sz) continue;
+                const std::size_t item_sz = type_size(dtype, 0);
+                const std::size_t step = type_align(dtype);
+                if (valid >= item_sz) {
                     const std::size_t last_off = valid - item_sz;
                     for (std::size_t off = 0; off <= last_off && g_hits.size() < cap; off += step) {
-                        const std::uint64_t raw = load_raw_u64(chunk.data() + off, cur_dt);
-                        if (match_numeric(raw, 0, false, cur_dt, scan_type, v1, v2, iv1, iv2)) {
+                        const std::uint64_t raw = load_raw_u64(chunk.data() + off, dtype);
+                        if (match_numeric(raw, 0, false, dtype, scan_type, v1, v2, iv1, iv2)) {
                             const std::uint64_t addr = cursor + off;
                             if (is_inside_scanner_internal(addr, item_sz, chunk_start, chunk_end)) continue;
-                            g_hits.push_back(ScanHit{addr, raw, static_cast<std::uint8_t>(cur_dt)});
+                            ScanHit h; h.addr = addr; h.prev_raw = raw; h.hit_type = static_cast<std::uint8_t>(dtype);
+                            g_hits.push_back(h);
                         }
                     }
                 }
                 cursor += valid;
             }
         }
+        if (cancelled || timed_out) break;
     }
 
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t_start).count();
-    return build_results_json(io, max_return, elapsed_ms, timed_out);
+    return build_results_json(io, max_return, elapsed_ms, timed_out, cancelled);
 }
 
-std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::string& s2, std::size_t max_return, int timeout_ms = 15000) {
+std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::string& s2,
+                               std::size_t max_return, int timeout_ms = 15000) {
+    g_cancel_scan.store(false, std::memory_order_release);
     std::lock_guard<std::mutex> lk(g_scan_mu);
     const auto t_start = std::chrono::steady_clock::now();
     const auto t_deadline = t_start + std::chrono::milliseconds(std::clamp(timeout_ms, 1000, 80000));
     bool timed_out = false;
-    if (g_hits.empty()) {
+    bool cancelled = false;
+
+    if (g_hits.empty() && !g_snap_active) {
         return "{\"ok\":false,\"error\":\"Run First Scan before Next Scan\"}";
     }
     const int dtype = g_last_type;
+    if (scan_type == SC_UNKNOWN) scan_type = SC_CHANGED;
+    if (scan_type == SC_XOR) scan_type = SC_EXACT;
+    if (scan_type == SC_GROUP) scan_type = SC_CHANGED;
+
     double v1 = 0.0, v2 = 0.0;
     std::int64_t iv1 = 0, iv2 = 0;
     AobPattern aob;
     const bool needs_v1 = (scan_type == SC_EXACT || scan_type == SC_BIGGER || scan_type == SC_SMALLER ||
                            scan_type == SC_BETWEEN || scan_type == SC_INCREASED_BY || scan_type == SC_DECREASED_BY);
     if (dtype == DT_STRING) {
-        if (s1.empty()) return "{\"ok\":false,\"error\":\"Empty string query\"}";
+        if (needs_v1 && s1.empty()) return "{\"ok\":false,\"error\":\"Empty string query\"}";
     } else if (dtype == DT_AOB) {
-        aob = parse_aob(s1);
-        if (aob.bytes.empty()) return "{\"ok\":false,\"error\":\"Invalid hex byte pattern\"}";
+        if (needs_v1) {
+            aob = parse_aob(s1);
+            if (aob.bytes.empty()) return "{\"ok\":false,\"error\":\"Invalid hex byte pattern\"}";
+        }
     } else if (needs_v1) {
         if (!parse_double_strict(s1.c_str(), v1)) return "{\"ok\":false,\"error\":\"Invalid numeric value\"}";
         parse_i64_strict(s1.c_str(), iv1);
@@ -781,43 +1362,100 @@ std::string mem_next_scan_impl(int scan_type, const std::string& s1, const std::
     SafeMemIo io(false);
     if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self process memory\"}";
 
-    g_prev_hits = g_hits;
+    // Push current generation onto undo stack BEFORE mutating
+    push_undo_generation_locked();
     std::vector<ScanHit> next;
+
+    if (g_snap_active) {
+        const auto& saved_snaps = g_undo_stack.back().snaps;
+        g_snap_active = false;
+        g_snap_truncated = false;
+        g_snap_bytes = 0;
+        next.reserve(4096);
+        diff_unknown_snapshots_locked(saved_snaps, dtype, scan_type, v1, v2, iv1, iv2, io, next, t_deadline, timed_out, cancelled);
+        g_hits.swap(next);
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t_start).count();
+        return build_results_json(io, max_return, elapsed_ms, timed_out, cancelled);
+    }
+
     next.reserve(std::min<std::size_t>(g_hits.size(), 4096));
     std::uint8_t buf[64];
-
     std::size_t checked = 0;
     for (const auto& h : g_hits) {
-        if ((++checked & 1023U) == 0 && std::chrono::steady_clock::now() >= t_deadline) {
-            timed_out = true;
-            break;
+        if ((++checked & 1023U) == 0) {
+            if (g_cancel_scan.load(std::memory_order_acquire)) { cancelled = true; break; }
+            if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
         }
         const int htype = static_cast<int>(h.hit_type);
         const std::size_t rd_sz = std::min<std::size_t>(type_size(htype, g_last_str_len), sizeof(buf));
         const ssize_t got = io.read_at(h.addr, buf, rd_sz);
         if (got != static_cast<ssize_t>(rd_sz)) continue;
+
         if (htype == DT_STRING) {
-            const std::size_t cmp_len = std::min(rd_sz, s1.size());
-            if (std::memcmp(buf, s1.data(), cmp_len) == 0) {
-                next.push_back(h);
+            const std::size_t blen = std::min<std::size_t>(rd_sz, sizeof(h.prev_bytes));
+            bool ok = false;
+            if (scan_type == SC_CHANGED) {
+                ok = (h.prev_bytes_len > 0 && std::memcmp(buf, h.prev_bytes, std::min<std::size_t>(blen, h.prev_bytes_len)) != 0);
+            } else if (scan_type == SC_UNCHANGED) {
+                ok = (h.prev_bytes_len > 0 && std::memcmp(buf, h.prev_bytes, std::min<std::size_t>(blen, h.prev_bytes_len)) == 0);
+            } else {
+                const std::size_t cmp_len = std::min(rd_sz, s1.size());
+                ok = (cmp_len > 0 && std::memcmp(buf, s1.data(), cmp_len) == 0);
+            }
+            if (ok) {
+                ScanHit nh = h;
+                nh.prev_bytes_len = static_cast<std::uint8_t>(blen);
+                std::memcpy(nh.prev_bytes, buf, blen);
+                next.push_back(nh);
             }
         } else if (htype == DT_AOB) {
-            bool ok = true;
-            for (std::size_t k = 0; k < aob.bytes.size() && k < rd_sz; ++k) {
-                if (aob.mask[k] && buf[k] != aob.bytes[k]) { ok = false; break; }
+            const std::size_t blen = std::min<std::size_t>(rd_sz, sizeof(h.prev_bytes));
+            bool ok = false;
+            if (scan_type == SC_CHANGED) {
+                ok = (h.prev_bytes_len > 0 && std::memcmp(buf, h.prev_bytes, std::min<std::size_t>(blen, h.prev_bytes_len)) != 0);
+            } else if (scan_type == SC_UNCHANGED) {
+                ok = (h.prev_bytes_len > 0 && std::memcmp(buf, h.prev_bytes, std::min<std::size_t>(blen, h.prev_bytes_len)) == 0);
+            } else {
+                ok = true;
+                for (std::size_t k = 0; k < aob.bytes.size() && k < rd_sz; ++k) {
+                    if (aob.mask[k] && buf[k] != aob.bytes[k]) { ok = false; break; }
+                }
             }
-            if (ok) next.push_back(h);
+            if (ok) {
+                ScanHit nh = h;
+                nh.prev_bytes_len = static_cast<std::uint8_t>(blen);
+                std::memcpy(nh.prev_bytes, buf, blen);
+                next.push_back(nh);
+            }
         } else {
-            const std::uint64_t raw = load_raw_u64(buf, htype);
-            if (match_numeric(raw, h.prev_raw, true, htype, scan_type, v1, v2, iv1, iv2)) {
-                next.push_back(ScanHit{h.addr, raw, h.hit_type});
+            if (h.xor_mode != 0 && rd_sz == 4) {
+                std::uint32_t k = 0;
+                if (!read_live_xor_key(io, h.xor_mode, h.xor_key, h.xor_key_addr, k)) continue;
+                std::uint32_t raw32 = 0;
+                std::memcpy(&raw32, buf, 4);
+                raw32 ^= k;
+                const std::uint64_t plain_raw = static_cast<std::uint64_t>(raw32);
+                if (match_numeric(plain_raw, h.prev_raw, true, htype, scan_type, v1, v2, iv1, iv2)) {
+                    ScanHit nh = h;
+                    nh.prev_raw = plain_raw;
+                    nh.xor_key = k;
+                    next.push_back(nh);
+                }
+            } else {
+                const std::uint64_t raw = load_raw_u64(buf, htype);
+                if (match_numeric(raw, h.prev_raw, true, htype, scan_type, v1, v2, iv1, iv2)) {
+                    ScanHit nh = h;
+                    nh.prev_raw = raw;
+                    next.push_back(nh);
+                }
             }
         }
     }
     g_hits.swap(next);
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t_start).count();
-    return build_results_json(io, max_return, elapsed_ms, timed_out);
+    return build_results_json(io, max_return, elapsed_ms, timed_out, cancelled);
 }
 
 std::string mem_refresh_hits_impl(std::size_t max_return) {
@@ -829,57 +1467,156 @@ std::string mem_refresh_hits_impl(std::size_t max_return) {
 
 std::string mem_undo_impl(std::size_t max_return) {
     std::lock_guard<std::mutex> lk(g_scan_mu);
-    if (g_prev_hits.empty()) {
+    if (g_undo_stack.empty()) {
         return "{\"ok\":false,\"error\":\"Nothing to undo\"}";
     }
-    g_hits.swap(g_prev_hits);
-    g_prev_hits.clear();
+    ScanGeneration gen = std::move(g_undo_stack.back());
+    g_undo_stack.pop_back();
+    g_hits = std::move(gen.hits);
+    g_unknown_snaps = std::move(gen.snaps);
+    g_last_type = gen.last_type;
+    g_last_str_len = gen.last_str_len;
+    g_snap_active = gen.snap_active;
+    g_snap_truncated = gen.snap_truncated;
+    g_snap_bytes = gen.snap_bytes;
     SafeMemIo io(false);
     return build_results_json(io, max_return);
 }
 
-std::string mem_read_value_impl(std::uint64_t addr, int dtype, std::size_t str_len) {
+std::string mem_read_value_ex_impl(std::uint64_t addr, int dtype, std::size_t str_len,
+                                   int xor_mode, std::uint32_t xor_key, std::uint64_t xor_key_addr) {
     const std::size_t sz = std::min<std::size_t>(type_size(dtype, str_len > 0 ? str_len : 16), 64);
     SafeMemIo io(false);
     if (!io.valid()) return "<err>";
     std::uint8_t buf[64] = {0};
     const ssize_t got = io.read_at(addr, buf, sz);
     if (got != static_cast<ssize_t>(sz)) return "<unreadable>";
+    if (xor_mode != 0 && sz == 4) {
+        std::uint32_t k = 0;
+        if (!read_live_xor_key(io, xor_mode, xor_key, xor_key_addr, k)) return "<key err>";
+        std::uint32_t raw32 = 0;
+        std::memcpy(&raw32, buf, 4);
+        raw32 ^= k;
+        std::memcpy(buf, &raw32, 4);
+    }
     return format_value(buf, sz, dtype);
 }
 
-bool mem_write_value_impl(std::uint64_t addr, int dtype, const std::string& val_str) {
-    std::uint8_t buf[64] = {0};
-    std::size_t sz = 0;
+bool encode_value_bytes(int dtype, const std::string& val_str, std::uint8_t out_buf[64],
+                        std::size_t& out_sz, double& out_num, bool& out_is_num) {
+    out_sz = 0;
+    out_num = 0.0;
+    out_is_num = false;
+    std::memset(out_buf, 0, 64);
     if (dtype == DT_STRING) {
         if (val_str.empty()) return false;
-        sz = std::min<std::size_t>(val_str.size(), sizeof(buf));
-        std::memcpy(buf, val_str.data(), sz);
-    } else if (dtype == DT_AOB) {
+        out_sz = std::min<std::size_t>(val_str.size(), 64);
+        std::memcpy(out_buf, val_str.data(), out_sz);
+        return true;
+    }
+    if (dtype == DT_AOB) {
         const auto pat = parse_aob(val_str);
         if (pat.bytes.empty()) return false;
-        sz = std::min<std::size_t>(pat.bytes.size(), sizeof(buf));
-        std::memcpy(buf, pat.bytes.data(), sz);
-    } else {
-        double dv = 0.0;
-        std::int64_t iv = 0;
-        if (!parse_double_strict(val_str.c_str(), dv)) return false;
-        parse_i64_strict(val_str.c_str(), iv);
-        switch (dtype) {
-            case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(iv); std::memcpy(buf, &v, 1); sz = 1; break; }
-            case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(iv); std::memcpy(buf, &v, 2); sz = 2; break; }
-            case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(iv); std::memcpy(buf, &v, 4); sz = 4; break; }
-            case DT_INT64:  { std::memcpy(buf, &iv, 8); sz = 8; break; }
-            case DT_FLOAT:  { float v = static_cast<float>(dv); std::memcpy(buf, &v, 4); sz = 4; break; }
-            case DT_DOUBLE: { std::memcpy(buf, &dv, 8); sz = 8; break; }
-            default: return false;
-        }
+        out_sz = std::min<std::size_t>(pat.bytes.size(), 64);
+        std::memcpy(out_buf, pat.bytes.data(), out_sz);
+        return true;
     }
+    double dv = 0.0;
+    std::int64_t iv = 0;
+    if (!parse_double_strict(val_str.c_str(), dv)) {
+        if (!parse_i64_strict(val_str.c_str(), iv)) return false;
+        dv = static_cast<double>(iv);
+    } else {
+        parse_i64_strict(val_str.c_str(), iv);
+    }
+    out_is_num = true;
+    switch (dtype) {
+        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(iv); std::memcpy(out_buf, &v, 1); out_sz = 1; out_num = static_cast<double>(v); return true; }
+        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(iv); std::memcpy(out_buf, &v, 2); out_sz = 2; out_num = static_cast<double>(v); return true; }
+        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(iv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
+        case DT_UINT32: { std::uint32_t v = static_cast<std::uint32_t>(iv < 0 ? 0 : iv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
+        case DT_INT64:  { std::memcpy(out_buf, &iv, 8); out_sz = 8; out_num = static_cast<double>(iv); return true; }
+        case DT_FLOAT:  { float v = static_cast<float>(dv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
+        case DT_DOUBLE: { std::memcpy(out_buf, &dv, 8); out_sz = 8; out_num = dv; return true; }
+        default: return false;
+    }
+}
+
+bool encode_numeric_val_bytes(int dtype, double val, std::uint8_t out_buf[64], std::size_t& out_sz) {
+    std::memset(out_buf, 0, 64);
+    switch (dtype) {
+        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(std::llround(val)); std::memcpy(out_buf, &v, 1); out_sz = 1; return true; }
+        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(std::llround(val)); std::memcpy(out_buf, &v, 2); out_sz = 2; return true; }
+        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(std::llround(val)); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
+        case DT_UINT32: { std::uint32_t v = static_cast<std::uint32_t>(val < 0.0 ? 0.0 : std::llround(val)); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
+        case DT_INT64:  { std::int64_t v = static_cast<std::int64_t>(std::llround(val)); std::memcpy(out_buf, &v, 8); out_sz = 8; return true; }
+        case DT_FLOAT:  { float v = static_cast<float>(val); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
+        case DT_DOUBLE: { std::memcpy(out_buf, &val, 8); out_sz = 8; return true; }
+        default: return false;
+    }
+}
+
+bool mem_write_value_ex_impl(std::uint64_t addr, int dtype, const std::string& val_str,
+                             int xor_mode, std::uint32_t xor_key, std::uint64_t xor_key_addr) {
+    std::uint8_t buf[64] = {0};
+    std::size_t sz = 0;
+    double dnum = 0.0;
+    bool is_num = false;
+    if (!encode_value_bytes(dtype, val_str, buf, sz, dnum, is_num)) return false;
     if (!is_addr_in_safe_rw_region(addr, sz)) return false;
     SafeMemIo io(true);
     if (!io.valid()) return false;
+    if (xor_mode != 0 && sz == 4) {
+        std::uint32_t k = 0;
+        if (!read_live_xor_key(io, xor_mode, xor_key, xor_key_addr, k)) return false;
+        std::uint32_t raw32 = 0;
+        std::memcpy(&raw32, buf, 4);
+        raw32 ^= k;
+        std::memcpy(buf, &raw32, 4);
+    }
     const ssize_t wrote = io.write_at(addr, buf, sz);
     return wrote == static_cast<ssize_t>(sz);
+}
+
+std::string mem_write_hex_impl(std::uint64_t addr, const std::string& hex_str) {
+    const auto pat = parse_aob(hex_str);
+    if (pat.bytes.empty() || pat.bytes.size() > 64) {
+        return "{\"ok\":false,\"error\":\"Enter 1..64 hex bytes (e.g. 90 90 ?? 01)\"}";
+    }
+    const std::size_t sz = pat.bytes.size();
+    if (!is_addr_in_safe_rw_region(addr, sz)) {
+        return "{\"ok\":false,\"error\":\"Address not in writable region\"}";
+    }
+    SafeMemIo io(true);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot open self mem\"}";
+    std::uint8_t buf[64] = {0};
+    if (io.read_at(addr, buf, sz) != static_cast<ssize_t>(sz)) {
+        return "{\"ok\":false,\"error\":\"Target memory unreadable\"}";
+    }
+    std::size_t patched = 0;
+    for (std::size_t i = 0; i < sz; ++i) {
+        if (pat.mask[i]) {
+            buf[i] = pat.bytes[i];
+            patched++;
+        }
+    }
+    if (io.write_at(addr, buf, sz) != static_cast<ssize_t>(sz)) {
+        return "{\"ok\":false,\"error\":\"Write failed\"}";
+    }
+    std::uint8_t rb[64] = {0};
+    const ssize_t got = io.read_at(addr, rb, sz);
+    std::string hex;
+    for (ssize_t i = 0; i < got; ++i) {
+        char h[4];
+        std::snprintf(h, sizeof(h), "%02X", rb[i]);
+        hex += h;
+    }
+    std::string out = "{\"ok\":true,\"wrote\":";
+    out += std::to_string(patched);
+    out += ",\"hex\":\"";
+    out += hex;
+    out += "\"}";
+    return out;
 }
 
 std::string mem_hex_dump_impl(std::uint64_t addr, std::size_t len) {
@@ -905,6 +1642,90 @@ std::string mem_hex_dump_impl(std::uint64_t addr, std::size_t len) {
     out += ",\"hex\":\"";
     out += hex;
     out += "\"}";
+    return out;
+}
+
+std::string mem_pointer_scan_impl(std::uint64_t target_addr, std::size_t max_offset, std::size_t max_return, int timeout_ms) {
+    if (target_addr == 0) return "{\"ok\":false,\"error\":\"Invalid target address\"}";
+    g_cancel_scan.store(false, std::memory_order_release);
+    const auto t_start = std::chrono::steady_clock::now();
+    const auto t_deadline = t_start + std::chrono::milliseconds(std::clamp(timeout_ms, 1000, 30000));
+    const std::size_t clamped_off = std::min<std::size_t>(max_offset, 65536);
+    const std::uint64_t lo_target = target_addr >= clamped_off ? (target_addr - clamped_off) : 0;
+    const std::size_t cap = std::clamp<std::size_t>(max_return, 1, 200);
+
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self process memory\"}";
+
+    const auto regions = parse_self_maps();
+    std::vector<std::uint8_t> chunk(CHUNK_BYTES);
+    const std::uint64_t chunk_start = reinterpret_cast<std::uint64_t>(chunk.data());
+    const std::uint64_t chunk_end = chunk_start + chunk.size();
+
+    struct PtrHit {
+        std::uint64_t ptr_addr;
+        std::uint64_t points_to;
+        std::uint64_t offset;
+        std::string region;
+    };
+    std::vector<PtrHit> found;
+    found.reserve(64);
+    bool timed_out = false;
+
+    constexpr std::size_t ptr_sz = sizeof(std::uintptr_t);
+    for (const auto& reg : regions) {
+        if (found.size() >= cap) break;
+        if (g_cancel_scan.load(std::memory_order_acquire)) break;
+        if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
+        std::uint64_t cursor = reg.start;
+        while (cursor < reg.end && found.size() < cap) {
+            if (g_cancel_scan.load(std::memory_order_acquire)) break;
+            if (std::chrono::steady_clock::now() >= t_deadline) { timed_out = true; break; }
+            const std::size_t to_read = static_cast<std::size_t>(std::min<std::uint64_t>(CHUNK_BYTES, reg.end - cursor));
+            if (to_read < ptr_sz) break;
+            const ssize_t got = io.read_at(cursor, chunk.data(), to_read);
+            if (got <= 0) {
+                cursor += std::min<std::size_t>(PIPE_STEP_BYTES, to_read);
+                continue;
+            }
+            const std::size_t valid = static_cast<std::size_t>(got);
+            const std::size_t slots = valid / ptr_sz;
+            for (std::size_t i = 0; i < slots && found.size() < cap; ++i) {
+                std::uintptr_t pval = 0;
+                std::memcpy(&pval, chunk.data() + i * ptr_sz, ptr_sz);
+                const std::uint64_t p64 = static_cast<std::uint64_t>(pval);
+                if (p64 >= lo_target && p64 <= target_addr) {
+                    const std::uint64_t paddr = cursor + i * ptr_sz;
+                    if (is_inside_scanner_internal(paddr, ptr_sz, chunk_start, chunk_end)) continue;
+                    found.push_back(PtrHit{paddr, p64, target_addr - p64, reg.label.empty() ? "[anon]" : reg.label});
+                }
+            }
+            cursor += valid;
+        }
+    }
+
+    std::string out = "{\"ok\":true,\"count\":";
+    out += std::to_string(found.size());
+    out += ",\"timedOut\":";
+    out += (timed_out ? "true" : "false");
+    out += ",\"items\":[";
+    for (std::size_t i = 0; i < found.size(); ++i) {
+        if (i > 0) out += ",";
+        char pa[32], pt[32], offh[24];
+        std::snprintf(pa, sizeof(pa), "0x%llX", static_cast<unsigned long long>(found[i].ptr_addr));
+        std::snprintf(pt, sizeof(pt), "0x%llX", static_cast<unsigned long long>(found[i].points_to));
+        std::snprintf(offh, sizeof(offh), "+0x%llX", static_cast<unsigned long long>(found[i].offset));
+        out += "{\"ptrAddr\":\"";
+        out += pa;
+        out += "\",\"pointsTo\":\"";
+        out += pt;
+        out += "\",\"offset\":\"";
+        out += offh;
+        out += "\",\"region\":\"";
+        out += json_escape(found[i].region);
+        out += "\"}";
+    }
+    out += "]}";
     return out;
 }
 
@@ -942,19 +1763,21 @@ std::string mem_regions_json_impl() {
     return out;
 }
 
-
-constexpr int FR_EXACT = 0;
-constexpr int FR_MIN   = 1;
-constexpr int FR_MAX   = 2;
-
 struct NativeFreezeEntry {
     std::uint64_t addr = 0;
     int dtype = DT_INT32;
     int rule = FR_EXACT;
     std::uint8_t bytes[64] = {0};
+    std::uint8_t bytes_hi[64] = {0};
     std::size_t len = 0;
     double target_num = 0.0;
+    double target_max = 0.0;
+    double step_delta = 0.0;
+    std::int64_t last_step_ms = 0;
     bool is_numeric = false;
+    int xor_mode = 0;
+    std::uint32_t xor_key = 0;
+    std::uint64_t xor_key_addr = 0;
     std::uint64_t blocked_writes = 0;
     std::uint64_t recent_blocked = 0;
     std::uint64_t rate_per_sec = 0;
@@ -974,45 +1797,13 @@ std::int64_t steady_now_ms() {
     ).count();
 }
 
-bool encode_value_bytes(int dtype, const std::string& val_str, std::uint8_t out_buf[64], std::size_t& out_sz, double& out_num, bool& out_is_num) {
-    out_sz = 0;
-    out_num = 0.0;
-    out_is_num = false;
-    std::memset(out_buf, 0, 64);
-    if (dtype == DT_STRING) {
-        if (val_str.empty()) return false;
-        out_sz = std::min<std::size_t>(val_str.size(), 64);
-        std::memcpy(out_buf, val_str.data(), out_sz);
-        return true;
-    }
-    if (dtype == DT_AOB) {
-        const auto pat = parse_aob(val_str);
-        if (pat.bytes.empty()) return false;
-        out_sz = std::min<std::size_t>(pat.bytes.size(), 64);
-        std::memcpy(out_buf, pat.bytes.data(), out_sz);
-        return true;
-    }
-    double dv = 0.0;
-    std::int64_t iv = 0;
-    if (!parse_double_strict(val_str.c_str(), dv)) return false;
-    parse_i64_strict(val_str.c_str(), iv);
-    out_is_num = true;
-    switch (dtype) {
-        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(iv); std::memcpy(out_buf, &v, 1); out_sz = 1; out_num = static_cast<double>(v); return true; }
-        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(iv); std::memcpy(out_buf, &v, 2); out_sz = 2; out_num = static_cast<double>(v); return true; }
-        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(iv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
-        case DT_INT64:  { std::memcpy(out_buf, &iv, 8); out_sz = 8; out_num = static_cast<double>(iv); return true; }
-        case DT_FLOAT:  { float v = static_cast<float>(dv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
-        case DT_DOUBLE: { std::memcpy(out_buf, &dv, 8); out_sz = 8; out_num = dv; return true; }
-        default: return false;
-    }
-}
-
 void* native_freeze_worker(void*) {
     SafeMemIo io(true);
     std::uint8_t cur[64];
+    std::uint8_t wr[64];
     while (g_freeze_running.load(std::memory_order_acquire)) {
         const std::int64_t now_ms = steady_now_ms();
+        bool any_active_fight = false;
         {
             std::lock_guard<std::mutex> lk(g_freeze_mu);
             if (g_freezes.empty()) {
@@ -1032,31 +1823,80 @@ void* native_freeze_worker(void*) {
                         f.detached = true;
                         continue;
                     }
+                    std::uint32_t live_k = 0;
+                    if (f.xor_mode != 0 && f.len == 4) {
+                        if (!read_live_xor_key(io, f.xor_mode, f.xor_key, f.xor_key_addr, live_k)) {
+                            f.detached = true;
+                            continue;
+                        }
+                        std::uint32_t r32 = 0;
+                        std::memcpy(&r32, cur, 4);
+                        r32 ^= live_k;
+                        std::memcpy(cur, &r32, 4);
+                    }
                     f.detached = false;
-                    bool should_restore = false;
-                    if (f.rule == FR_EXACT || !f.is_numeric) {
-                        should_restore = (std::memcmp(cur, f.bytes, f.len) != 0);
+                    bool should_write = false;
+                    std::size_t write_len = f.len;
+
+                    if (f.rule == FR_STEP && f.is_numeric) {
+                        if (now_ms - f.last_step_ms >= 1000) {
+                            f.last_step_ms = now_ms;
+                            const double cur_v = decode_numeric(load_raw_u64(cur, f.dtype), f.dtype);
+                            if (std::isfinite(cur_v)) {
+                                const double next_v = cur_v + f.step_delta;
+                                if (encode_numeric_val_bytes(f.dtype, next_v, wr, write_len)) {
+                                    should_write = true;
+                                }
+                            }
+                        }
+                    } else if (f.rule == FR_EXACT || !f.is_numeric) {
+                        if (std::memcmp(cur, f.bytes, f.len) != 0) {
+                            std::memcpy(wr, f.bytes, f.len);
+                            should_write = true;
+                        }
                     } else {
-                        const std::uint64_t raw = load_raw_u64(cur, f.dtype);
-                        const double cur_v = decode_numeric(raw, f.dtype);
+                        const double cur_v = decode_numeric(load_raw_u64(cur, f.dtype), f.dtype);
                         if (std::isfinite(cur_v)) {
-                            if (f.rule == FR_MIN) should_restore = (cur_v < f.target_num);
-                            else if (f.rule == FR_MAX) should_restore = (cur_v > f.target_num);
+                            if (f.rule == FR_MIN && cur_v < f.target_num) {
+                                std::memcpy(wr, f.bytes, f.len);
+                                should_write = true;
+                            } else if (f.rule == FR_MAX && cur_v > f.target_num) {
+                                std::memcpy(wr, f.bytes, f.len);
+                                should_write = true;
+                            } else if (f.rule == FR_RANGE) {
+                                if (cur_v < f.target_num) {
+                                    std::memcpy(wr, f.bytes, f.len);
+                                    should_write = true;
+                                } else if (cur_v > f.target_max) {
+                                    std::memcpy(wr, f.bytes_hi, f.len);
+                                    should_write = true;
+                                }
+                            }
                         }
                     }
-                    if (should_restore) {
-                        const ssize_t wrote = io.write_at(f.addr, f.bytes, f.len);
-                        if (wrote == static_cast<ssize_t>(f.len)) {
+
+                    if (should_write) {
+                        if (f.xor_mode != 0 && write_len == 4) {
+                            std::uint32_t w32 = 0;
+                            std::memcpy(&w32, wr, 4);
+                            w32 ^= live_k;
+                            std::memcpy(wr, &w32, 4);
+                        }
+                        const ssize_t wrote = io.write_at(f.addr, wr, write_len);
+                        if (wrote == static_cast<ssize_t>(write_len)) {
                             f.blocked_writes++;
                             f.recent_blocked++;
+                            if (f.rule != FR_STEP) any_active_fight = true;
                         } else {
                             f.detached = true;
                         }
                     }
+                    if (f.rate_per_sec >= 4) any_active_fight = true;
                 }
             }
         }
-        ::usleep(2000);
+        // Adaptive: 1.5ms (~667Hz) when actively fighting writes, 4ms (250Hz) when calm
+        ::usleep(any_active_fight ? 1500 : 4000);
     }
     return nullptr;
 }
@@ -1072,31 +1912,87 @@ void stop_freeze_thread_locked(std::unique_lock<std::mutex>& lk) {
     }
 }
 
-bool mem_set_freeze_impl(std::uint64_t addr, int dtype, const std::string& val_str, int rule = FR_EXACT) {
-    std::uint8_t buf[64];
+bool mem_set_freeze_ex_impl(std::uint64_t addr, int dtype, const std::string& val_str, int rule,
+                            int xor_mode, std::uint32_t xor_key, std::uint64_t xor_key_addr) {
+    std::uint8_t buf[64] = {0};
+    std::uint8_t buf_hi[64] = {0};
     std::size_t sz = 0;
     double target_num = 0.0;
+    double target_max = 0.0;
+    double step_delta = 0.0;
     bool is_num = false;
-    if (!encode_value_bytes(dtype, val_str, buf, sz, target_num, is_num)) return false;
+
+    const int safe_rule = (rule >= FR_EXACT && rule <= FR_STEP) ? rule : FR_EXACT;
+    if (safe_rule == FR_RANGE) {
+        double lo = 0.0, hi = 0.0;
+        if (!parse_range_pair(val_str, lo, hi)) {
+            if (!parse_double_strict(val_str.c_str(), lo)) return false;
+            hi = lo;
+        }
+        if (!encode_numeric_val_bytes(dtype, lo, buf, sz)) return false;
+        std::size_t sz2 = 0;
+        if (!encode_numeric_val_bytes(dtype, hi, buf_hi, sz2) || sz2 != sz) return false;
+        target_num = lo;
+        target_max = hi;
+        is_num = true;
+    } else if (safe_rule == FR_STEP) {
+        if (!parse_double_strict(val_str.c_str(), step_delta)) return false;
+        sz = type_size(dtype, 0);
+        if (sz == 0 || sz > 8 || dtype == DT_STRING || dtype == DT_AOB) return false;
+        is_num = true;
+    } else {
+        if (!encode_value_bytes(dtype, val_str, buf, sz, target_num, is_num)) return false;
+    }
+
     if (!is_addr_in_safe_rw_region(addr, sz)) return false;
     {
         SafeMemIo io(true);
         if (!io.valid()) return false;
-        if (rule == FR_EXACT || !is_num) {
-            if (io.write_at(addr, buf, sz) != static_cast<ssize_t>(sz)) return false;
+        std::uint32_t live_k = 0;
+        if (xor_mode != 0 && sz == 4) {
+            if (!read_live_xor_key(io, xor_mode, xor_key, xor_key_addr, live_k)) return false;
+        }
+        if (safe_rule == FR_EXACT || !is_num) {
+            std::uint8_t wbuf[64];
+            std::memcpy(wbuf, buf, sz);
+            if (xor_mode != 0 && sz == 4) {
+                std::uint32_t w32 = 0; std::memcpy(&w32, wbuf, 4); w32 ^= live_k; std::memcpy(wbuf, &w32, 4);
+            }
+            if (io.write_at(addr, wbuf, sz) != static_cast<ssize_t>(sz)) return false;
             std::uint8_t rb[64] = {0};
             if (io.read_at(addr, rb, sz) == static_cast<ssize_t>(sz)) {
+                if (xor_mode != 0 && sz == 4) {
+                    std::uint32_t r32 = 0; std::memcpy(&r32, rb, 4); r32 ^= live_k; std::memcpy(rb, &r32, 4);
+                }
                 std::memcpy(buf, rb, sz);
             }
-        } else {
+        } else if (safe_rule != FR_STEP) {
             std::uint8_t cur[64] = {0};
             if (io.read_at(addr, cur, sz) != static_cast<ssize_t>(sz)) return false;
+            if (xor_mode != 0 && sz == 4) {
+                std::uint32_t r32 = 0; std::memcpy(&r32, cur, 4); r32 ^= live_k; std::memcpy(cur, &r32, 4);
+            }
             const double cur_v = decode_numeric(load_raw_u64(cur, dtype), dtype);
-            const bool need_write = (rule == FR_MIN && cur_v < target_num) || (rule == FR_MAX && cur_v > target_num);
-            if (need_write && io.write_at(addr, buf, sz) != static_cast<ssize_t>(sz)) return false;
+            std::uint8_t* chosen = nullptr;
+            if (safe_rule == FR_MIN && cur_v < target_num) chosen = buf;
+            else if (safe_rule == FR_MAX && cur_v > target_num) chosen = buf;
+            else if (safe_rule == FR_RANGE && cur_v < target_num) chosen = buf;
+            else if (safe_rule == FR_RANGE && cur_v > target_max) chosen = buf_hi;
+            if (chosen) {
+                std::uint8_t wbuf[64];
+                std::memcpy(wbuf, chosen, sz);
+                if (xor_mode != 0 && sz == 4) {
+                    std::uint32_t w32 = 0; std::memcpy(&w32, wbuf, 4); w32 ^= live_k; std::memcpy(wbuf, &w32, 4);
+                }
+                if (io.write_at(addr, wbuf, sz) != static_cast<ssize_t>(sz)) return false;
+            }
+        } else {
+            // FR_STEP: verify target is readable now
+            std::uint8_t cur[64] = {0};
+            if (io.read_at(addr, cur, sz) != static_cast<ssize_t>(sz)) return false;
         }
     }
-    const int safe_rule = (rule == FR_MIN || rule == FR_MAX) ? rule : FR_EXACT;
+
     const std::int64_t now_ms = steady_now_ms();
     std::unique_lock<std::mutex> lk(g_freeze_mu);
     bool updated = false;
@@ -1105,9 +2001,16 @@ bool mem_set_freeze_impl(std::uint64_t addr, int dtype, const std::string& val_s
             f.dtype = dtype;
             f.rule = safe_rule;
             std::memcpy(f.bytes, buf, sz);
+            std::memcpy(f.bytes_hi, buf_hi, sz);
             f.len = sz;
             f.target_num = target_num;
+            f.target_max = target_max;
+            f.step_delta = step_delta;
+            f.last_step_ms = now_ms;
             f.is_numeric = is_num;
+            f.xor_mode = xor_mode;
+            f.xor_key = xor_key;
+            f.xor_key_addr = xor_key_addr;
             f.detached = false;
             updated = true;
             break;
@@ -1119,9 +2022,16 @@ bool mem_set_freeze_impl(std::uint64_t addr, int dtype, const std::string& val_s
         e.dtype = dtype;
         e.rule = safe_rule;
         std::memcpy(e.bytes, buf, sz);
+        std::memcpy(e.bytes_hi, buf_hi, sz);
         e.len = sz;
         e.target_num = target_num;
+        e.target_max = target_max;
+        e.step_delta = step_delta;
+        e.last_step_ms = now_ms;
         e.is_numeric = is_num;
+        e.xor_mode = xor_mode;
+        e.xor_key = xor_key;
+        e.xor_key_addr = xor_key_addr;
         e.rate_window_ms = now_ms;
         g_freezes.push_back(e);
         const std::uint64_t fl = reinterpret_cast<std::uint64_t>(g_freezes.data());
@@ -1183,11 +2093,18 @@ std::string mem_freeze_stats_json_impl() {
         first = false;
         char addr_hex[32];
         std::snprintf(addr_hex, sizeof(addr_hex), "0x%llX", static_cast<unsigned long long>(f.addr));
-        const char* st = f.detached ? "detached" : (f.rate_per_sec >= 10 ? "fighting" : (f.blocked_writes > 0 ? "enforcing" : "locked"));
-        const char* rstr = f.rule == FR_MIN ? "min" : (f.rule == FR_MAX ? "max" : "eq");
+        const char* st = f.detached ? "detached"
+            : (f.rate_per_sec >= 10 ? "fighting"
+            : (f.blocked_writes > 0 ? "enforcing" : "locked"));
+        const char* rstr = f.rule == FR_MIN ? "min"
+            : (f.rule == FR_MAX ? "max"
+            : (f.rule == FR_RANGE ? "range"
+            : (f.rule == FR_STEP ? "step" : "eq")));
         out += "\"";
         out += addr_hex;
-        out += "\":{\"mode\":\"500Hz\",\"rule\":\"";
+        out += "\":{\"mode\":\"";
+        out += (f.xor_mode != 0 ? "500Hz-XOR" : "500Hz");
+        out += "\",\"rule\":\"";
         out += rstr;
         out += "\",\"blocked\":";
         out += std::to_string(f.blocked_writes);
@@ -1217,8 +2134,10 @@ std::string mem_peek_struct_impl(std::uint64_t base_addr, std::size_t radius) {
         const std::uint64_t a = start + i * 4;
         const std::int64_t delta = static_cast<std::int64_t>(a) - static_cast<std::int64_t>(base_addr);
         std::int32_t iv = 0;
+        std::uint32_t uv = 0;
         float fv = 0.0f;
         std::memcpy(&iv, buf.data() + i * 4, 4);
+        std::memcpy(&uv, buf.data() + i * 4, 4);
         std::memcpy(&fv, buf.data() + i * 4, 4);
         const bool is_center = (delta == 0);
         const bool looks_f = std::isfinite(fv) && std::fabs(fv) >= 0.001f && std::fabs(fv) <= 1e7f && (std::abs(iv) > 100000000);
@@ -1242,6 +2161,8 @@ std::string mem_peek_struct_impl(std::uint64_t base_addr, std::size_t radius) {
         out += (looks_f ? f_str : std::to_string(iv));
         out += "\",\"i32\":\"";
         out += std::to_string(iv);
+        out += "\",\"u32\":\"";
+        out += std::to_string(uv);
         out += "\",\"f32\":\"";
         out += f_str;
         out += "\"}";
@@ -1259,93 +2180,142 @@ std::string jstr_to_std(JNIEnv* env, jstring js) {
     return s;
 }
 
-}
+} // namespace
 
 extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeFirstScan(
-    JNIEnv* env, jclass, jint dtype, jint scan_type, jstring val1, jstring val2, jint max_return, jint timeout_ms
-) {
-    const std::string res = mem_first_scan_impl(
-        static_cast<int>(dtype),
-        static_cast<int>(scan_type),
-        jstr_to_std(env, val1),
-        jstr_to_std(env, val2),
-        static_cast<std::size_t>(max_return > 0 ? max_return : 300),
-        static_cast<int>(timeout_ms > 0 ? timeout_ms : 15000)
-    );
+        JNIEnv* env, jclass,
+        jint dtype, jint scanType, jstring val1, jstring val2, jint maxReturn, jint timeoutMs) {
+    const std::string s1 = jstr_to_std(env, val1);
+    const std::string s2 = jstr_to_std(env, val2);
+    const std::size_t max_ret = static_cast<std::size_t>(std::clamp<int>(maxReturn, 1, 500));
+    const std::string res = mem_first_scan_impl(dtype, scanType, s1, s2, max_ret, timeoutMs);
     return env->NewStringUTF(res.c_str());
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeNextScan(
-    JNIEnv* env, jclass, jint scan_type, jstring val1, jstring val2, jint max_return, jint timeout_ms
-) {
-    const std::string res = mem_next_scan_impl(
-        static_cast<int>(scan_type),
-        jstr_to_std(env, val1),
-        jstr_to_std(env, val2),
-        static_cast<std::size_t>(max_return > 0 ? max_return : 300),
-        static_cast<int>(timeout_ms > 0 ? timeout_ms : 15000)
-    );
+        JNIEnv* env, jclass,
+        jint scanType, jstring val1, jstring val2, jint maxReturn, jint timeoutMs) {
+    const std::string s1 = jstr_to_std(env, val1);
+    const std::string s2 = jstr_to_std(env, val2);
+    const std::size_t max_ret = static_cast<std::size_t>(std::clamp<int>(maxReturn, 1, 500));
+    const std::string res = mem_next_scan_impl(scanType, s1, s2, max_ret, timeoutMs);
     return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT void JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeCancelScan(JNIEnv*, jclass) {
+    g_cancel_scan.store(true, std::memory_order_release);
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeRefreshHits(
-    JNIEnv* env, jclass, jint max_return
-) {
-    const std::string res = mem_refresh_hits_impl(static_cast<std::size_t>(max_return > 0 ? max_return : 150));
+        JNIEnv* env, jclass, jint maxReturn) {
+    const std::size_t max_ret = static_cast<std::size_t>(std::clamp<int>(maxReturn, 1, 500));
+    const std::string res = mem_refresh_hits_impl(max_ret);
     return env->NewStringUTF(res.c_str());
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeUndoScan(
-    JNIEnv* env, jclass, jint max_return
-) {
-    const std::string res = mem_undo_impl(static_cast<std::size_t>(max_return > 0 ? max_return : 150));
+        JNIEnv* env, jclass, jint maxReturn) {
+    const std::size_t max_ret = static_cast<std::size_t>(std::clamp<int>(maxReturn, 1, 500));
+    const std::string res = mem_undo_impl(max_ret);
     return env->NewStringUTF(res.c_str());
 }
 
 JNIEXPORT void JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeResetScan(JNIEnv*, jclass) {
+    g_cancel_scan.store(true, std::memory_order_release);
     std::lock_guard<std::mutex> lk(g_scan_mu);
-    std::vector<ScanHit>().swap(g_hits);
-    std::vector<ScanHit>().swap(g_prev_hits);
+    g_hits.clear();
+    g_unknown_snaps.clear();
+    g_undo_stack.clear();
+    g_snap_active = false;
+    g_snap_truncated = false;
+    g_snap_bytes = 0;
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeReadValue(
-    JNIEnv* env, jclass, jlong addr, jint dtype, jint str_len
-) {
-    const std::string res = mem_read_value_impl(
+        JNIEnv* env, jclass, jlong addr, jint dtype, jint strLen) {
+    const std::string res = mem_read_value_ex_impl(
         static_cast<std::uint64_t>(addr),
-        static_cast<int>(dtype),
-        static_cast<std::size_t>(str_len > 0 ? str_len : 16)
+        dtype,
+        static_cast<std::size_t>(std::max<int>(strLen, 1)),
+        0, 0, 0
+    );
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeReadValueEx(
+        JNIEnv* env, jclass, jlong addr, jint dtype, jint strLen,
+        jint xorMode, jlong xorKey, jlong xorKeyAddr) {
+    const std::string res = mem_read_value_ex_impl(
+        static_cast<std::uint64_t>(addr),
+        dtype,
+        static_cast<std::size_t>(std::max<int>(strLen, 1)),
+        xorMode,
+        static_cast<std::uint32_t>(xorKey),
+        static_cast<std::uint64_t>(xorKeyAddr)
     );
     return env->NewStringUTF(res.c_str());
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeWriteValue(
-    JNIEnv* env, jclass, jlong addr, jint dtype, jstring val_str
-) {
-    const bool ok = mem_write_value_impl(
+        JNIEnv* env, jclass, jlong addr, jint dtype, jstring valStr) {
+    const std::string s = jstr_to_std(env, valStr);
+    const bool ok = mem_write_value_ex_impl(static_cast<std::uint64_t>(addr), dtype, s, 0, 0, 0);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeWriteValueEx(
+        JNIEnv* env, jclass, jlong addr, jint dtype, jstring valStr,
+        jint xorMode, jlong xorKey, jlong xorKeyAddr) {
+    const std::string s = jstr_to_std(env, valStr);
+    const bool ok = mem_write_value_ex_impl(
         static_cast<std::uint64_t>(addr),
-        static_cast<int>(dtype),
-        jstr_to_std(env, val_str)
+        dtype,
+        s,
+        xorMode,
+        static_cast<std::uint32_t>(xorKey),
+        static_cast<std::uint64_t>(xorKeyAddr)
     );
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeWriteHex(
+        JNIEnv* env, jclass, jlong addr, jstring hexStr) {
+    const std::string s = jstr_to_std(env, hexStr);
+    const std::string res = mem_write_hex_impl(static_cast<std::uint64_t>(addr), s);
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeHexDump(
-    JNIEnv* env, jclass, jlong addr, jint len
-) {
+        JNIEnv* env, jclass, jlong addr, jint len) {
     const std::string res = mem_hex_dump_impl(
         static_cast<std::uint64_t>(addr),
-        static_cast<std::size_t>(len > 0 ? len : 128)
+        static_cast<std::size_t>(std::max<int>(len, 16))
+    );
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativePointerScan(
+        JNIEnv* env, jclass, jlong targetAddr, jint maxOffset, jint maxReturn, jint timeoutMs) {
+    const std::string res = mem_pointer_scan_impl(
+        static_cast<std::uint64_t>(targetAddr),
+        static_cast<std::size_t>(std::max<int>(maxOffset, 0)),
+        static_cast<std::size_t>(std::clamp<int>(maxReturn, 1, 200)),
+        timeoutMs
     );
     return env->NewStringUTF(res.c_str());
 }
@@ -1358,37 +2328,43 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeListRegions(JNIEnv* env,
 
 JNIEXPORT jboolean JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeSetFreeze(
-    JNIEnv* env, jclass, jlong addr, jint dtype, jstring val_str
-) {
-    const bool ok = mem_set_freeze_impl(
-        static_cast<std::uint64_t>(addr),
-        static_cast<int>(dtype),
-        jstr_to_std(env, val_str),
-        FR_EXACT
-    );
+        JNIEnv* env, jclass, jlong addr, jint dtype, jstring valStr) {
+    const std::string s = jstr_to_std(env, valStr);
+    const bool ok = mem_set_freeze_ex_impl(static_cast<std::uint64_t>(addr), dtype, s, FR_EXACT, 0, 0, 0);
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeSetFreezeRule(
-    JNIEnv* env, jclass, jlong addr, jint dtype, jstring val_str, jint rule
-) {
-    const bool ok = mem_set_freeze_impl(
+        JNIEnv* env, jclass, jlong addr, jint dtype, jstring valStr, jint rule) {
+    const std::string s = jstr_to_std(env, valStr);
+    const bool ok = mem_set_freeze_ex_impl(static_cast<std::uint64_t>(addr), dtype, s, rule, 0, 0, 0);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeSetFreezeEx(
+        JNIEnv* env, jclass, jlong addr, jint dtype, jstring valStr, jint rule,
+        jint xorMode, jlong xorKey, jlong xorKeyAddr) {
+    const std::string s = jstr_to_std(env, valStr);
+    const bool ok = mem_set_freeze_ex_impl(
         static_cast<std::uint64_t>(addr),
-        static_cast<int>(dtype),
-        jstr_to_std(env, val_str),
-        static_cast<int>(rule)
+        dtype,
+        s,
+        rule,
+        xorMode,
+        static_cast<std::uint32_t>(xorKey),
+        static_cast<std::uint64_t>(xorKeyAddr)
     );
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativePeekStruct(
-    JNIEnv* env, jclass, jlong addr, jint radius
-) {
+        JNIEnv* env, jclass, jlong addr, jint radius) {
     const std::string res = mem_peek_struct_impl(
         static_cast<std::uint64_t>(addr),
-        static_cast<std::size_t>(radius > 0 ? radius : 64)
+        static_cast<std::size_t>(std::max<int>(radius, 32))
     );
     return env->NewStringUTF(res.c_str());
 }
@@ -1409,4 +2385,4 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeGetFreezeStats(JNIEnv* e
     return env->NewStringUTF(res.c_str());
 }
 
-}
+} // extern "C"

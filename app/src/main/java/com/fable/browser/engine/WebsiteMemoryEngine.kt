@@ -4,16 +4,23 @@ import com.fable.browser.data.prefs.Settings
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import kotlin.math.roundToLong
 
 object WebsiteMemoryEngine {
-    const val MIN_PANEL_SCALE_PCT = 50
-    const val MAX_PANEL_SCALE_PCT = 160
+    const val MIN_PANEL_WIDTH_PCT = 55
+    const val MAX_PANEL_WIDTH_PCT = 100
+    const val DEFAULT_PANEL_WIDTH_PCT = 88
+
+    const val MIN_PANEL_HEIGHT_PCT = 40
+    const val MAX_PANEL_HEIGHT_PCT = 95
+    const val DEFAULT_PANEL_HEIGHT_PCT = 62
+
+    const val MIN_PANEL_SCALE_PCT = 60
+    const val MAX_PANEL_SCALE_PCT = 140
     const val DEFAULT_PANEL_SCALE_PCT = 100
-    const val MIN_PANEL_HEIGHT_PCT = 55
-    const val MAX_PANEL_HEIGHT_PCT = 150
-    const val DEFAULT_PANEL_HEIGHT_PCT = 100
+
     const val DEFAULT_PANEL_POS_X = 0.06f
-    const val DEFAULT_PANEL_POS_Y = 0.24f
+    const val DEFAULT_PANEL_POS_Y = 0.20f
 
     const val MIN_TIMEOUT_SEC = 1
     const val MAX_TIMEOUT_SEC = 80
@@ -21,17 +28,64 @@ object WebsiteMemoryEngine {
 
     private val CHANNEL_ID: String = "_mev_" + UUID.randomUUID().toString().replace("-", "").take(14)
 
-    fun clampPanelScalePct(pct: Int): Int = pct.coerceIn(MIN_PANEL_SCALE_PCT, MAX_PANEL_SCALE_PCT)
+    fun clampPanelWidthPct(pct: Int): Int = pct.coerceIn(MIN_PANEL_WIDTH_PCT, MAX_PANEL_WIDTH_PCT)
 
     fun clampPanelHeightPct(pct: Int): Int = pct.coerceIn(MIN_PANEL_HEIGHT_PCT, MAX_PANEL_HEIGHT_PCT)
+
+    fun clampPanelScalePct(pct: Int): Int = pct.coerceIn(MIN_PANEL_SCALE_PCT, MAX_PANEL_SCALE_PCT)
 
     fun clampTimeoutSec(sec: Int): Int = sec.coerceIn(MIN_TIMEOUT_SEC, MAX_TIMEOUT_SEC)
 
     fun normalizeNumericInput(raw: String, dataType: MemDataType): String {
         val t = raw.trim()
         if (dataType == MemDataType.STRING || dataType == MemDataType.AOB) return t
+        if (t.contains("..") || t.contains(";") || t.contains(":")) return t
         val cleaned = t.replace(",", "").replace("_", "").replace(" ", "")
+        if (cleaned.startsWith("0x", ignoreCase = true) || cleaned.startsWith("-0x", ignoreCase = true)) {
+            val neg = cleaned.startsWith("-")
+            val hexPart = cleaned.removePrefix("-").removePrefix("0x").removePrefix("0X")
+            val parsed = runCatching { java.lang.Long.parseUnsignedLong(hexPart, 16) }.getOrNull()
+            if (parsed != null) return if (neg) "-$parsed" else parsed.toString()
+        }
         return if (cleaned.isNotEmpty() && cleaned.toDoubleOrNull() != null) cleaned else t
+    }
+
+    /**
+     * Evaluates relative math expressions like "+500", "-25", "*2", "x10", "/2",
+     * or returns the normalized direct input when not a relative expression.
+     */
+    fun evaluateRelativeMath(currentValStr: String, rawExpr: String, dataType: MemDataType): String {
+        val expr = rawExpr.trim()
+        if (expr.isEmpty()) return expr
+        if (dataType == MemDataType.STRING || dataType == MemDataType.AOB) return expr
+        if (expr.contains("..")) return expr
+        val first = expr[0]
+        val isRelOp = (first == '+' || first == '*' || first == 'x' || first == 'X' || first == '/') ||
+            (first == '-' && expr.length > 1 && expr.startsWith("--"))
+        if (!isRelOp) return normalizeNumericInput(expr, dataType)
+
+        val cur = normalizeNumericInput(currentValStr, dataType).toDoubleOrNull() ?: return normalizeNumericInput(expr, dataType)
+        val operandStr = when {
+            expr.startsWith("--") -> expr.substring(2)
+            else -> expr.substring(1)
+        }.replace(",", "").replace("_", "").replace(" ", "")
+        val opNum = operandStr.toDoubleOrNull() ?: return normalizeNumericInput(expr, dataType)
+        val next = when {
+            expr.startsWith("+") -> cur + opNum
+            expr.startsWith("--") -> cur - opNum
+            first == '*' || first == 'x' || first == 'X' -> cur * opNum
+            first == '/' -> if (opNum != 0.0) cur / opNum else cur
+            else -> opNum
+        }
+        if (!next.isFinite()) return currentValStr
+        return when (dataType) {
+            MemDataType.FLOAT, MemDataType.DOUBLE -> {
+                if (next == next.roundToLong().toDouble()) next.roundToLong().toString()
+                else String.format(java.util.Locale.US, "%.4f", next).trimEnd('0').trimEnd('.')
+            }
+            MemDataType.UINT32 -> next.roundToLong().coerceAtLeast(0L).toString()
+            else -> next.roundToLong().toString()
+        }
     }
 
     fun splitFrameAddr(addr: String): Pair<String?, String> {
@@ -50,21 +104,29 @@ object WebsiteMemoryEngine {
         if (op == "readBatch") {
             val mergedVals = JSONObject()
             val mergedStats = JSONObject()
+            val mergedTraces = JSONObject()
             for (o in parsed) {
                 val vals = o.optJSONObject("values")
-                if (vals != null) {
-                    vals.keys().forEach { k -> mergedVals.put(k, vals.optString(k)) }
-                }
+                if (vals != null) vals.keys().forEach { k -> mergedVals.put(k, vals.optString(k)) }
                 val fs = o.optJSONObject("freezeStats")
-                if (fs != null) {
-                    fs.keys().forEach { k -> mergedStats.put(k, fs.opt(k)) }
-                }
+                if (fs != null) fs.keys().forEach { k -> mergedStats.put(k, fs.opt(k)) }
+                val tr = o.optJSONObject("traces")
+                if (tr != null) tr.keys().forEach { k -> mergedTraces.put(k, tr.opt(k)) }
             }
             return JSONObject()
                 .put("ok", true)
                 .put("values", mergedVals)
                 .put("freezeStats", mergedStats)
+                .put("traces", mergedTraces)
                 .toString()
+        }
+        if (op == "getTraceLogs") {
+            val mergedTraces = JSONObject()
+            for (o in parsed) {
+                val tr = o.optJSONObject("traces")
+                if (tr != null) tr.keys().forEach { k -> mergedTraces.put(k, tr.opt(k)) }
+            }
+            return JSONObject().put("ok", true).put("traces", mergedTraces).toString()
         }
         if (op == "writeBatch") {
             var wrote = 0
@@ -73,9 +135,7 @@ object WebsiteMemoryEngine {
                 if (!o.optBoolean("ok", false)) continue
                 wrote += o.optInt("wrote", 0)
                 val vals = o.optJSONObject("values")
-                if (vals != null) {
-                    vals.keys().forEach { k -> mergedVals.put(k, vals.optString(k)) }
-                }
+                if (vals != null) vals.keys().forEach { k -> mergedVals.put(k, vals.optString(k)) }
             }
             return JSONObject().put("ok", true).put("wrote", wrote).put("values", mergedVals).toString()
         }
@@ -87,17 +147,11 @@ object WebsiteMemoryEngine {
             for (o in parsed) {
                 locked += o.optInt("locked", 0)
                 val lArr = o.optJSONArray("lockedIds")
-                if (lArr != null) {
-                    for (i in 0 until lArr.length()) lockedIds.put(lArr.optString(i))
-                }
+                if (lArr != null) for (i in 0 until lArr.length()) lockedIds.put(lArr.optString(i))
                 val fArr = o.optJSONArray("failedIds")
-                if (fArr != null) {
-                    for (i in 0 until fArr.length()) failedIds.put(fArr.optString(i))
-                }
+                if (fArr != null) for (i in 0 until fArr.length()) failedIds.put(fArr.optString(i))
                 val fs = o.optJSONObject("freezeStats")
-                if (fs != null) {
-                    fs.keys().forEach { k -> mergedStats.put(k, fs.opt(k)) }
-                }
+                if (fs != null) fs.keys().forEach { k -> mergedStats.put(k, fs.opt(k)) }
             }
             return JSONObject()
                 .put("ok", locked > 0)
@@ -107,10 +161,11 @@ object WebsiteMemoryEngine {
                 .put("freezeStats", mergedStats)
                 .toString()
         }
-        if (op == "unfreeze" || op == "unfreezeBatch" || op == "unfreezeAll") {
+        if (op == "unfreeze" || op == "unfreezeBatch" || op == "unfreezeAll" || op == "clearTrace") {
             return JSONObject().put("ok", true).toString()
         }
-        if (op == "write" || op == "hexDump" || op == "setFreeze" || op == "peekStruct") {
+        if (op == "write" || op == "hexDump" || op == "writeHex" || op == "setFreeze" ||
+            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach") {
             val hit = parsed.firstOrNull { it.optBoolean("ok", false) } ?: parsed[0]
             return hit.toString()
         }
@@ -152,6 +207,7 @@ object WebsiteMemoryEngine {
         var anyOk = false
         var total = 0
         var canUndo = false
+        var undoDepth = 0
         var wasmCount = 0
         var bufCount = 0
         var workerCount = 0
@@ -178,6 +234,7 @@ object WebsiteMemoryEngine {
             frameCount++
             total += o.optInt("total", 0)
             if (o.optBoolean("canUndo", false)) canUndo = true
+            undoDepth = maxOf(undoDepth, o.optInt("undoDepth", 0))
             wasmCount += o.optInt("wasmCount", 0)
             bufCount += o.optInt("bufCount", 0)
             workerCount += o.optInt("workerCount", 0)
@@ -219,6 +276,7 @@ object WebsiteMemoryEngine {
             .put("ok", true)
             .put("total", total)
             .put("canUndo", canUndo)
+            .put("undoDepth", undoDepth)
             .put("wasmCount", wasmCount)
             .put("bufCount", bufCount)
             .put("workerCount", workerCount)
@@ -242,38 +300,39 @@ object WebsiteMemoryEngine {
 
     fun buildBootstrapScriptInternal(channelId: String = CHANNEL_ID): String {
         val chJson = JSONObject.quote(channelId)
-        val sb = StringBuilder(82_000)
-        sb.append(JS_PART_1).append('\n')
-        sb.append(JS_PART_2).append('\n')
-        sb.append(JS_PART_3).append('\n')
-        sb.append(JS_PART_4)
-        return sb.toString().replace("__CH_ARG__", chJson)
+        val sb = StringBuilder(140_000)
+        sb.append(JS_PART_1.replace("__CH_ARG__", chJson))
+        sb.append("\n").append(JS_PART_2)
+        sb.append("\n").append(JS_PART_3)
+        sb.append("\n").append(JS_PART_4)
+        sb.append("\n").append(JS_PART_5)
+        sb.append("\n").append(JS_PART_6)
+        return sb.toString()
     }
 
     fun buildBlinkCommandScript(cmdJson: String, reqId: String = ""): String {
         val chJson = JSONObject.quote(CHANNEL_ID)
         val reqJson = JSONObject.quote(reqId)
-        val boot = buildBootstrapScriptInternal(CHANNEL_ID)
         return """
         (function() {
-            var CH = $chJson;
             var cmd = $cmdJson;
-            var rid = $reqJson;
-            if (rid) cmd.__mreq = rid;
+            cmd.__mreq = $reqJson;
+            var box = { ok: false, out: null };
+            cmd.box = box;
+            var childFrames = 0;
+            try { childFrames = window.frames ? window.frames.length : 0; } catch (_) {}
             function send() {
-                var box = { ok: false, out: null };
-                cmd.box = box;
-                try { window.dispatchEvent(new CustomEvent(CH, { detail: cmd })); } catch (_) {}
-                return box;
+                try { window.dispatchEvent(new CustomEvent($chJson, { detail: cmd })); } catch (_) {}
             }
-            var res = send();
-            if (!res.ok) {
-                $boot
-                res = send();
+            send();
+            if (!box.ok) {
+                return JSON.stringify({ ok: false, error: "Memory scanner not hooked yet (tap Hook Reload)", childFrames: childFrames });
             }
-            var outObj = (res.ok && res.out) ? res.out : { ok: false, error: "Page scanner unavailable" };
-            try { outObj.childFrames = window.frames ? window.frames.length : 0; } catch (_) { outObj.childFrames = 0; }
-            return JSON.stringify(outObj);
+            var res = box.out || { ok: false, error: "Empty response" };
+            if (typeof res === "object" && res !== null) {
+                res.childFrames = childFrames;
+            }
+            return JSON.stringify(res);
         })();
         """.trimIndent()
     }
@@ -710,19 +769,23 @@ if (window.document && window.document.querySelector && window.document.querySel
 return eng;
 }
 var hits = [];
-var prevHits = [];
-var unknownSnaps = null; // Binary snapshot pool for PC-CE style Unknown Initial scans
-var prevUnknownSnaps = null;
+var undoStack = [];
+var MAX_UNDO_DEPTH = 5;
+var unknownSnaps = null;
 var lastType = "auto";
 var taRegistry = [];
 var abRegistry = [];
 var watchRefs = new Map();
 var skippedXOriginCount = 0;
-var frozenMap = new Map(); // localId -> { rec, valStr, parsedVal, mode, blocked, lastBlockedAt, rateCount, origDesc, trapInstalled, status, origObj }
-var mapWrapState = new WeakMap(); // Map -> { origSet, keys: Map<key, frozenEntry> }
-var storageProtoHook = null; // { proto, origSetItem, lsSt, ssSt, lsKeys: Map, ssKeys: Map }
+var frozenMap = new Map();
+var traceMap = new Map();
+var MAX_TRACE_EVENTS = 40;
+var selfWriteDepth = 0;
+var mapWrapState = new WeakMap();
+var storageProtoHook = null;
 var freezeIntervalId = null;
 var freezeRafId = null;
+var traceRafId = null;
 var lastEnforceTickMs = 0;
 var SKIP_KEYS = new Set([
 "window", "self", "globalThis", "document", "location", "navigator", "history",
@@ -821,6 +884,7 @@ try {
 if (dt === "i8")  return dv.getInt8(off);
 if (dt === "i16") return dv.getInt16(off, true);
 if (dt === "i32") return dv.getInt32(off, true);
+if (dt === "u32") return dv.getUint32(off, true);
 if (dt === "i64") return Number(dv.getBigInt64(off, true));
 if (dt === "f32") return dv.getFloat32(off, true);
 if (dt === "f64") return dv.getFloat64(off, true);
@@ -848,32 +912,18 @@ if (!Number.isFinite(num)) return false;
 var absOff = dv.byteOffset + off;
 if (isShared && typeof Atomics === "object") {
 try {
-if (dt === "i8") {
-Atomics.store(new Int8Array(dv.buffer, absOff, 1), 0, num | 0);
-return true;
-}
-if (dt === "i16" && (absOff & 1) === 0) {
-Atomics.store(new Int16Array(dv.buffer, absOff, 1), 0, num | 0);
-return true;
-}
-if (dt === "i32" && (absOff & 3) === 0) {
-Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, num | 0);
-return true;
-}
-if (dt === "f32" && (absOff & 3) === 0) {
-Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, f32ToI32Bits(num));
-return true;
-}
+if (dt === "i8") { Atomics.store(new Int8Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
+if (dt === "i16" && (absOff & 1) === 0) { Atomics.store(new Int16Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
+if (dt === "i32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
+if (dt === "u32" && (absOff & 3) === 0) { Atomics.store(new Uint32Array(dv.buffer, absOff, 1), 0, (num < 0 ? 0 : num) >>> 0); return true; }
+if (dt === "f32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, f32ToI32Bits(num)); return true; }
 } catch (_) {}
 }
 if (dt === "i8")  { dv.setInt8(off, num | 0); return true; }
 if (dt === "i16") { dv.setInt16(off, num | 0, true); return true; }
 if (dt === "i32") { dv.setInt32(off, num | 0, true); return true; }
+if (dt === "u32") { dv.setUint32(off, (num < 0 ? 0 : num) >>> 0, true); return true; }
 if (dt === "i64") { dv.setBigInt64(off, BigInt(Math.round(num)), true); return true; }
-
-""".trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_2 = """
 if (dt === "f32") { dv.setFloat32(off, num, true); return true; }
 if (dt === "f64") { dv.setFloat64(off, num, true); return true; }
 } catch (_) {}
@@ -887,6 +937,62 @@ if (dt === "f32" || dt === "f64" || !Number.isInteger(v)) return Number(v.toPrec
 return String(v);
 }
 return String(v).slice(0, 64);
+}
+function parseRangePair(valStr) {
+var s = String(valStr || "").trim();
+var parts = s.indexOf("..") !== -1 ? s.split("..") : (s.indexOf(",") !== -1 ? s.split(",") : null);
+if (!parts || parts.length < 2) return null;
+var a = Number(cleanNumStr(parts[0]));
+var b = Number(cleanNumStr(parts[1]));
+if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+return a <= b ? [a, b] : [b, a];
+}
+function parseGroupQuery(raw) {
+var s = String(raw || "").trim();
+var ordered = false;
+var rangeBytes = 64;
+var body = s;
+var dbl = s.lastIndexOf("::");
+if (dbl !== -1) {
+ordered = false;
+body = s.slice(0, dbl);
+var r1 = Number(cleanNumStr(s.slice(dbl + 2)));
+if (Number.isFinite(r1)) rangeBytes = Math.max(4, Math.min(4096, Math.round(r1)));
+} else {
+var sgl = s.lastIndexOf(":");
+if (sgl !== -1) {
+ordered = true;
+body = s.slice(0, sgl);
+var r2 = Number(cleanNumStr(s.slice(sgl + 1)));
+if (Number.isFinite(r2)) rangeBytes = Math.max(4, Math.min(4096, Math.round(r2)));
+}
+}
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_2 = """
+var rawTerms = body.split(";").map(function(x) { return x.trim(); }).filter(Boolean);
+if (rawTerms.length < 2 || rawTerms.length > 12) return null;
+var terms = [];
+for (var i = 0; i < rawTerms.length; i++) {
+var tok = rawTerms[i];
+var dt = "auto";
+var isHex = /^[-+]?0[xX]/.test(tok);
+if (!isHex && tok.length >= 2) {
+var last = tok.charAt(tok.length - 1).toLowerCase();
+if (last === "b") { dt = "i8"; tok = tok.slice(0, -1); }
+else if (last === "s") { dt = "i16"; tok = tok.slice(0, -1); }
+else if (last === "i") { dt = "i32"; tok = tok.slice(0, -1); }
+else if (last === "u") { dt = "u32"; tok = tok.slice(0, -1); }
+else if (last === "q") { dt = "i64"; tok = tok.slice(0, -1); }
+else if (last === "f") { dt = "f32"; tok = tok.slice(0, -1); }
+else if (last === "d") { dt = "f64"; tok = tok.slice(0, -1); }
+}
+var cleaned = cleanNumStr(tok);
+var num = Number(cleaned);
+if (!cleaned || !Number.isFinite(num)) return null;
+terms.push({ dt: dt, val: num, isInt: Number.isInteger(num) });
+}
+return { terms: terms, rangeBytes: rangeBytes, ordered: ordered };
 }
 function getBufferForHit(h) {
 if (h.kind === "wasm") {
@@ -925,12 +1031,36 @@ if (cur === null || cur === undefined || typeof cur !== "object") return false;
 cur[pathParts[pathParts.length - 1]] = newVal;
 return true;
 }
+function readLiveXorKey(h, bi) {
+if (!h || !h.xorMode) return { ok: true, key: 0 };
+if (h.xorMode === 1) return { ok: true, key: h.xorKey >>> 0 };
+if (h.xorMode === 2) {
+var b = bi || getBufferForHit(h);
+if (!b || h.xorKeyOff < 0 || h.xorKeyOff + 4 > b.byteLen) return { ok: false, key: 0 };
+var dv = new DataView(b.buf, b.byteOff, b.byteLen);
+return { ok: true, key: dv.getUint32(h.xorKeyOff, true) >>> 0 };
+}
+if (h.xorMode === 3) {
+var o = h.objRef ? h.objRef.deref() : null;
+if (!o) return { ok: false, key: 0 };
+var kv = o[h.xorKeyProp];
+if (typeof kv !== "number" || !Number.isFinite(kv)) return { ok: false, key: 0 };
+return { ok: true, key: kv >>> 0 };
+}
+return { ok: true, key: 0 };
+}
 function readHitCurrent(h) {
 try {
 if (h.kind === "js") {
 var obj = h.objRef.deref();
 if (!obj) return { ok: false, val: "<gc>" };
-return { ok: true, val: obj[h.key] };
+var rawJs = obj[h.key];
+if (h.xorMode === 3 && typeof rawJs === "number") {
+var lkJ = readLiveXorKey(h, null);
+if (!lkJ.ok) return { ok: false, val: "<key err>" };
+return { ok: true, val: ((rawJs | 0) ^ (lkJ.key | 0)) | 0 };
+}
+return { ok: true, val: rawJs };
 }
 if (h.kind === "map") {
 var mp = h.objRef.deref();
@@ -968,6 +1098,12 @@ for (var i = 0; i < u8a.length; i++) parts.push(u8a[i].toString(16).toUpperCase(
 return { ok: true, val: parts.join(" ") };
 }
 var dv = new DataView(bi.buf, bi.byteOff, bi.byteLen);
+if (h.xorMode) {
+var lk = readLiveXorKey(h, bi);
+if (!lk.ok) return { ok: false, val: "<key err>" };
+var rawEnc = dv.getUint32(h.off, true);
+return { ok: true, val: ((rawEnc ^ lk.key) | 0) };
+}
 var rawV = readViewVal(dv, h.off, h.dt);
 return { ok: true, val: h.scale ? (rawV / h.scale) : rawV };
 }
@@ -996,20 +1132,32 @@ depth++;
 }
 return null;
 }
-function ruleViolated(curVal, targetVal, rule) {
-if (typeof curVal === "number" && typeof targetVal === "number" && Number.isFinite(curVal) && Number.isFinite(targetVal)) {
-if (rule === "min") return curVal < targetVal;
-if (rule === "max") return curVal > targetVal;
-return curVal !== targetVal;
+function ruleEval(curVal, fe) {
+var rule = fe.rule || "eq";
+if (rule === "step") return { violated: false, nextVal: curVal };
+if (typeof curVal === "number" && Number.isFinite(curVal)) {
+if (rule === "range") {
+if (typeof fe.rangeLo === "number" && curVal < fe.rangeLo) return { violated: true, nextVal: fe.rangeLo };
+if (typeof fe.rangeHi === "number" && curVal > fe.rangeHi) return { violated: true, nextVal: fe.rangeHi };
+return { violated: false, nextVal: curVal };
 }
-if (rule === "eq") return String(curVal) !== String(targetVal);
-return false;
+if (typeof fe.parsedVal === "number" && Number.isFinite(fe.parsedVal)) {
+if (rule === "min") return curVal < fe.parsedVal ? { violated: true, nextVal: fe.parsedVal } : { violated: false, nextVal: curVal };
+if (rule === "max") return curVal > fe.parsedVal ? { violated: true, nextVal: fe.parsedVal } : { violated: false, nextVal: curVal };
+return curVal !== fe.parsedVal ? { violated: true, nextVal: fe.parsedVal } : { violated: false, nextVal: curVal };
+}
+}
+if (rule === "eq" && String(curVal) !== String(fe.parsedVal)) {
+return { violated: true, nextVal: fe.parsedVal };
+}
+return { violated: false, nextVal: curVal };
 }
 function captureTargetBytes(h) {
 if (h.kind !== "wasm" && h.kind !== "ta" && h.kind !== "ab") return null;
+if (h.xorMode) return null;
 var bi = getBufferForHit(h);
 if (!bi) return null;
-var sz = h.dt === "i8" ? 1 : (h.dt === "i16" ? 2 : ((h.dt === "i32" || h.dt === "f32") ? 4 : ((h.dt === "i64" || h.dt === "f64") ? 8 : Math.min(h.len || 16, bi.byteLen - h.off))));
+var sz = h.dt === "i8" ? 1 : (h.dt === "i16" ? 2 : ((h.dt === "i32" || h.dt === "u32" || h.dt === "f32") ? 4 : ((h.dt === "i64" || h.dt === "f64") ? 8 : Math.min(h.len || 16, bi.byteLen - h.off))));
 if (sz <= 0 || h.off + sz > bi.byteLen) return null;
 return new Uint8Array(bi.buf, bi.byteOff + h.off, sz).slice();
 }
@@ -1023,15 +1171,93 @@ if (live[i] !== targetBytes[i]) return true;
 }
 return false;
 }
+function extractCallerFrame() {
+try {
+var st = String(new Error().stack || "");
+var rows = st.split(/\r?\n/);
+var skippedSetter = false;
+for (var i = 1; i < rows.length && i < 14; i++) {
+var line = rows[i].trim();
+if (!line) continue;
+if (line.indexOf("extractCallerFrame") !== -1 || line.indexOf("recordTraceEvent") !== -1 ||
+line.indexOf("installJsPropertyHook") !== -1 || line.indexOf("enforceBinaryFreezes") !== -1) continue;
+if (!skippedSetter && (line.indexOf("set [as ") !== -1 || line.indexOf("Object.set") !== -1 || /^set@/.test(line))) {
+skippedSetter = true;
+continue;
+}
+return line.slice(0, 96);
+}
+} catch (_) {}
+return "script";
+}
+function recordTraceEvent(localId, oldVal, newVal, callerStr) {
+if (selfWriteDepth > 0) return;
+var te = traceMap.get(localId);
+if (!te) return;
+var deltaStr = "";
+if (typeof oldVal === "number" && typeof newVal === "number" && Number.isFinite(oldVal) && Number.isFinite(newVal)) {
+var d = newVal - oldVal;
+deltaStr = (d >= 0 ? "+" : "") + formatVal(d, te.rec.dt);
+}
+te.events.push({
+ts: origDateNow(),
+oldVal: formatVal(oldVal, te.rec.dt),
+newVal: formatVal(newVal, te.rec.dt),
+delta: deltaStr,
+caller: callerStr || "write"
+});
+if (te.events.length > MAX_TRACE_EVENTS) te.events.shift();
+te.writeCount++;
+}
+function configureFreezeRuleValues(fe, h, valStr, ruleStr) {
+var rule = (ruleStr === "min" || ruleStr === "max" || ruleStr === "range" || ruleStr === "step") ? ruleStr : "eq";
+fe.rule = rule;
+fe.valStr = String(valStr);
+fe.rangeLo = null;
+fe.rangeHi = null;
+fe.stepDelta = 0;
+if (rule === "range") {
+var rp = parseRangePair(valStr);
+if (rp) {
+fe.rangeLo = rp[0];
+fe.rangeHi = rp[1];
+fe.parsedVal = rp[0];
+} else {
+var singleN = parseTargetVal(h, valStr);
+fe.rangeLo = typeof singleN === "number" ? singleN : 0;
+fe.rangeHi = fe.rangeLo;
+fe.parsedVal = fe.rangeLo;
+}
+} else if (rule === "step") {
+var dn = Number(cleanNumStr(valStr));
+fe.stepDelta = Number.isFinite(dn) ? dn : 1;
+fe.parsedVal = fe.stepDelta;
+fe.lastStepMs = origDateNow();
+} else {
+fe.parsedVal = parseTargetVal(h, valStr);
+}
+}
 function writeHitValue(h, valStr, bypassFreeze) {
+selfWriteDepth++;
 try {
 var fe = !bypassFreeze ? frozenMap.get(h.id) : null;
 if (fe) {
-fe.valStr = String(valStr);
-fe.parsedVal = parseTargetVal(h, valStr);
+configureFreezeRuleValues(fe, h, valStr, fe.rule);
 if (fe.trapInstalled && h.kind === "js") {
+if (fe.rule === "eq") {
+fe.backingVal = fe.parsedVal;
+} else if (fe.rule === "min" || fe.rule === "max" || fe.rule === "range") {
+var curB = fe.backingVal;
+var evB = ruleEval(curB, fe);
+fe.backingVal = evB.violated ? evB.nextVal : (fe.rule === "min" || fe.rule === "max" ? fe.parsedVal : curB);
+}
 if (fe.origSet && fe.origObj) {
-try { fe.origSet.call(fe.origObj, fe.parsedVal); } catch (_) {}
+var rawToSet = fe.backingVal;
+if (h.xorMode === 3 && typeof rawToSet === "number") {
+var lkS = readLiveXorKey(h, null);
+if (lkS.ok) rawToSet = ((rawToSet | 0) ^ (lkS.key | 0)) | 0;
+}
+try { fe.origSet.call(fe.origObj, rawToSet); } catch (_) {}
 }
 return true;
 }
@@ -1045,12 +1271,25 @@ var cs = cleanNumStr(valStr);
 var nextJsVal = (typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(cs)) && cs !== ""))
 ? Number(cs)
 : (typeof cur === "boolean" ? (valStr === "true" || valStr === "1") : String(valStr));
-var feJs = frozenMap.get(h.id);
-if (feJs && feJs.origSet) {
-feJs.origSet.call(obj, nextJsVal);
-} else {
-obj[h.key] = nextJsVal;
+var rawJsWrite = nextJsVal;
+if (h.xorMode === 3 && typeof nextJsVal === "number") {
+var lkJw = readLiveXorKey(h, null);
+if (!lkJw.ok) return false;
+rawJsWrite = ((nextJsVal | 0) ^ (lkJw.key | 0)) | 0;
 }
+var feJs = frozenMap.get(h.id);
+if (feJs && feJs.trapInstalled) {
+feJs.backingVal = nextJsVal;
+if (feJs.origSet) feJs.origSet.call(obj, rawJsWrite);
+return true;
+}
+var teJs = traceMap.get(h.id);
+if (teJs && teJs.trapInstalled) {
+teJs.backingVal = nextJsVal;
+if (teJs.origSet) teJs.origSet.call(obj, rawJsWrite);
+return true;
+}
+obj[h.key] = rawJsWrite;
 return true;
 }
 if (h.kind === "map") {
@@ -1088,19 +1327,31 @@ var bi = getBufferForHit(h);
 if (!bi) return false;
 var dv = new DataView(bi.buf, bi.byteOff, bi.byteLen);
 var wStr = valStr;
+if (h.xorMode) {
+var lkW = readLiveXorKey(h, bi);
+if (!lkW.ok) return false;
+var plainN = Number(cleanNumStr(valStr));
+if (!Number.isFinite(plainN)) return false;
+var encVal = (((plainN | 0) ^ (lkW.key | 0)) >>> 0);
+var okXor = writeViewVal(dv, h.off, "u32", String(encVal), bi.shared);
+return okXor;
+}
 if (h.scale) {
 var sn = Number(cleanNumStr(valStr));
 if (Number.isFinite(sn)) wStr = String(Math.round(sn * h.scale));
 }
 var okBin = writeViewVal(dv, h.off, h.dt, wStr, bi.shared);
-if (okBin && fe) {
+if (okBin && fe && fe.rule === "eq") {
 fe.targetBytes = captureTargetBytes(h);
 var rdB = readHitCurrent(h);
 if (rdB.ok) fe.parsedVal = rdB.val;
 }
 return okBin;
 }
-} catch (_) {}
+} catch (_) {
+} finally {
+selfWriteDepth--;
+}
 return false;
 }
 function ensureStorageHook(tag) {
@@ -1115,90 +1366,134 @@ proto = (typeof Storage === "function" && Storage.prototype && typeof Storage.pr
 } catch (_) {}
 var targetObj = (proto && typeof proto.setItem === "function") ? proto : st;
 var origSetItem = targetObj.setItem;
+var origRemoveItem = typeof targetObj.removeItem === "function" ? targetObj.removeItem : null;
+var origClear = typeof targetObj.clear === "function" ? targetObj.clear : null;
 if (typeof origSetItem !== "function") return null;
 var state = {
 targetObj: targetObj,
 origSetItem: origSetItem,
+origRemoveItem: origRemoveItem,
+origClear: origClear,
 lsKeys: new Map(),
 ssKeys: new Map()
 };
+var resolveActive = function(self) {
+var isLs = false, isSs = false;
+try { isLs = (self === window.localStorage); } catch (_) {}
+try { if (!isLs) isSs = (self === window.sessionStorage); } catch (_) {}
+if (isLs) return { tag: "ls", keyMap: state.lsKeys };
+if (isSs) return { tag: "ss", keyMap: state.ssKeys };
+return null;
+};
 var wrappedSetItem = mask(function setItem(k, v) {
-var isLs = false;
-var isSs = false;
-try { isLs = (this === window.localStorage); } catch (_) {}
-try { if (!isLs) isSs = (this === window.sessionStorage); } catch (_) {}
-var activeTag = isLs ? "ls" : (isSs ? "ss" : null);
-var keyMap = activeTag === "ls" ? state.lsKeys : (activeTag === "ss" ? state.ssKeys : null);
-var set = keyMap ? keyMap.get(String(k)) : null;
+var ctx = resolveActive(this);
+var set = ctx ? ctx.keyMap.get(String(k)) : null;
 if (set && set.size > 0) {
 var directOverride = null;
 var jsonMod = null;
 set.forEach(function(fe) {
-if (fe.rec.kind === activeTag) {
+if (fe.rec.kind === ctx.tag) {
 var numV = Number(cleanNumStr(v));
 var cmpV = (typeof fe.parsedVal === "number" && Number.isFinite(numV)) ? numV : String(v);
-if (ruleViolated(cmpV, fe.parsedVal, fe.rule)) {
+var ev = ruleEval(cmpV, fe);
+if (ev.violated) {
 fe.blocked++;
 fe.recentBlocked++;
-directOverride = String(fe.valStr);
+directOverride = String(ev.nextVal);
 }
-} else if (fe.rec.kind === activeTag + "json") {
+} else if (fe.rec.kind === ctx.tag + "json") {
 try {
 if (!jsonMod) jsonMod = JSON.parse(String(v));
 var curG = getJsonPathVal(jsonMod, fe.rec.jpath);
-if (curG.ok && ruleViolated(curG.val, fe.parsedVal, fe.rule)) {
+if (curG.ok) {
+var evJ = ruleEval(curG.val, fe);
+if (evJ.violated) {
 fe.blocked++;
 fe.recentBlocked++;
-setJsonPathVal(jsonMod, fe.rec.jpath, fe.parsedVal);
+setJsonPathVal(jsonMod, fe.rec.jpath, evJ.nextVal);
+}
 }
 } catch (_) {}
 }
 });
-if (directOverride !== null) {
-return origSetItem.call(this, k, directOverride);
-}
-if (jsonMod) {
-return origSetItem.call(this, k, JSON.stringify(jsonMod));
-}
+if (directOverride !== null) return origSetItem.call(this, k, directOverride);
+if (jsonMod) return origSetItem.call(this, k, JSON.stringify(jsonMod));
 }
 return origSetItem.apply(this, arguments);
 }, origSetItem, "setItem");
-try {
-Object.defineProperty(targetObj, "setItem", {
-value: wrappedSetItem,
-writable: true,
-configurable: true,
-enumerable: true
-});
-} catch (_) {
-try { targetObj.setItem = wrappedSetItem; } catch (_2) { return null; }
+
+var wrappedRemoveItem = origRemoveItem ? mask(function removeItem(k) {
+var ctx = resolveActive(this);
+var set = ctx ? ctx.keyMap.get(String(k)) : null;
+if (set && set.size > 0) {
+var blockedAny = false;
+set.forEach(function(fe) {
+if (fe.rule !== "step") {
+fe.blocked++;
+fe.recentBlocked++;
+blockedAny = true;
 }
+});
+if (blockedAny) return;
+}
+return origRemoveItem.apply(this, arguments);
+}, origRemoveItem, "removeItem") : null;
+
+var wrappedClear = origClear ? mask(function clear() {
+var ctx = resolveActive(this);
+if (ctx && ctx.keyMap.size > 0) {
+var saved = [];
+ctx.keyMap.forEach(function(set, keyName) {
+try {
+var curRaw = this.getItem(keyName);
+if (curRaw !== null) saved.push([keyName, curRaw]);
+set.forEach(function(fe) { fe.blocked++; fe.recentBlocked++; });
+} catch (_) {}
+}, this);
+var r = origClear.apply(this, arguments);
+for (var si = 0; si < saved.length; si++) {
+try { origSetItem.call(this, saved[si][0], saved[si][1]); } catch (_) {}
+}
+return r;
+}
+return origClear.apply(this, arguments);
+}, origClear, "clear") : null;
+
+var installFn = function(name, fn) {
+if (!fn) return false;
+try {
+Object.defineProperty(targetObj, name, { value: fn, writable: true, configurable: true, enumerable: true });
+return true;
+} catch (_) {
+try { targetObj[name] = fn; return true; } catch (_2) { return false; }
+}
+};
+if (!installFn("setItem", wrappedSetItem)) return null;
+if (wrappedRemoveItem) installFn("removeItem", wrappedRemoveItem);
+if (wrappedClear) installFn("clear", wrappedClear);
 storageProtoHook = state;
 }
 return tag === "ls" ? { keys: storageProtoHook.lsKeys } : { keys: storageProtoHook.ssKeys };
 }
-function maybeRemoveStorageHook(tag) {
+function maybeRemoveStorageHook() {
 if (!storageProtoHook) return;
 if (storageProtoHook.lsKeys.size > 0 || storageProtoHook.ssKeys.size > 0) return;
+var restoreFn = function(name, origFn) {
+if (!origFn) return;
 try {
-Object.defineProperty(storageProtoHook.targetObj, "setItem", {
-value: storageProtoHook.origSetItem,
-writable: true,
-configurable: true,
-enumerable: true
-});
+Object.defineProperty(storageProtoHook.targetObj, name, { value: origFn, writable: true, configurable: true, enumerable: true });
 } catch (_) {
-try { storageProtoHook.targetObj.setItem = storageProtoHook.origSetItem; } catch (_2) {}
+try { storageProtoHook.targetObj[name] = origFn; } catch (_2) {}
 }
+};
+restoreFn("setItem", storageProtoHook.origSetItem);
+restoreFn("removeItem", storageProtoHook.origRemoveItem);
+restoreFn("clear", storageProtoHook.origClear);
 storageProtoHook = null;
 }
-function enforceBinaryFreezes() {
-lastEnforceTickMs = origDateNow();
-if (frozenMap.size === 0) {
-stopFreezeLoops();
-return;
-}
-var now = lastEnforceTickMs;
+function enforceSingleBinaryPass() {
+var now = origDateNow();
+var anyFightingBinary = false;
 frozenMap.forEach(function(fe) {
 if (now - fe.rateWindowStart >= 1000) {
 fe.ratePerSec = fe.recentBlocked;
@@ -1206,12 +1501,45 @@ fe.recentBlocked = 0;
 fe.rateWindowStart = now;
 }
 var h = fe.rec;
-if (fe.trapInstalled) {
+if (fe.rule === "step") {
+if (now - fe.lastStepMs >= 1000) {
+fe.lastStepMs = now;
+var rdS = readHitCurrent(h);
+if (rdS.ok && typeof rdS.val === "number" && Number.isFinite(rdS.val)) {
+var nextS = rdS.val + fe.stepDelta;
+if (writeHitValue(h, String(nextS), true)) {
+fe.blocked++;
+fe.recentBlocked++;
+fe.status = "enforcing";
+} else {
+fe.status = "detached";
+}
+} else {
+fe.status = "detached";
+}
+}
+return;
+}
+var isStorage = (h.kind === "ls" || h.kind === "ss" || h.kind === "lsjson" || h.kind === "ssjson");
+if (fe.trapInstalled && !isStorage) {
 if (fe.origGet && fe.origSet && fe.origObj) {
 try {
 var liveAcc = fe.origGet.call(fe.origObj);
-if (ruleViolated(liveAcc, fe.parsedVal, fe.rule)) {
-fe.origSet.call(fe.origObj, fe.parsedVal);
+var cmpAcc = liveAcc;
+if (h.xorMode === 3 && typeof liveAcc === "number") {
+var lkA = readLiveXorKey(h, null);
+if (lkA.ok) cmpAcc = ((liveAcc | 0) ^ (lkA.key | 0)) | 0;
+}
+var evAcc = ruleEval(cmpAcc, fe);
+if (evAcc.violated) {
+var toSet = evAcc.nextVal;
+if (h.xorMode === 3 && typeof toSet === "number") {
+var lkA2 = readLiveXorKey(h, null);
+if (lkA2.ok) toSet = ((toSet | 0) ^ (lkA2.key | 0)) | 0;
+}
+selfWriteDepth++;
+try { fe.origSet.call(fe.origObj, toSet); } finally { selfWriteDepth--; }
+fe.backingVal = evAcc.nextVal;
 fe.blocked++;
 fe.recentBlocked++;
 }
@@ -1220,8 +1548,7 @@ fe.recentBlocked++;
 fe.status = fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked");
 return;
 }
-if (h.kind === "wasm" || h.kind === "ta" || h.kind === "ab") {
-if (fe.rule === "eq" && fe.targetBytes) {
+if ((h.kind === "wasm" || h.kind === "ta" || h.kind === "ab") && fe.rule === "eq" && fe.targetBytes && !h.xorMode) {
 var diffB = binaryBytesDiffer(h, fe.targetBytes);
 if (diffB === null) {
 fe.status = "detached";
@@ -1231,31 +1558,59 @@ if (diffB) {
 if (writeHitValue(h, fe.valStr, true)) {
 fe.blocked++;
 fe.recentBlocked++;
+anyFightingBinary = true;
 } else {
 fe.status = "detached";
 return;
 }
 }
 fe.status = fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked");
+if (fe.status === "fighting") anyFightingBinary = true;
 return;
-}
 }
 var rd = readHitCurrent(h);
 if (!rd.ok) {
-fe.status = "detached";
-return;
-}
-if (ruleViolated(rd.val, fe.parsedVal, fe.rule)) {
+if (isStorage && fe.rule === "eq") {
 if (writeHitValue(h, fe.valStr, true)) {
 fe.blocked++;
 fe.recentBlocked++;
+fe.mode = "trap+poll";
+fe.status = "enforcing";
+return;
+}
+}
+fe.status = "detached";
+return;
+}
+var ev = ruleEval(rd.val, fe);
+if (ev.violated) {
+if (writeHitValue(h, String(ev.nextVal), true)) {
+fe.blocked++;
+fe.recentBlocked++;
+if (isStorage && fe.trapInstalled) fe.mode = "trap+poll";
+if (!isStorage) anyFightingBinary = true;
 } else {
 fe.status = "detached";
 return;
 }
 }
 fe.status = fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked");
+if (!isStorage && fe.status === "fighting") anyFightingBinary = true;
 });
+return anyFightingBinary;
+}
+function enforceBinaryFreezes() {
+lastEnforceTickMs = origDateNow();
+if (frozenMap.size === 0) {
+stopFreezeLoops();
+return;
+}
+var fighting = enforceSingleBinaryPass();
+if (fighting && typeof Promise === "function") {
+Promise.resolve().then(function() {
+if (frozenMap.size > 0) enforceSingleBinaryPass();
+});
+}
 }
 function startFreezeLoops() {
 if (freezeIntervalId === null) {
@@ -1263,6 +1618,9 @@ var si = origSetInterval || setInterval;
 freezeIntervalId = si(enforceBinaryFreezes, 4);
 }
 if (freezeRafId === null && (origRAF || typeof window.requestAnimationFrame === "function")) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_3 = """
 var rafFn = origRAF || window.requestAnimationFrame.bind(window);
 var rafTick = function() {
 if (frozenMap.size === 0) {
@@ -1297,28 +1655,162 @@ startFreezeLoops();
 enforceBinaryFreezes();
 }
 }
+function installJsPropertyHook(localId, obj, key, ownerEntry) {
+try {
+var chain = findPropertyDescriptorChain(obj, key);
+var ownDesc = chain && chain.isOwn ? chain.desc : null;
+var chainDesc = chain ? chain.desc : null;
+var isAccessor = !!(chainDesc && (typeof chainDesc.get === "function" || typeof chainDesc.set === "function"));
+if (ownDesc && ownDesc.configurable === false) return false;
+ownerEntry.origDesc = ownDesc;
+ownerEntry.origWasOwn = !!ownDesc;
+ownerEntry.origGet = isAccessor && typeof chainDesc.get === "function" ? chainDesc.get : null;
+ownerEntry.origSet = isAccessor && typeof chainDesc.set === "function" ? chainDesc.set : null;
+ownerEntry.origObj = obj;
+var rec = ownerEntry.rec;
+var curInit = undefined;
+try { curInit = isAccessor && ownerEntry.origGet ? ownerEntry.origGet.call(obj) : obj[key]; } catch (_) {}
+if (rec.xorMode === 3 && typeof curInit === "number") {
+var lk0 = readLiveXorKey(rec, null);
+if (lk0.ok) curInit = ((curInit | 0) ^ (lk0.key | 0)) | 0;
+}
+ownerEntry.backingVal = (ownerEntry.rule === "eq") ? ownerEntry.parsedVal : curInit;
+Object.defineProperty(obj, key, {
+configurable: true,
+enumerable: chainDesc ? (chainDesc.enumerable !== false) : true,
+get: function() {
+var feNow = frozenMap.get(localId);
+var teNow = traceMap.get(localId);
+var holder = feNow || teNow || ownerEntry;
+if (holder.origGet) {
+var liveRaw = holder.origGet.call(this);
+var liveCmp = liveRaw;
+if (rec.xorMode === 3 && typeof liveRaw === "number") {
+var lkG = readLiveXorKey(rec, null);
+if (lkG.ok) liveCmp = ((liveRaw | 0) ^ (lkG.key | 0)) | 0;
+}
+if (feNow) {
+var evG = ruleEval(liveCmp, feNow);
+if (evG.violated) {
+var setRaw = evG.nextVal;
+if (rec.xorMode === 3 && typeof setRaw === "number") {
+var lkG2 = readLiveXorKey(rec, null);
+if (lkG2.ok) setRaw = ((setRaw | 0) ^ (lkG2.key | 0)) | 0;
+}
+if (holder.origSet) {
+selfWriteDepth++;
+try { holder.origSet.call(this, setRaw); } catch (_) {} finally { selfWriteDepth--; }
+}
+feNow.blocked++;
+feNow.recentBlocked++;
+feNow.backingVal = evG.nextVal;
+return setRaw;
+}
+}
+return liveRaw;
+}
+var valOut = feNow && feNow.rule === "eq" ? feNow.parsedVal : holder.backingVal;
+if (rec.xorMode === 3 && typeof valOut === "number") {
+var lkG3 = readLiveXorKey(rec, null);
+if (lkG3.ok) return ((valOut | 0) ^ (lkG3.key | 0)) | 0;
+}
+return valOut;
+},
+set: function(attemptedRaw) {
+var feNow = frozenMap.get(localId);
+var teNow = traceMap.get(localId);
+var holder = feNow || teNow || ownerEntry;
+var attempted = attemptedRaw;
+if (rec.xorMode === 3 && typeof attemptedRaw === "number") {
+var lkS = readLiveXorKey(rec, null);
+if (lkS.ok) attempted = ((attemptedRaw | 0) ^ (lkS.key | 0)) | 0;
+}
+var prevPlain = holder.backingVal;
+if (teNow && selfWriteDepth === 0) {
+recordTraceEvent(localId, prevPlain, attempted, extractCallerFrame());
+}
+if (feNow) {
+var evS = ruleEval(attempted, feNow);
+if (evS.violated) {
+feNow.blocked++;
+feNow.recentBlocked++;
+feNow.backingVal = evS.nextVal;
+if (teNow) teNow.backingVal = evS.nextVal;
+if (holder.origSet) {
+var setRaw = evS.nextVal;
+if (rec.xorMode === 3 && typeof setRaw === "number") {
+var lkS2 = readLiveXorKey(rec, null);
+if (lkS2.ok) setRaw = ((setRaw | 0) ^ (lkS2.key | 0)) | 0;
+}
+selfWriteDepth++;
+try { holder.origSet.call(this, setRaw); } catch (_) {} finally { selfWriteDepth--; }
+}
+return;
+}
+}
+holder.backingVal = attempted;
+if (feNow) feNow.backingVal = attempted;
+if (teNow) teNow.backingVal = attempted;
+if (holder.origSet) {
+try { holder.origSet.call(this, attemptedRaw); } catch (_) {}
+}
+}
+});
+ownerEntry.trapInstalled = true;
+ownerEntry.mode = isAccessor ? "accessor-trap" : "trap";
+return true;
+} catch (_) {
+return false;
+}
+}
+function restoreJsPropertyHook(entry) {
+try {
+if (!entry || !entry.trapInstalled || !entry.origObj) return;
+if (!entry.origWasOwn) {
+try { delete entry.origObj[entry.rec.key]; } catch (_) {}
+return;
+}
+var finalVal = entry.backingVal;
+if (entry.rec.xorMode === 3 && typeof finalVal === "number") {
+var lkR = readLiveXorKey(entry.rec, null);
+if (lkR.ok) finalVal = ((finalVal | 0) ^ (lkR.key | 0)) | 0;
+}
+var restoreDesc = entry.origDesc || { value: finalVal, writable: true, enumerable: true, configurable: true };
+if ("value" in restoreDesc) {
+restoreDesc = {
+value: finalVal,
+writable: restoreDesc.writable !== false,
+enumerable: restoreDesc.enumerable !== false,
+configurable: true
+};
+}
+Object.defineProperty(entry.origObj, entry.rec.key, restoreDesc);
+} catch (_) {}
+}
 function installFreezeEntry(localId, valStr, ruleStr) {
 var rec = watchRefs.get(localId);
 if (!rec) return { ok: false, error: "Entry not found in frame" };
-var rule = (ruleStr === "min" || ruleStr === "max") ? ruleStr : "eq";
 var existing = frozenMap.get(localId);
 if (existing) {
-existing.valStr = String(valStr);
-existing.parsedVal = parseTargetVal(rec, valStr);
-existing.rule = rule;
-if (rule === "eq") {
+configureFreezeRuleValues(existing, rec, valStr, ruleStr);
+if (existing.rule === "eq") {
 if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
-} else {
+existing.backingVal = existing.parsedVal;
+} else if (existing.rule !== "step") {
 var rdE = readHitCurrent(rec);
 if (!rdE.ok) return { ok: false, error: "Target detached" };
-if (ruleViolated(rdE.val, existing.parsedVal, rule)) {
-if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
+var evE = ruleEval(rdE.val, existing);
+if (evE.violated) {
+if (!writeHitValue(rec, String(evE.nextVal), true)) return { ok: false, error: "Write failed (detached)" };
+existing.backingVal = evE.nextVal;
+} else {
+existing.backingVal = rdE.val;
 }
 }
 if (rec.kind === "wasm" || rec.kind === "ta" || rec.kind === "ab") {
-existing.targetBytes = captureTargetBytes(rec);
+existing.targetBytes = (existing.rule === "eq") ? captureTargetBytes(rec) : null;
 var rdSnapE = readHitCurrent(rec);
-if (rdSnapE.ok && rule === "eq") existing.parsedVal = rdSnapE.val;
+if (rdSnapE.ok && existing.rule === "eq") existing.parsedVal = rdSnapE.val;
 }
 ensureFreezeLoopAlive();
 return { ok: true, mode: existing.mode, rule: existing.rule, blocked: existing.blocked, status: existing.status };
@@ -1327,9 +1819,14 @@ var fe = {
 localId: localId,
 rec: rec,
 valStr: String(valStr),
-parsedVal: parseTargetVal(rec, valStr),
-rule: rule,
-mode: "250Hz",
+parsedVal: null,
+rangeLo: null,
+rangeHi: null,
+stepDelta: 0,
+lastStepMs: origDateNow(),
+backingVal: null,
+rule: "eq",
+mode: rec.xorMode ? "250Hz-XOR" : "250Hz",
 blocked: 0,
 recentBlocked: 0,
 ratePerSec: 0,
@@ -1343,94 +1840,47 @@ origObj: null,
 targetBytes: null,
 status: "locked"
 };
-if (rule === "eq") {
+configureFreezeRuleValues(fe, rec, valStr, ruleStr);
+if (fe.rule === "eq") {
 if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
-} else {
+fe.backingVal = fe.parsedVal;
+} else if (fe.rule !== "step") {
 var rdInit = readHitCurrent(rec);
 if (!rdInit.ok) return { ok: false, error: "Target detached" };
-if (ruleViolated(rdInit.val, fe.parsedVal, rule)) {
-if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
+var evInit = ruleEval(rdInit.val, fe);
+if (evInit.violated) {
+if (!writeHitValue(rec, String(evInit.nextVal), true)) return { ok: false, error: "Write failed (detached)" };
+fe.backingVal = evInit.nextVal;
+} else {
+fe.backingVal = rdInit.val;
 }
+} else {
+var rdSt = readHitCurrent(rec);
+if (!rdSt.ok) return { ok: false, error: "Target detached" };
+fe.backingVal = rdSt.val;
 }
 if (rec.kind === "wasm" || rec.kind === "ta" || rec.kind === "ab") {
-fe.targetBytes = captureTargetBytes(rec);
+fe.targetBytes = (fe.rule === "eq") ? captureTargetBytes(rec) : null;
 var rdSnap = readHitCurrent(rec);
-if (rdSnap.ok && rule === "eq") fe.parsedVal = rdSnap.val;
+if (rdSnap.ok && fe.rule === "eq") fe.parsedVal = rdSnap.val;
 }
 if (rec.kind === "js") {
 var obj = rec.objRef ? rec.objRef.deref() : null;
 if (!obj) return { ok: false, error: "Object garbage-collected" };
-try {
-var chain = findPropertyDescriptorChain(obj, rec.key);
-var ownDesc = chain && chain.isOwn ? chain.desc : null;
-var chainDesc = chain ? chain.desc : null;
-var isAccessor = !!(chainDesc && (typeof chainDesc.get === "function" || typeof chainDesc.set === "function"));
-if (isAccessor && (!ownDesc || ownDesc.configurable !== false)) {
-fe.origDesc = ownDesc;
-fe.origWasOwn = !!ownDesc;
-fe.origGet = typeof chainDesc.get === "function" ? chainDesc.get : null;
-fe.origSet = typeof chainDesc.set === "function" ? chainDesc.set : null;
-fe.origObj = obj;
-Object.defineProperty(obj, rec.key, {
-configurable: true,
-enumerable: chainDesc.enumerable !== false,
-get: function() {
-if (fe.origGet) {
-var liveV = fe.origGet.call(this);
-if (ruleViolated(liveV, fe.parsedVal, fe.rule)) {
-if (fe.origSet) {
-try { fe.origSet.call(this, fe.parsedVal); } catch (_) {}
-}
-fe.blocked++;
-fe.recentBlocked++;
-return fe.parsedVal;
-}
-return liveV;
-}
-return fe.parsedVal;
-},
-set: function(attempted) {
-if (ruleViolated(attempted, fe.parsedVal, fe.rule)) {
-fe.blocked++;
-fe.recentBlocked++;
-if (fe.origSet) {
-try { fe.origSet.call(this, fe.parsedVal); } catch (_) {}
-}
-return;
-}
-if (fe.origSet) {
-try { fe.origSet.call(this, attempted); } catch (_) {}
-}
-}
-});
+var existingTrace = traceMap.get(localId);
+if (existingTrace && existingTrace.trapInstalled) {
+fe.origDesc = existingTrace.origDesc;
+fe.origWasOwn = existingTrace.origWasOwn;
+fe.origGet = existingTrace.origGet;
+fe.origSet = existingTrace.origSet;
+fe.origObj = existingTrace.origObj;
 fe.trapInstalled = true;
-fe.mode = "accessor-trap";
-} else if (!ownDesc || ("value" in ownDesc && ownDesc.configurable !== false)) {
-var curStored = obj[rec.key];
-fe.origDesc = ownDesc || { value: curStored, writable: true, enumerable: true, configurable: true };
-fe.origWasOwn = !!ownDesc;
-fe.origObj = obj;
-var backingVal = rule === "eq" ? fe.parsedVal : curStored;
-Object.defineProperty(obj, rec.key, {
-configurable: true,
-enumerable: fe.origDesc.enumerable !== false,
-get: function() { return fe.rule === "eq" ? fe.parsedVal : backingVal; },
-set: function(attempted) {
-if (ruleViolated(attempted, fe.parsedVal, fe.rule)) {
-fe.blocked++;
-fe.recentBlocked++;
-backingVal = fe.parsedVal;
-return;
+fe.mode = existingTrace.origGet ? "accessor-trap" : "trap";
+existingTrace.backingVal = fe.backingVal;
+} else {
+installJsPropertyHook(localId, obj, rec.key, fe);
 }
-backingVal = attempted;
-}
-});
-fe.trapInstalled = true;
-fe.mode = "trap";
-}
-} catch (_) {}
-}
-else if (rec.kind === "map") {
+} else if (rec.kind === "map") {
 var mp = rec.objRef ? rec.objRef.deref() : null;
 if (!mp) return { ok: false, error: "Map garbage-collected" };
 try {
@@ -1441,24 +1891,23 @@ mw = { origSet: origSet, keys: new Map() };
 mp.set = mask(function set(mk, mv) {
 var f = mw.keys.get(mk);
 if (f) {
-if (ruleViolated(mv, f.parsedVal, f.rule)) {
+var evM = ruleEval(mv, f);
+if (evM.violated) {
 f.blocked++;
 f.recentBlocked++;
-return origSet.call(this, mk, f.parsedVal);
+return origSet.call(this, mk, evM.nextVal);
 }
-return origSet.apply(this, arguments);
 }
 return origSet.apply(this, arguments);
 }, origSet, "set");
 mapWrapState.set(mp, mw);
 }
 mw.keys.set(rec.key, fe);
-if (rule === "eq") mw.origSet.call(mp, rec.key, fe.parsedVal);
+if (fe.rule === "eq") mw.origSet.call(mp, rec.key, fe.parsedVal);
 fe.trapInstalled = true;
 fe.mode = "trap";
 } catch (_) {}
-}
-else if (rec.kind === "ls" || rec.kind === "ss" || rec.kind === "lsjson" || rec.kind === "ssjson") {
+} else if (rec.kind === "ls" || rec.kind === "ss" || rec.kind === "lsjson" || rec.kind === "ssjson") {
 var tagS = (rec.kind === "ls" || rec.kind === "lsjson") ? "ls" : "ss";
 var sh = ensureStorageHook(tagS);
 if (sh) {
@@ -1479,19 +1928,11 @@ if (!fe) return false;
 frozenMap.delete(localId);
 try {
 if (fe.trapInstalled && fe.rec.kind === "js" && fe.origObj) {
-if (!fe.origWasOwn) {
-try { delete fe.origObj[fe.rec.key]; } catch (_) {}
+var teKeep = traceMap.get(localId);
+if (teKeep && teKeep.trapInstalled) {
+teKeep.backingVal = fe.backingVal;
 } else {
-var restoreDesc = fe.origDesc || { value: fe.parsedVal, writable: true, enumerable: true, configurable: true };
-if ("value" in restoreDesc) {
-restoreDesc = {
-value: fe.parsedVal,
-writable: restoreDesc.writable !== false,
-enumerable: restoreDesc.enumerable !== false,
-configurable: true
-};
-}
-Object.defineProperty(fe.origObj, fe.rec.key, restoreDesc);
+restoreJsPropertyHook(fe);
 }
 } else if (fe.trapInstalled && fe.rec.kind === "map") {
 var mp = fe.rec.objRef ? fe.rec.objRef.deref() : null;
@@ -1514,7 +1955,7 @@ if (setS) {
 setS.delete(fe);
 if (setS.size === 0) kMap.delete(fe.rec.key);
 }
-maybeRemoveStorageHook(tagS);
+maybeRemoveStorageHook();
 }
 }
 } catch (_) {}
@@ -1536,6 +1977,102 @@ rule: fe.rule || "eq",
 blocked: fe.blocked,
 rate: fe.ratePerSec || 0,
 status: fe.status
+};
+});
+return out;
+}
+function pollBinaryTraces() {
+if (traceMap.size === 0) {
+if (traceRafId !== null) {
+try { (origCancelRAF || window.cancelAnimationFrame)(traceRafId); } catch (_) {}
+traceRafId = null;
+}
+return;
+}
+traceMap.forEach(function(te, localId) {
+if (te.trapInstalled) return;
+var rd = readHitCurrent(te.rec);
+if (!rd.ok) return;
+if (rd.val !== te.lastPolledVal) {
+var prevV = te.lastPolledVal;
+te.lastPolledVal = rd.val;
+recordTraceEvent(localId, prevV, rd.val, te.rec.kind + "-write");
+}
+});
+if (traceMap.size > 0 && (origRAF || typeof window.requestAnimationFrame === "function")) {
+var rf = origRAF || window.requestAnimationFrame.bind(window);
+traceRafId = rf(pollBinaryTraces);
+}
+}
+function installTraceEntry(localId, enabled) {
+if (!enabled) {
+var old = traceMap.get(localId);
+if (!old) return { ok: true, active: false };
+traceMap.delete(localId);
+if (old.trapInstalled && old.rec.kind === "js" && !frozenMap.has(localId)) {
+restoreJsPropertyHook(old);
+}
+return { ok: true, active: false };
+}
+var rec = watchRefs.get(localId);
+if (!rec) return { ok: false, error: "Entry not found in frame" };
+if (traceMap.has(localId)) return { ok: true, active: true };
+var rd = readHitCurrent(rec);
+var te = {
+localId: localId,
+rec: rec,
+events: [],
+writeCount: 0,
+lastPolledVal: rd.ok ? rd.val : null,
+backingVal: rd.ok ? rd.val : null,
+trapInstalled: false,
+origDesc: null,
+origWasOwn: false,
+origGet: null,
+origSet: null,
+origObj: null,
+rule: "trace"
+};
+if (rec.kind === "js") {
+var obj = rec.objRef ? rec.objRef.deref() : null;
+if (obj) {
+var existingF = frozenMap.get(localId);
+if (existingF && existingF.trapInstalled) {
+te.origDesc = existingF.origDesc;
+te.origWasOwn = existingF.origWasOwn;
+te.origGet = existingF.origGet;
+te.origSet = existingF.origSet;
+te.origObj = existingF.origObj;
+te.backingVal = existingF.backingVal;
+te.trapInstalled = true;
+} else {
+installJsPropertyHook(localId, obj, rec.key, te);
+}
+}
+}
+traceMap.set(localId, te);
+if (!te.trapInstalled && traceRafId === null && (origRAF || typeof window.requestAnimationFrame === "function")) {
+var rf = origRAF || window.requestAnimationFrame.bind(window);
+traceRafId = rf(pollBinaryTraces);
+}
+return { ok: true, active: true, mode: te.trapInstalled ? "js-spy" : "poll-spy" };
+}
+function clearAllTraces() {
+var ks = Array.from(traceMap.keys());
+for (var i = 0; i < ks.length; i++) installTraceEntry(ks[i], false);
+if (traceRafId !== null) {
+try { (origCancelRAF || window.cancelAnimationFrame)(traceRafId); } catch (_) {}
+traceRafId = null;
+}
+}
+function collectTraceLogsMap() {
+var out = {};
+traceMap.forEach(function(te, localId) {
+out[qualifyId(localId)] = {
+active: true,
+mode: te.trapInstalled ? "js-spy" : "poll-spy",
+count: te.writeCount,
+events: te.events.slice(-20)
 };
 });
 return out;
@@ -1598,6 +2135,15 @@ var targetI32 = v1 | 0;
 for (var fi = 0, fl = i32Fast.length; fi < fl && out.length < cap; fi++) {
 if ((fi & 131071) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
 if (i32Fast[fi] === targetI32) pushHit(fi << 2, "i32", 4, targetI32);
+}
+return;
+}
+if (dt === "u32" && aligned4 && sc === "exact") {
+var u32Fast = new Uint32Array(buf, byteOff, scanLen >>> 2);
+var targetU32 = (v1 < 0 ? 0 : v1) >>> 0;
+for (var fu = 0, ful = u32Fast.length; fu < ful && out.length < cap; fu++) {
+if ((fu & 131071) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
+if (u32Fast[fu] === targetU32) pushHit(fu << 2, "u32", 4, targetU32);
 }
 return;
 }
@@ -1708,14 +2254,10 @@ return;
 var f32n = new Float32Array(buf, byteOff, len4);
 for (var idx2 = 0; idx2 < len4 && out.length < cap; idx2++) {
 if ((idx2 & 131071) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
-
-""".trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_3 = """
 var off4 = idx2 << 2;
 if (sc === "unknown") {
 var uv = i32a[idx2];
-if (uv !== 0) pushHit(off4, "i32", 4, uv);
+pushHit(off4, "i32", 4, uv);
 continue;
 }
 var iv = i32a[idx2];
@@ -1738,9 +2280,12 @@ pushHit(off4, "f64", 8, dv2);
 return;
 }
 var dv = new DataView(buf, byteOff, scanLen);
-var sz = dt === "i8" ? 1 : (dt === "i16" ? 2 : ((dt === "i32" || dt === "f32") ? 4 : 8));
+var sz = dt === "i8" ? 1 : (dt === "i16" ? 2 : ((dt === "i32" || dt === "u32" || dt === "f32") ? 4 : 8));
 var endOff = scanLen - sz;
 for (var off2 = 0; off2 <= endOff && out.length < cap; off2 += sz) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_4 = """
 if ((off2 & 262143) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
 var val = readViewVal(dv, off2, dt);
 if (matchNum(val, 0, false, dt, sc, v1, v2)) {
@@ -2253,8 +2798,257 @@ dt: dt
 }
 return { snaps: snaps, totalSlots: usedBytes >>> 2, snapBytes: usedBytes };
 }
+function matchGroupTermBuf(dv, byteLen, off, term) {
+if (term.dt !== "auto") {
+var sz = term.dt === "i8" ? 1 : (term.dt === "i16" ? 2 : ((term.dt === "i32" || term.dt === "u32" || term.dt === "f32") ? 4 : 8));
+if (off + sz > byteLen) return null;
+var v = readViewVal(dv, off, term.dt);
+if (matchNum(v, 0, false, term.dt, "exact", term.val, 0)) return { dt: term.dt, val: v, len: sz };
+return null;
+}
+if (off + 4 <= byteLen) {
+var iv = dv.getInt32(off, true);
+if (term.isInt && term.val >= -2147483648 && term.val <= 2147483647 && iv === (term.val | 0)) return { dt: "i32", val: iv, len: 4 };
+if (term.isInt && term.val > 2147483647 && term.val <= 4294967295 && dv.getUint32(off, true) === (term.val >>> 0)) return { dt: "u32", val: term.val >>> 0, len: 4 };
+var fv = dv.getFloat32(off, true);
+if (Number.isFinite(fv) && (term.val === 0 || Math.abs(fv) >= 1e-6) && Math.abs(fv - term.val) <= 0.01) return { dt: "f32", val: fv, len: 4 };
+}
+if (off + 8 <= byteLen) {
+var dv64 = dv.getFloat64(off, true);
+if (Number.isFinite(dv64) && (term.val === 0 || Math.abs(dv64) >= 1e-6) && Math.abs(dv64 - term.val) <= 0.001) return { dt: "f64", val: dv64, len: 8 };
+}
+return null;
+}
+function scanBufferGroup(buf, byteOff, byteLen, kind, bufIdx, labelPrefix, gq, out, cap, extraRef, deadlineMs, stateFlags) {
+if (!buf || byteLen < 4 || !gq || out.length >= cap) return;
+var scanLen = Math.min(byteLen, MAX_SCAN_BYTES);
+var dv = new DataView(buf, byteOff, scanLen);
+var memRef = kind === "wasm" ? extraRef : null;
+var abRef = kind === "ab" ? extraRef : null;
+var t0 = gq.terms[0];
+var step0 = t0.dt === "i8" ? 1 : (t0.dt === "i16" ? 2 : 4);
+var last0 = scanLen - Math.min(4, scanLen);
+for (var off0 = 0; off0 <= last0 && out.length < cap; off0 += step0) {
+if ((off0 & 262143) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
+var m0 = matchGroupTermBuf(dv, scanLen, off0, t0);
+if (!m0) continue;
+var found = [{ off: off0, dt: m0.dt, val: m0.val, len: m0.len }];
+var used = [off0];
+var prevOff = off0;
+var allOk = true;
+for (var ti = 1; ti < gq.terms.length; ti++) {
+var tk = gq.terms[ti];
+var stepk = tk.dt === "i8" ? 1 : (tk.dt === "i16" ? 2 : 4);
+var winLo = gq.ordered ? (prevOff + 1) : Math.max(0, off0 - gq.rangeBytes);
+var winHi = Math.min(scanLen, off0 + gq.rangeBytes + 1);
+var aLo = Math.ceil(winLo / stepk) * stepk;
+var matchedK = false;
+for (var okOff = aLo; okOff < winHi; okOff += stepk) {
+if (used.indexOf(okOff) !== -1) continue;
+var mk = matchGroupTermBuf(dv, scanLen, okOff, tk);
+if (mk) {
+found.push({ off: okOff, dt: mk.dt, val: mk.val, len: mk.len });
+used.push(okOff);
+prevOff = okOff;
+matchedK = true;
+break;
+}
+}
+if (!matchedK) { allOk = false; break; }
+}
+if (allOk) {
+for (var fi = 0; fi < found.length && out.length < cap; fi++) {
+var fh = found[fi];
+out.push({
+id: labelPrefix + "+0x" + fh.off.toString(16).toUpperCase() + ":" + fh.dt,
+kind: kind, bufIdx: bufIdx, memRef: memRef, abRef: abRef,
+off: fh.off, dt: fh.dt, len: fh.len, prev: fh.val, scale: 0
+});
+}
+}
+}
+}
+function scanBufferXor(buf, byteOff, byteLen, kind, bufIdx, labelPrefix, targetI32, hasExplicitKey, explicitKey, out, cap, extraRef, deadlineMs, stateFlags) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_5 = """
+if (!buf || byteLen < 4 || out.length >= cap) return;
+var scanLen = Math.min(byteLen, MAX_SCAN_BYTES) & ~3;
+if (scanLen < 4) return;
+var u32 = new Uint32Array(buf, byteOff, scanLen >>> 2);
+var memRef = kind === "wasm" ? extraRef : null;
+var abRef = kind === "ab" ? extraRef : null;
+var tU = targetI32 >>> 0;
+if (hasExplicitKey) {
+var enc = (tU ^ (explicitKey >>> 0)) >>> 0;
+for (var i = 0; i < u32.length && out.length < cap; i++) {
+if ((i & 131071) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
+if (u32[i] === enc) {
+var off = i << 2;
+out.push({
+id: labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":i32^0x" + (explicitKey >>> 0).toString(16).toUpperCase(),
+kind: kind, bufIdx: bufIdx, memRef: memRef, abRef: abRef,
+off: off, dt: "i32", len: 4, prev: targetI32 | 0, scale: 0,
+xorMode: 1, xorKey: explicitKey >>> 0, xorKeyOff: -1
+});
+}
+}
+return;
+}
+var deltas = [-1, 1, -2, 2, -3, 3, -4, 4];
+for (var j = 0; j < u32.length && out.length < cap; j++) {
+if ((j & 131071) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
+var w = u32[j];
+if (w === 0 || w === 0xFFFFFFFF || w === tU) continue;
+var needK = (w ^ tU) >>> 0;
+if (needK === 0 || needK === 0xFFFFFFFF || needK === w) continue;
+for (var di = 0; di < deltas.length; di++) {
+var nj = j + deltas[di];
+if (nj < 0 || nj >= u32.length) continue;
+if (u32[nj] === needK) {
+var off2 = j << 2;
+var koff = nj << 2;
+out.push({
+id: labelPrefix + "+0x" + off2.toString(16).toUpperCase() + ":i32^@0x" + koff.toString(16).toUpperCase(),
+kind: kind, bufIdx: bufIdx, memRef: memRef, abRef: abRef,
+off: off2, dt: "i32", len: 4, prev: targetI32 | 0, scale: 0,
+xorMode: 2, xorKey: needK, xorKeyOff: koff
+});
+break;
+}
+}
+}
+}
+function scanJsSpecial(mode, gq, targetI32, hasExplicitKey, explicitKey, out, cap, scannedBufs, deadlineMs, stateFlags) {
+var visited = new WeakSet();
+var queue = [{ obj: window, path: "window", depth: 0 }];
+seedEngineAndFrameworkRoots(window, queue, visited);
+var qHead = 0, nodesVisited = 0, maxNodes = 25000;
+var closureSeeded = false;
+while (nodesVisited < maxNodes && out.length < cap) {
+if (qHead >= queue.length) {
+if (closureSeeded) break;
+closureSeeded = true;
+for (var ci = 0; ci < closureObjRefs.length; ci++) {
+var co = closureObjRefs[ci].deref();
+if (co) { try { if (!visited.has(co)) queue.push({ obj: co, path: "closure#" + ci, depth: 1 }); } catch (_) {} }
+}
+if (qHead >= queue.length) break;
+}
+if ((nodesVisited & 511) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; break; }
+var cur = queue[qHead++];
+var obj = cur.obj;
+if (!obj || (typeof obj !== "object" && typeof obj !== "function")) continue;
+try { if (visited.has(obj)) continue; visited.add(obj); } catch (_) { continue; }
+nodesVisited++;
+if (typeof WebAssembly === "object" && safeInstanceOf(obj, WebAssembly.Memory)) { trackWasmMem(obj); continue; }
+if (safeIsView(obj)) {
+try {
+if (obj.buffer && !scannedBufs.has(obj.buffer)) {
+scannedBufs.add(obj.buffer);
+trackRawBuf(obj.buffer);
+var abIdx = abRegistry.length; var ref = mkRef(obj.buffer); abRegistry.push(ref);
+var lbl = "buf#" + abIdx + "(" + cur.path.slice(-20) + ")";
+if (mode === "group") scanBufferGroup(obj.buffer, 0, obj.buffer.byteLength, "ab", abIdx, lbl, gq, out, cap, ref, deadlineMs, stateFlags);
+else scanBufferXor(obj.buffer, 0, obj.buffer.byteLength, "ab", abIdx, lbl, targetI32, hasExplicitKey, explicitKey, out, cap, ref, deadlineMs, stateFlags);
+}
+} catch (_) {}
+continue;
+}
+if ((typeof ArrayBuffer === "function" && safeInstanceOf(obj, ArrayBuffer)) || isSharedBuf(obj)) {
+if (!scannedBufs.has(obj)) {
+scannedBufs.add(obj);
+trackRawBuf(obj);
+var abIdx2 = abRegistry.length; var ref2 = mkRef(obj); abRegistry.push(ref2);
+var lbl2 = "buf#" + abIdx2 + "(" + cur.path.slice(-20) + ")";
+if (mode === "group") scanBufferGroup(obj, 0, obj.byteLength, "ab", abIdx2, lbl2, gq, out, cap, ref2, deadlineMs, stateFlags);
+else scanBufferXor(obj, 0, obj.byteLength, "ab", abIdx2, lbl2, targetI32, hasExplicitKey, explicitKey, out, cap, ref2, deadlineMs, stateFlags);
+}
+continue;
+}
+if (cur.depth > 0 && isSkippedBuiltinObject(obj)) continue;
+var keys;
+try { keys = cur.depth <= 2 ? Object.getOwnPropertyNames(obj) : Object.keys(obj); } catch (_) { continue; }
+var numProps = [];
+var maxK = cur.depth === 0 ? keys.length : Math.min(keys.length, 300);
+for (var ki = 0; ki < maxK; ki++) {
+var k = keys[ki];
+if (SKIP_KEYS.has(k) || INTERNAL_KEY_RE.test(k) || SENSITIVE_KEY_RE.test(k)) continue;
+var val;
+try {
+var d = Object.getOwnPropertyDescriptor(obj, k);
+if (d && "value" in d) { if (d.writable !== true) continue; val = d.value; }
+else if (cur.depth > 0 && d && typeof d.get === "function" && typeof d.set === "function") val = obj[k];
+else continue;
+} catch (_) { continue; }
+if (typeof val === "number" && Number.isFinite(val)) {
+numProps.push({ k: k, v: val });
+} else if (val && (typeof val === "object" || typeof val === "function") && cur.depth < 10) {
+if (SKIP_SUBTREE_KEYS.has(k)) continue;
+if (typeof val === "function" && cur.depth > 1) continue;
+try { if (!visited.has(val)) queue.push({ obj: val, path: cur.depth === 0 ? k : (cur.path + "." + k), depth: cur.depth + 1 }); } catch (_) {}
+}
+}
+if (cur.depth > 0 && numProps.length >= 2) {
+if (mode === "group" && gq) {
+var matchedEntries = [];
+var usedIdx = [];
+var okAll = true;
+for (var ti = 0; ti < gq.terms.length; ti++) {
+var tm = gq.terms[ti];
+var foundIdx = -1;
+for (var pi = 0; pi < numProps.length; pi++) {
+if (usedIdx.indexOf(pi) !== -1) continue;
+var epsG = tm.dt === "f32" ? 0.01 : (tm.dt === "f64" || tm.dt === "auto" ? 0.001 : 0);
+if (Math.abs(numProps[pi].v - tm.val) <= epsG) { foundIdx = pi; break; }
+}
+if (foundIdx === -1) { okAll = false; break; }
+usedIdx.push(foundIdx);
+matchedEntries.push(numProps[foundIdx]);
+}
+if (okAll) {
+for (var mi = 0; mi < matchedEntries.length && out.length < cap; mi++) {
+var me = matchedEntries[mi];
+out.push({ id: "js:" + cur.path + "." + me.k, kind: "js", objRef: mkRef(obj), key: me.k, dt: Number.isInteger(me.v) ? "i32" : "f64", prev: me.v });
+}
+}
+} else if (mode === "xor") {
+var tI = targetI32 | 0;
+if (hasExplicitKey) {
+var encJ = (tI ^ (explicitKey | 0)) | 0;
+for (var xi = 0; xi < numProps.length && out.length < cap; xi++) {
+if (Number.isInteger(numProps[xi].v) && (numProps[xi].v | 0) === encJ) {
+out.push({ id: "js:" + cur.path + "." + numProps[xi].k + "^0x" + (explicitKey >>> 0).toString(16).toUpperCase(), kind: "js", objRef: mkRef(obj), key: numProps[xi].k, dt: "i32", prev: tI, xorMode: 1, xorKey: explicitKey >>> 0 });
+}
+}
+} else if (numProps.length <= 16) {
+for (var a = 0; a < numProps.length && out.length < cap; a++) {
+if (!Number.isInteger(numProps[a].v)) continue;
+var va = numProps[a].v | 0;
+if (va === 0 || va === -1 || va === tI) continue;
+var wantK = (va ^ tI) | 0;
+if (wantK === 0 || wantK === -1 || wantK === va) continue;
+for (var b = 0; b < numProps.length; b++) {
+if (a === b || !Number.isInteger(numProps[b].v)) continue;
+if ((numProps[b].v | 0) === wantK) {
+out.push({
+id: "js:" + cur.path + "." + numProps[a].k + "^" + numProps[b].k,
+kind: "js", objRef: mkRef(obj), key: numProps[a].k, dt: "i32", prev: tI,
+xorMode: 3, xorKey: wantK >>> 0, xorKeyProp: numProps[b].k
+});
+break;
+}
+}
+}
+}
+}
+}
+}
+}
 function diffUnknownSnapshots(snapObj, sc, v1, v2, out, cap, deadlineMs, stateFlags) {
 if (!snapObj || !snapObj.snaps) return;
+var skipEqual = (sc === "changed" || sc === "increased" || sc === "decreased" ||
+(sc === "increased_by" && v1 > 0) || (sc === "decreased_by" && v1 > 0));
 for (var si = 0; si < snapObj.snaps.length && out.length < cap; si++) {
 var s = snapObj.snaps[si];
 var liveBuf = null;
@@ -2266,25 +3060,36 @@ var a = s.abRef ? s.abRef.deref() : null;
 if (a && a.byteLength > 0) liveBuf = a;
 }
 if (!liveBuf) continue;
-var cmpLen = Math.min(s.len, liveBuf.byteLength) & ~3;
-if (cmpLen < 4) continue;
+var dt = s.dt || "auto";
+var sz = dt === "i8" ? 1 : (dt === "i16" ? 2 : ((dt === "i64" || dt === "f64") ? 8 : 4));
+var cmpLen = Math.min(s.len, liveBuf.byteLength);
+cmpLen = cmpLen - (cmpLen % sz);
+if (cmpLen < sz) continue;
+if (dt === "i8" || dt === "i16" || dt === "u32" || dt === "i64" || dt === "f64") {
+var oldDv = new DataView(s.snapBuf, 0, cmpLen);
+var newDv = new DataView(liveBuf, 0, cmpLen);
+for (var off = 0; off + sz <= cmpLen && out.length < cap; off += sz) {
+if ((off & 131071) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
+var ov = readViewVal(oldDv, off, dt);
+var nv = readViewVal(newDv, off, dt);
+if (skipEqual && ov === nv) continue;
+if (matchNum(nv, ov, true, dt, sc, v1, v2)) {
+out.push({ id: s.labelPrefix + "+0x" + off.toString(16).toUpperCase() + ":" + dt, kind: s.kind, bufIdx: s.bufIdx, memRef: s.memRef, abRef: s.abRef, off: off, dt: dt, len: sz, prev: nv });
+}
+}
+continue;
+}
 var len4 = cmpLen >>> 2;
 var oldI32 = new Int32Array(s.snapBuf, 0, len4);
 var newI32 = new Int32Array(liveBuf, 0, len4);
 var oldF32 = new Float32Array(s.snapBuf, 0, len4);
 var newF32 = new Float32Array(liveBuf, 0, len4);
-var dt = s.dt || "auto";
 for (var idx = 0; idx < len4 && out.length < cap; idx++) {
 if ((idx & 131071) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
 var oi = oldI32[idx], ni = newI32[idx];
-if (oi === ni && (sc === "changed" || sc === "increased" || sc === "decreased" ||
-(sc === "increased_by" && v1 > 0) || (sc === "decreased_by" && v1 > 0))) continue;
+if (skipEqual && oi === ni) continue;
 if (dt === "f32") {
 var ofv = oldF32[idx], nfv = newF32[idx];
-
-""".trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_4 = """
 if (matchNum(nfv, ofv, true, "f32", sc, v1, v2)) {
 out.push({ id: s.labelPrefix + "+0x" + (idx << 2).toString(16).toUpperCase() + ":f32", kind: s.kind, bufIdx: s.bufIdx, memRef: s.memRef, abRef: s.abRef, off: idx << 2, dt: "f32", len: 4, prev: nfv });
 }
@@ -2326,6 +3131,11 @@ return fullId.indexOf("@" + FRAME_ID + "|") === 0;
 }
 return IS_TOP;
 }
+function pushUndoState() {
+if (!hits.length && !unknownSnaps) return;
+if (undoStack.length >= MAX_UNDO_DEPTH) undoStack.shift();
+undoStack.push({ hits: hits.slice(), unknownSnaps: unknownSnaps, lastType: lastType });
+}
 function formatHitsResult(maxRet, meta) {
 var lim = Math.min(hits.length, maxRet || 300);
 var items = [];
@@ -2350,7 +3160,8 @@ ok: true,
 frameId: FRAME_ID,
 total: totalSlots,
 snapshotActive: !!unknownSnaps,
-canUndo: prevHits.length > 0 || !!prevUnknownSnaps,
+canUndo: undoStack.length > 0,
+undoDepth: undoStack.length,
 wasmCount: liveWasmEntries().length,
 bufCount: abRegistry.length + taRegistry.length,
 workerCount: liveWorkerCount(),
@@ -2363,6 +3174,32 @@ fallbackUsed: !!(meta && meta.fallbackUsed),
 items: items
 };
 }
+function resolveJsPathFromWindow(pathStr) {
+if (!pathStr || typeof pathStr !== "string") return null;
+var raw = pathStr.indexOf("js:") === 0 ? pathStr.slice(3) : pathStr;
+if (!raw || raw.indexOf("^") !== -1) return null;
+var segs = [];
+var cur = "";
+for (var i = 0; i < raw.length; i++) {
+var ch = raw.charAt(i);
+if (ch === ".") { if (cur) { segs.push(cur); cur = ""; } }
+else if (ch === "[") { if (cur) { segs.push(cur); cur = ""; } }
+else if (ch === "]") { if (cur) { segs.push(cur); cur = ""; } }
+else cur += ch;
+}
+if (cur) segs.push(cur);
+if (segs.length === 0) return null;
+var obj = window;
+for (var s = 0; s < segs.length - 1; s++) {
+if (!obj || (typeof obj !== "object" && typeof obj !== "function")) return null;
+try { obj = obj[segs[s]]; } catch (_) { return null; }
+}
+if (!obj || (typeof obj !== "object" && typeof obj !== "function")) return null;
+var lastKey = segs[segs.length - 1];
+var key = Array.isArray(obj) && /^\d+${'$'}/.test(lastKey) ? Number(lastKey) : lastKey;
+if (!(key in obj)) return null;
+return { obj: obj, key: key };
+}
 function handleCmd(cmd) {
 try {
 if (cmd.targetFrame && cmd.targetFrame !== FRAME_ID) {
@@ -2370,17 +3207,19 @@ return { ok: false, skippedFrame: true };
 }
 if (cmd.op === "ping") return { ok: true, frameId: FRAME_ID, engines: detectEngines() };
 if (cmd.op === "reset") {
-hits = []; prevHits = []; unknownSnaps = null; prevUnknownSnaps = null;
-if (cmd.clearFreezes) clearAllFreezes();
+hits = []; undoStack = []; unknownSnaps = null;
+if (cmd.clearFreezes) { clearAllFreezes(); clearAllTraces(); }
 return formatHitsResult(0, { elapsedMs: 0, timedOut: false });
 }
 if (cmd.op === "refreshHits") {
 return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0 });
 }
 if (cmd.op === "undo") {
-if (!prevHits.length && !prevUnknownSnaps) return { ok: false, error: "Nothing to undo" };
-hits = prevHits; prevHits = [];
-unknownSnaps = prevUnknownSnaps; prevUnknownSnaps = null;
+if (!undoStack.length) return { ok: false, error: "Nothing to undo" };
+var prevState = undoStack.pop();
+hits = prevState.hits || [];
+unknownSnaps = prevState.unknownSnaps || null;
+lastType = prevState.lastType || lastType;
 return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0 });
 }
 if (cmd.op === "writeAll") {
@@ -2451,16 +3290,142 @@ if (cmd.op === "unfreezeAll") {
 clearAllFreezes();
 return { ok: true, frameId: FRAME_ID };
 }
+if (cmd.op === "setTrace") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var tr = installTraceEntry(stripOwnFramePrefix(cmd.id), !!cmd.enabled);
+tr.frameId = FRAME_ID;
+return tr;
+}
+if (cmd.op === "getTraceLogs") {
+return { ok: true, frameId: FRAME_ID, traces: collectTraceLogsMap() };
+}
+if (cmd.op === "clearTrace") {
+if (cmd.id) {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var tOnly = traceMap.get(stripOwnFramePrefix(cmd.id));
+if (tOnly) { tOnly.events = []; tOnly.writeCount = 0; }
+} else {
+clearAllTraces();
+}
+return { ok: true, frameId: FRAME_ID };
+}
+if (cmd.op === "reattach") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var locR = stripOwnFramePrefix(cmd.id);
+var existingR = watchRefs.get(locR);
+if (existingR) {
+var rdEx = readHitCurrent(existingR);
+if (rdEx.ok) return { ok: true, frameId: FRAME_ID, val: formatVal(rdEx.val, existingR.dt) };
+}
+var dtR = cmd.dt || "i32";
+if (locR.indexOf("js:") === 0) {
+var resJ = resolveJsPathFromWindow(locR);
+if (!resJ) return { ok: false, frameId: FRAME_ID, error: "JS path not found" };
+var vJ = resJ.obj[resJ.key];
+var recJ = { id: locR, kind: "js", objRef: mkRef(resJ.obj), key: resJ.key, dt: dtR, prev: vJ };
+watchRefs.set(locR, recJ);
+return { ok: true, frameId: FRAME_ID, val: formatVal(vJ, dtR) };
+}
+if (locR.indexOf("ls:") === 0 || locR.indexOf("ss:") === 0) {
+var tagR = locR.slice(0, 2);
+var bodyR = locR.slice(3);
+var stR = tagR === "ls" ? window.localStorage : window.sessionStorage;
+var jPos = bodyR.indexOf("${'$'}.");
+var recS = null;
+if (jPos !== -1) {
+var kName = bodyR.slice(0, jPos);
+var jp = bodyR.slice(jPos + 2).split(".");
+recS = { id: locR, kind: tagR + "json", key: kName, jpath: jp, dt: dtR, prev: 0 };
+} else {
+recS = { id: locR, kind: tagR, key: bodyR, dt: dtR, prev: 0 };
+}
+var rdS = readHitCurrent(recS);
+if (!rdS.ok) return { ok: false, frameId: FRAME_ID, error: "Storage key missing" };
+recS.prev = rdS.val;
+watchRefs.set(locR, recS);
+return { ok: true, frameId: FRAME_ID, val: formatVal(rdS.val, dtR) };
+}
+var wm = /^wasm#(\d+)\+0x([0-9a-fA-F]+):([a-z0-9]+)${'$'}/.exec(locR);
+if (wm) {
+var wid = Number(wm[1]), woff = parseInt(wm[2], 16), wdt = wm[3];
+var liveM = liveWasmEntries();
+var foundM = null;
+for (var mi = 0; mi < liveM.length; mi++) { if (liveM[mi].id === wid) { foundM = liveM[mi]; break; } }
+if (!foundM || woff >= foundM.mem.buffer.byteLength) return { ok: false, frameId: FRAME_ID, error: "WASM offset invalid" };
+var recW = { id: locR, kind: "wasm", bufIdx: wid, memRef: foundM.ref, abRef: null, off: woff, dt: wdt, len: 4, prev: 0, scale: 0 };
+var rdWm = readHitCurrent(recW);
+if (!rdWm.ok) return { ok: false, frameId: FRAME_ID, error: "WASM unreadable" };
+recW.prev = rdWm.val;
+watchRefs.set(locR, recW);
+return { ok: true, frameId: FRAME_ID, val: formatVal(rdWm.val, wdt) };
+}
+return { ok: false, frameId: FRAME_ID, error: "Cannot safely reattach target" };
+}
 if (cmd.op === "firstScan") {
 var tStart = Date.now();
 var budgetMs = Math.max(1000, Math.min(80000, Number(cmd.timeoutMs) || 15000));
 var deadlineMs = tStart + budgetMs;
 var stateFlags = { timedOut: false, fallbackUsed: false };
-prevHits = []; hits = []; abRegistry = []; unknownSnaps = null; prevUnknownSnaps = null;
+undoStack = []; hits = []; abRegistry = []; unknownSnaps = null;
 skippedXOriginCount = 0;
 var dt = cmd.dtype || "auto";
 var sc = cmd.scanType || "exact";
 lastType = dt;
+var out = [];
+var scannedBufs = new WeakSet();
+if (sc === "group") {
+var gq = parseGroupQuery(cmd.val1);
+if (!gq) return { ok: false, error: "Invalid group syntax (e.g. 100;200;50::64 or 100;200:32)" };
+var capG = 100000;
+var memsG = liveWasmEntries();
+for (var gmi = 0; gmi < memsG.length && out.length < capG && !stateFlags.timedOut; gmi++) {
+var gmb = memsG[gmi].mem.buffer;
+scannedBufs.add(gmb);
+scanBufferGroup(gmb, 0, gmb.byteLength, "wasm", memsG[gmi].id, "wasm#" + memsG[gmi].id, gq, out, capG, memsG[gmi].ref, deadlineMs, stateFlags);
+}
+if (!stateFlags.timedOut) scanJsSpecial("group", gq, 0, false, 0, out, capG, scannedBufs, deadlineMs, stateFlags);
+var rawG = liveRawBuffers(scannedBufs);
+for (var gbi = 0; gbi < rawG.length && out.length < capG && !stateFlags.timedOut; gbi++) {
+scannedBufs.add(rawG[gbi]);
+var giIdx = abRegistry.length; var giRef = mkRef(rawG[gbi]); abRegistry.push(giRef);
+scanBufferGroup(rawG[gbi], 0, rawG[gbi].byteLength, "ab", giIdx, "buf#" + giIdx, gq, out, capG, giRef, deadlineMs, stateFlags);
+}
+hits = out;
+return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: Date.now() - tStart, timedOut: stateFlags.timedOut });
+}
+if (sc === "xor") {
+var xs1 = cleanNumStr(cmd.val1);
+var xs2 = cleanNumStr(cmd.val2);
+var xv1 = Number(xs1);
+if (!xs1.trim() || !Number.isFinite(xv1)) return { ok: false, error: "Enter target integer value for XOR scan" };
+var hasKey = xs2.trim() !== "";
+var keyVal = 0;
+if (hasKey) {
+var kn = Number(xs2);
+if (!Number.isFinite(kn)) return { ok: false, error: "Invalid XOR key (use number or 0xHEX)" };
+keyVal = kn >>> 0;
+}
+var capX = 100000;
+var memsX = liveWasmEntries();
+for (var xmi = 0; xmi < memsX.length && out.length < capX && !stateFlags.timedOut; xmi++) {
+var xmb = memsX[xmi].mem.buffer;
+scannedBufs.add(xmb);
+scanBufferXor(xmb, 0, xmb.byteLength, "wasm", memsX[xmi].id, "wasm#" + memsX[xmi].id, xv1 | 0, hasKey, keyVal, out, capX, memsX[xmi].ref, deadlineMs, stateFlags);
+}
+if (!stateFlags.timedOut) scanJsSpecial("xor", null, xv1 | 0, hasKey, keyVal, out, capX, scannedBufs, deadlineMs, stateFlags);
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_6 = """
+var rawX = liveRawBuffers(scannedBufs);
+for (var xbi = 0; xbi < rawX.length && out.length < capX && !stateFlags.timedOut; xbi++) {
+scannedBufs.add(rawX[xbi]);
+var xiIdx = abRegistry.length; var xiRef = mkRef(rawX[xbi]); abRegistry.push(xiRef);
+scanBufferXor(rawX[xbi], 0, rawX[xbi].byteLength, "ab", xiIdx, "buf#" + xiIdx, xv1 | 0, hasKey, keyVal, out, capX, xiRef, deadlineMs, stateFlags);
+}
+hits = out;
+lastType = "i32";
+return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: Date.now() - tStart, timedOut: stateFlags.timedOut });
+}
 var s1 = (dt === "str" || dt === "aob") ? String(cmd.val1 || "") : cleanNumStr(cmd.val1);
 var s2 = (dt === "str" || dt === "aob") ? String(cmd.val2 || "") : cleanNumStr(cmd.val2);
 var v1 = Number(s1), v2 = Number(s2);
@@ -2479,8 +3444,6 @@ if (v2 < v1) { var tmp = v1; v1 = v2; v2 = tmp; }
 }
 }
 var cap = sc === "unknown" ? 60000 : 200000;
-var out = [];
-var scannedBufs = new WeakSet();
 if (sc === "unknown" && dt !== "str" && dt !== "aob") {
 unknownSnaps = captureUnknownSnapshots(dt, deadlineMs, stateFlags);
 var memsU = liveWasmEntries();
@@ -2549,10 +3512,11 @@ var sc2 = cmd.scanType || "exact";
 var s1n = (lastType === "str" || lastType === "aob") ? String(cmd.val1 || "") : cleanNumStr(cmd.val1);
 var s2n = (lastType === "str" || lastType === "aob") ? String(cmd.val2 || "") : cleanNumStr(cmd.val2);
 var v1n = Number(s1n), v2n = Number(s2n);
-if ((sc2 === "unknown" || sc2 === "changed" || sc2 === "increased" || sc2 === "decreased" || sc2 === "unchanged") &&
-s1n.trim() !== "" && Number.isFinite(v1n)) {
+if (sc2 === "unknown") {
+sc2 = (s1n.trim() !== "" && Number.isFinite(v1n)) ? "exact" : "changed";
+} else if (sc2 === "xor") {
 sc2 = "exact";
-} else if (sc2 === "unknown") {
+} else if (sc2 === "group") {
 sc2 = "changed";
 }
 var needsV1 = (sc2 === "exact" || sc2 === "bigger" || sc2 === "smaller" || sc2 === "between" || sc2 === "increased_by" || sc2 === "decreased_by");
@@ -2563,8 +3527,7 @@ if (sc2 === "between" && (!s2n.trim() || !Number.isFinite(v2n))) {
 return { ok: false, error: "Enter max value" };
 }
 if (sc2 === "between" && v2n < v1n) { var t2 = v1n; v1n = v2n; v2n = t2; }
-prevHits = hits;
-prevUnknownSnaps = unknownSnaps;
+pushUndoState();
 var next = [];
 if (unknownSnaps) {
 diffUnknownSnapshots(unknownSnaps, sc2, v1n, v2n, next, 150000, deadlineMs2, stateFlags2);
@@ -2608,7 +3571,7 @@ var r = readHitCurrent(rec);
 vals[fullId] = r.ok ? formatVal(r.val, rec.dt) : String(r.val);
 }
 }
-return { ok: true, frameId: FRAME_ID, values: vals, freezeStats: collectFreezeStatsMap() };
+return { ok: true, frameId: FRAME_ID, values: vals, freezeStats: collectFreezeStatsMap(), traces: collectTraceLogsMap() };
 }
 if (cmd.op === "write") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
@@ -2635,12 +3598,141 @@ var hex = "";
 for (var hi = 0; hi < u8h.length; hi++) hex += u8h[hi].toString(16).toUpperCase().padStart(2, "0");
 return { ok: true, frameId: FRAME_ID, addr: "0x" + baseOff.toString(16).toUpperCase(), offset: baseOff, len: len, hex: hex };
 }
+if (cmd.op === "writeHex") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var localWH = stripOwnFramePrefix(cmd.id);
+var recWH = watchRefs.get(localWH);
+if (!recWH || (recWH.kind !== "wasm" && recWH.kind !== "ta" && recWH.kind !== "ab")) {
+return { ok: false, error: "Hex write supports WASM / ArrayBuffer / TypedArray" };
+}
+var biWH = getBufferForHit(recWH);
+if (!biWH) return { ok: false, error: "Buffer detached" };
+var patWH = parseAob(cmd.hex || "");
+if (!patWH.bytes.length || patWH.bytes.length > 64) return { ok: false, error: "Enter 1..64 hex bytes" };
+var offWH = typeof cmd.offset === "number" ? Math.max(0, cmd.offset) : recWH.off;
+if (offWH + patWH.bytes.length > biWH.byteLen) return { ok: false, error: "Hex write out of buffer bounds" };
+var u8w = new Uint8Array(biWH.buf, biWH.byteOff + offWH, patWH.bytes.length);
+var patchedW = 0;
+selfWriteDepth++;
+try {
+for (var wi2 = 0; wi2 < patWH.bytes.length; wi2++) {
+if (!patWH.mask[wi2]) continue;
+if (biWH.shared && typeof Atomics === "object") {
+Atomics.store(u8w, wi2, patWH.bytes[wi2]);
+} else {
+u8w[wi2] = patWH.bytes[wi2];
+}
+patchedW++;
+}
+} finally {
+selfWriteDepth--;
+}
+var rbHex = "";
+for (var ri2 = 0; ri2 < u8w.length; ri2++) rbHex += u8w[ri2].toString(16).toUpperCase().padStart(2, "0");
+return { ok: true, frameId: FRAME_ID, wrote: patchedW, offset: offWH, hex: rbHex };
+}
+if (cmd.op === "pointerScan") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var localPtr = stripOwnFramePrefix(cmd.id);
+var recPtr = watchRefs.get(localPtr);
+if (!recPtr) return { ok: false, error: "Entry not found in frame" };
+var maxOffP = Math.max(0, Math.min(65536, Number(cmd.maxOffset) || 4096));
+var pItems = [];
+if (recPtr.kind === "wasm" || recPtr.kind === "ab" || recPtr.kind === "ta") {
+var biPtr = getBufferForHit(recPtr);
+if (!biPtr) return { ok: false, error: "Buffer detached" };
+var targetOff = recPtr.off >>> 0;
+var loOff = targetOff > maxOffP ? (targetOff - maxOffP) : 0;
+var u32p = new Uint32Array(biPtr.buf, biPtr.byteOff, biPtr.byteLen >>> 2);
+var prefP = recPtr.id.split("+0x")[0];
+for (var pi = 0; pi < u32p.length && pItems.length < 120; pi++) {
+var pval = u32p[pi];
+if (pval >= loOff && pval <= targetOff && (pval & 3) === 0 && (pi << 2) !== targetOff) {
+var pOff = pi << 2;
+var pLocalId = prefP + "+0x" + pOff.toString(16).toUpperCase() + ":u32";
+if (!watchRefs.has(pLocalId)) {
+watchRefs.set(pLocalId, { id: pLocalId, kind: recPtr.kind, bufIdx: recPtr.bufIdx, memRef: recPtr.memRef, abRef: recPtr.abRef, off: pOff, dt: "u32", len: 4, prev: pval, scale: 0 });
+}
+pItems.push({
+ptrAddr: qualifyId(pLocalId),
+pointsTo: "0x" + pval.toString(16).toUpperCase(),
+offset: "+0x" + (targetOff - pval).toString(16).toUpperCase(),
+region: prefP
+});
+}
+}
+return { ok: true, frameId: FRAME_ID, count: pItems.length, items: pItems };
+}
+if (recPtr.kind === "js") {
+var targetObj = recPtr.objRef ? recPtr.objRef.deref() : null;
+if (!targetObj) return { ok: false, error: "Object garbage-collected" };
+var visP = new WeakSet();
+var qP = [{ obj: window, path: "window", depth: 0 }];
+var qH = 0, visN = 0;
+while (qH < qP.length && visN < 12000 && pItems.length < 60) {
+var cP = qP[qH++];
+var oP = cP.obj;
+if (!oP || (typeof oP !== "object" && typeof oP !== "function")) continue;
+try { if (visP.has(oP)) continue; visP.add(oP); } catch (_) { continue; }
+visN++;
+if (cP.depth > 0 && isSkippedBuiltinObject(oP)) continue;
+var ksP;
+try { ksP = cP.depth <= 2 ? Object.getOwnPropertyNames(oP) : Object.keys(oP); } catch (_) { continue; }
+for (var kpi = 0; kpi < Math.min(ksP.length, 250) && pItems.length < 60; kpi++) {
+var kk = ksP[kpi];
+if (SKIP_KEYS.has(kk) || INTERNAL_KEY_RE.test(kk)) continue;
+var vv;
+try { vv = oP[kk]; } catch (_) { continue; }
+var fullP = cP.depth === 0 ? kk : (cP.path + "." + kk);
+if (vv === targetObj) {
+pItems.push({ ptrAddr: "js:" + fullP, pointsTo: recPtr.id, offset: "." + String(recPtr.key), region: "JS Ref" });
+} else if (vv && typeof vv === "object" && cP.depth < 7 && !SKIP_SUBTREE_KEYS.has(kk)) {
+try { if (!visP.has(vv)) qP.push({ obj: vv, path: fullP, depth: cP.depth + 1 }); } catch (_) {}
+}
+}
+}
+return { ok: true, frameId: FRAME_ID, count: pItems.length, items: pItems };
+}
+return { ok: false, error: "Pointer scan supports WASM / Buffer / JS objects" };
+}
 if (cmd.op === "peekStruct") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
 var localP = stripOwnFramePrefix(cmd.id);
 var recP = watchRefs.get(localP);
-if (!recP || (recP.kind !== "wasm" && recP.kind !== "ta" && recP.kind !== "ab")) {
-return { ok: false, error: "Struct peek supports WASM / ArrayBuffer / TypedArray" };
+if (!recP) return { ok: false, error: "Entry not found in frame" };
+if (recP.kind === "js") {
+var objP = recP.objRef ? recP.objRef.deref() : null;
+if (!objP) return { ok: false, error: "Object garbage-collected" };
+var jsFields = [];
+var ksObj = [];
+try { ksObj = Object.getOwnPropertyNames(objP); } catch (_) { try { ksObj = Object.keys(objP); } catch (_2) {} }
+var parentBase = recP.id.slice(0, Math.max(3, recP.id.lastIndexOf(".")));
+for (var ji = 0; ji < Math.min(ksObj.length, 64); ji++) {
+var jk = ksObj[ji];
+if (INTERNAL_KEY_RE.test(jk) || SENSITIVE_KEY_RE.test(jk)) continue;
+var jv;
+try { jv = objP[jk]; } catch (_) { continue; }
+if (typeof jv === "number" || (typeof jv === "string" && jv.length <= 48)) {
+var jdt = typeof jv === "number" ? (Number.isInteger(jv) ? "i32" : "f64") : "str";
+var jLocalId = parentBase + "." + jk;
+if (!watchRefs.has(jLocalId)) {
+watchRefs.set(jLocalId, { id: jLocalId, kind: "js", objRef: mkRef(objP), key: jk, dt: jdt, prev: jv });
+}
+jsFields.push({
+addr: qualifyId(jLocalId),
+delta: "." + jk,
+type: jdt,
+val: formatVal(jv, jdt),
+i32: typeof jv === "number" ? String(Math.round(jv)) : jv,
+u32: typeof jv === "number" ? String(jv >>> 0) : "",
+f32: typeof jv === "number" ? formatVal(jv, "f64") : ""
+});
+}
+}
+return { ok: true, frameId: FRAME_ID, fields: jsFields };
+}
+if (recP.kind !== "wasm" && recP.kind !== "ta" && recP.kind !== "ab") {
+return { ok: false, error: "Struct peek supports WASM / Buffer / JS" };
 }
 var biP = getBufferForHit(recP);
 if (!biP) return { ok: false, error: "Buffer detached" };
@@ -2654,6 +3746,7 @@ var lblPref = recP.id.split("+0x")[0];
 for (var po = startP; po + 4 <= endP; po += 4) {
 var delta = po - baseP;
 var iv = dvP.getInt32(po, true);
+var uv = dvP.getUint32(po, true);
 var fv = dvP.getFloat32(po, true);
 if (delta !== 0 && iv === 0) continue;
 var looksF = Number.isFinite(fv) && Math.abs(fv) >= 0.001 && Math.abs(fv) <= 1e7 && Math.abs(iv) > 100000000;
@@ -2661,16 +3754,8 @@ var fType = looksF ? "f32" : "i32";
 var fLocalId = lblPref + "+0x" + po.toString(16).toUpperCase() + ":" + fType;
 if (!watchRefs.has(fLocalId)) {
 watchRefs.set(fLocalId, {
-id: fLocalId,
-kind: recP.kind,
-bufIdx: recP.bufIdx,
-memRef: recP.memRef,
-abRef: recP.abRef,
-off: po,
-dt: fType,
-len: 4,
-prev: looksF ? fv : iv,
-scale: 0
+id: fLocalId, kind: recP.kind, bufIdx: recP.bufIdx, memRef: recP.memRef, abRef: recP.abRef,
+off: po, dt: fType, len: 4, prev: looksF ? fv : iv, scale: 0
 });
 }
 fields.push({
@@ -2679,6 +3764,7 @@ delta: (delta < 0 ? "-0x" : "+0x") + Math.abs(delta).toString(16).toUpperCase(),
 type: fType,
 val: looksF ? formatVal(fv, "f32") : String(iv),
 i32: String(iv),
+u32: String(uv),
 f32: (Number.isFinite(fv) && Math.abs(fv) <= 1e9) ? formatVal(fv, "f32") : "NaN"
 });
 }
@@ -2807,5 +3893,5 @@ d.box.out = handleCmd(d);
 }, false);
 try { window.dispatchEvent(new Event(CH + "_ok")); } catch (_) {}
 })();
-""".trimStart('\n').trimEnd('\n')
+    """.trimStart('\n').trimEnd('\n')
 }

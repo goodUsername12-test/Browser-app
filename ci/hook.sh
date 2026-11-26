@@ -338,7 +338,9 @@ MULTI_ENGINE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>F
           if (_pCoins !== 888222) accSlips++;
           try {
             localStorage.setItem("saveV63", JSON.stringify({ coins: 1 }));
-            if (JSON.parse(localStorage.getItem("saveV63")).coins !== 888222) lsSlips++;
+            if (ticks === 4) localStorage.removeItem("saveV63");
+            const rawLs = localStorage.getItem("saveV63");
+            if (!rawLs || JSON.parse(rawLs).coins !== 888222) lsSlips++;
           } catch (_) {}
           wI32[16] = 1;
           if (ticks >= 12) {
@@ -361,6 +363,67 @@ MULTI_ENGINE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>F
       }, 550);
     }
   }, 80);
+})();
+</script></body></html>"""
+
+
+CE_ULTRA_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable CE Ultra Lab</title></head>
+<body><pre id="out">ce-ultra-lab</pre>
+<script>
+(function() {
+  const qs = new URLSearchParams(location.search);
+  const tag = qs.get("tag") || "ultra";
+  const wMem = new WebAssembly.Memory({ initial: 2 });
+  const dv = new DataView(wMem.buffer);
+  dv.setInt32(0x40, 100, true);
+  dv.setInt32(0x200, -500, true);
+  dv.setFloat32(0x204, 33.5, true);
+  dv.setInt32(0x208, 7777, true);
+  dv.setUint32(0x300, 0x5A3C91E7, true);
+  dv.setUint32(0x304, (123456 ^ 0x5A3C91E7) >>> 0, true);
+  dv.setUint32(0x400, 0x200, true);
+  window.ultraHero = { hp: 100, mana: 50 };
+  window.__keepUltra = function() { return dv.getInt32(0x40, true) + dv.getInt32(0x208, true); };
+
+  function checkStealth() {
+    try {
+      const noLeak = Object.getOwnPropertyNames(window).every(k => !/^(__fableMem|__fableTimeScale|_mev_|cheat|memscan)/i.test(k));
+      const natW = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
+      const natS = Function.prototype.toString.call(Storage.prototype.setItem).indexOf("[native code]") !== -1;
+      const natR = Function.prototype.toString.call(Storage.prototype.removeItem).indexOf("[native code]") !== -1;
+      return noLeak && natW && natS && natR;
+    } catch (_) { return false; }
+  }
+
+  let didBump = false;
+  let didDamage = false;
+  let reported = false;
+  function applyHeroDamage() {
+    window.ultraHero.hp = window.ultraHero.hp - 25;
+  }
+  const iv = setInterval(function() {
+    const sig = dv.getInt32(0x40, true);
+    if (!didBump && sig === 200) {
+      didBump = true;
+      window.ultraHero.hp = 250;
+    }
+    if (!didDamage && sig === 300) {
+      didDamage = true;
+      applyHeroDamage();
+      setTimeout(applyHeroDamage, 80);
+    }
+    const xorDec = ((dv.getUint32(0x304, true) ^ dv.getUint32(0x300, true)) | 0);
+    if (!reported && xorDec === 999888) {
+      reported = true;
+      clearInterval(iv);
+      const h50 = [dv.getUint8(0x50), dv.getUint8(0x51), dv.getUint8(0x52), dv.getUint8(0x53)]
+        .map(b => b.toString(16).toUpperCase().padStart(2, "0")).join("");
+      const q = "tag=" + encodeURIComponent(tag) + "&stealth=" + checkStealth() +
+        "&xorDec=" + xorDec + "&hex50=" + h50;
+      document.getElementById("out").textContent = q;
+      fetch("/ce-ultra-probe?" + q).catch(() => {});
+    }
+  }, 40);
 })();
 </script></body></html>"""
 
@@ -418,6 +481,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", MULTI_ENGINE_HTML.encode())
         elif p == "/multi-engine-probe":
             print(f"MULTI_ENGINE_PROBE q={parsed.query}", flush=True)
+            self._send(200, "application/json", b'{"ok":true}')
+        elif p == "/ce-ultra-lab.html":
+            self._send(200, "text/html; charset=utf-8", CE_ULTRA_HTML.encode())
+        elif p == "/ce-ultra-probe":
+            print(f"CE_ULTRA_PROBE q={parsed.query}", flush=True)
             self._send(200, "application/json", b'{"ok":true}')
         elif p == "/mem-probe":
             print(f"MEM_PROBE q={parsed.query}", flush=True)
@@ -732,6 +800,16 @@ sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck multi_blink --es fable_test_mem_mode multi_freeze --es fable_test_mem_query "777111" --es fable_test_mem_write "888222" --ei fable_test_mem_timeout_sec 25 >/dev/null 2>&1 || true
 sleep 7; step "memory engine ALL-IN-ONE multi-engine + Titanium Freeze (Blink x Gecko)"
 
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-ultra-lab.html?tag=ultra_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck ultra_gecko --es fable_test_mem_mode ultra_ce >/dev/null 2>&1 || true
+sleep 8; step "memory engine v65 ULTRA (Group+XOR+Ptr+HexWrite+Trace+Table+NextFix, GeckoView)"
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-ultra-lab.html?tag=ultra_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck ultra_blink --es fable_test_mem_mode ultra_ce >/dev/null 2>&1 || true
+sleep 8; step "memory engine v65 ULTRA (Group+XOR+Ptr+HexWrite+Trace+Table+NextFix, Blink x Gecko)"
+
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/turbo-trail-txl' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
 sleep 7
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_turbo --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
@@ -858,6 +936,13 @@ echo "$MEM_MULTI_GECKO" | grep -qE 'engine=GeckoView total=([5-9]|[1-9][0-9]+).*
 echo "$MEM_MULTI_BLINK" | grep -qE 'engine=Blink x Gecko total=([5-9]|[1-9][0-9]+).*bulkFreezeOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-blink(${MEM_MULTI_BLINK:-missing})"; }
 grep -q 'MULTI_ENGINE_PROBE q=tag=multi_gecko&stealth=true&jsLocked=true&accLocked=true&lsLocked=true&wasmLocked=true&allEdited=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-gecko-probe"; }
 grep -q 'MULTI_ENGINE_PROBE q=tag=multi_blink&stealth=true&jsLocked=true&accLocked=true&lsLocked=true&wasmLocked=true&allEdited=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-blink-probe"; }
+MEM_ULTRA_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=ultra_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_ULTRA_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=ultra_blink' "$ART/logcat.txt" | tail -n 1 || true)"
+echo "$MEM_NATIVE_LINE" | grep -q 'ultraNativeOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-native-ultra(${MEM_NATIVE_LINE:-missing})"; }
+echo "$MEM_ULTRA_GECKO" | grep -q 'engine=GeckoView ultraOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-gecko(${MEM_ULTRA_GECKO:-missing})"; }
+echo "$MEM_ULTRA_BLINK" | grep -q 'engine=Blink x Gecko ultraOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-blink(${MEM_ULTRA_BLINK:-missing})"; }
+grep -q 'CE_ULTRA_PROBE q=tag=ultra_gecko&stealth=true&xorDec=999888&hex50=DE00ADBE' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-gecko-probe"; }
+grep -q 'CE_ULTRA_PROBE q=tag=ultra_blink&stealth=true&xorDec=999888&hex50=DE00ADBE' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-blink-probe"; }
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
@@ -890,6 +975,8 @@ VERDICT="PASS"
   echo "XOrigB: ${MEM_XORIG_BLINK:-(none)}"
   echo "MultiG: ${MEM_MULTI_GECKO:-(none)}"
   echo "MultiB: ${MEM_MULTI_BLINK:-(none)}"
+  echo "UltraG: ${MEM_ULTRA_GECKO:-(none)}"
+  echo "UltraB: ${MEM_ULTRA_BLINK:-(none)}"
   echo "LiveVk: ${MEM_LIVE_VECK:-(none)}"
   echo "LiveTT: ${MEM_LIVE_CRAZY_TURBO:-(none)}"
   echo "LiveRA: ${MEM_LIVE_CRAZY_ARCHERS:-(none)}"

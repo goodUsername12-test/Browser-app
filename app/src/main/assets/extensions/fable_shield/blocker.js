@@ -279,11 +279,20 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
   if (op === "readBatch") {
     const vals = {};
     const freezeStats = {};
+    const traces = {};
     for (const o of parsed) {
       if (o.values && typeof o.values === "object") Object.assign(vals, o.values);
       if (o.freezeStats && typeof o.freezeStats === "object") Object.assign(freezeStats, o.freezeStats);
+      if (o.traces && typeof o.traces === "object") Object.assign(traces, o.traces);
     }
-    return JSON.stringify({ ok: true, values: vals, freezeStats });
+    return JSON.stringify({ ok: true, values: vals, freezeStats, traces });
+  }
+  if (op === "getTraceLogs") {
+    const traces = {};
+    for (const o of parsed) {
+      if (o.traces && typeof o.traces === "object") Object.assign(traces, o.traces);
+    }
+    return JSON.stringify({ ok: true, traces });
   }
   if (op === "writeBatch") {
     let wrote = 0;
@@ -308,10 +317,10 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
     }
     return JSON.stringify({ ok: locked > 0, locked, lockedIds, failedIds, freezeStats });
   }
-  if (op === "unfreeze" || op === "unfreezeBatch" || op === "unfreezeAll") {
+  if (op === "unfreeze" || op === "unfreezeBatch" || op === "unfreezeAll" || op === "clearTrace") {
     return JSON.stringify({ ok: true });
   }
-  if (op === "write" || op === "hexDump" || op === "setFreeze" || op === "peekStruct") {
+  if (op === "write" || op === "hexDump" || op === "writeHex" || op === "setFreeze" || op === "peekStruct" || op === "pointerScan" || op === "setTrace" || op === "reattach") {
     const hit = parsed.find((o) => o.ok) || parsed[0];
     return JSON.stringify(hit);
   }

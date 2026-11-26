@@ -311,11 +311,12 @@ MULTI_ENGINE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>F
 
   function checkStealth() {
     try {
-      const noLeak = Object.getOwnPropertyNames(window).every(k => !/^(__fable|_mev_|cheat|memscan)/i.test(k));
+      const noLeak = Object.getOwnPropertyNames(window).every(k => !/^(__fableMem|__fableTimeScale|_mev_|cheat|memscan)/i.test(k));
       const natW = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
       const natM = Function.prototype.toString.call(Map).indexOf("[native code]") !== -1;
       const natJ = Function.prototype.toString.call(JSON.parse).indexOf("[native code]") !== -1;
-      return noLeak && natW && natM && natJ;
+      const natS = Function.prototype.toString.call(Storage.prototype.setItem).indexOf("[native code]") !== -1;
+      return noLeak && natW && natM && natJ && natS;
     } catch (_) { return false; }
   }
 

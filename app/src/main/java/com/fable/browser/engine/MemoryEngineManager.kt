@@ -871,6 +871,11 @@ class MemoryEngineManager @Inject constructor(
         ensureWatchLoop()
     }
 
+    fun clearWatchList() {
+        unfreezeAll()
+        _state.update { it.copy(watchList = emptyList(), selectedWatchIds = emptySet()) }
+    }
+
     fun unfreezeAll() {
         scope.launch {
             withContext(Dispatchers.IO) { NativeMemoryScanner.unfreezeAll() }

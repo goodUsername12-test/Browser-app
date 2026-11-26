@@ -720,7 +720,7 @@ var watchRefs = new Map();
 var skippedXOriginCount = 0;
 var frozenMap = new Map(); // localId -> { rec, valStr, parsedVal, mode, blocked, lastBlockedAt, rateCount, origDesc, trapInstalled, status, origObj }
 var mapWrapState = new WeakMap(); // Map -> { origSet, keys: Map<key, frozenEntry> }
-var storageHooked = { ls: null, ss: null }; // { origSetItem, keys: Map<storageKey, Set<frozenEntry>> }
+var storageProtoHook = null; // { proto, origSetItem, lsSt, ssSt, lsKeys: Map, ssKeys: Map }
 var freezeIntervalId = null;
 var freezeRafId = null;
 var lastEnforceTickMs = 0;
@@ -1066,8 +1066,7 @@ return true;
 }
 if (h.kind === "ls" || h.kind === "ss") {
 var st = h.kind === "ls" ? window.localStorage : window.sessionStorage;
-var sh = storageHooked[h.kind];
-if (sh && sh.origSetItem) sh.origSetItem.call(st, h.key, String(valStr));
+if (storageProtoHook && storageProtoHook.origSetItem) storageProtoHook.origSetItem.call(st, h.key, String(valStr));
 else st.setItem(h.key, String(valStr));
 return true;
 }
@@ -1080,8 +1079,7 @@ var parsedJ = JSON.parse(rawJ);
 var nextV = parseTargetVal(h, valStr);
 if (!setJsonPathVal(parsedJ, h.jpath, nextV)) return false;
 var outStr = JSON.stringify(parsedJ);
-var shJ = storageHooked[tagJ];
-if (shJ && shJ.origSetItem) shJ.origSetItem.call(stJ, h.key, outStr);
+if (storageProtoHook && storageProtoHook.origSetItem) storageProtoHook.origSetItem.call(stJ, h.key, outStr);
 else stJ.setItem(h.key, outStr);
 return true;
 }
@@ -1106,19 +1104,37 @@ return okBin;
 return false;
 }
 function ensureStorageHook(tag) {
-if (storageHooked[tag]) return storageHooked[tag];
 var st = tag === "ls" ? window.localStorage : window.sessionStorage;
 if (!st) return null;
-var origSetItem = st.setItem;
-var state = { st: st, origSetItem: origSetItem, keys: new Map() };
+if (!storageProtoHook) {
+var proto = null;
 try {
-st.setItem = mask(function setItem(k, v) {
-var set = state.keys.get(k);
+proto = (typeof Storage === "function" && Storage.prototype && typeof Storage.prototype.setItem === "function")
+? Storage.prototype
+: Object.getPrototypeOf(st);
+} catch (_) {}
+var targetObj = (proto && typeof proto.setItem === "function") ? proto : st;
+var origSetItem = targetObj.setItem;
+if (typeof origSetItem !== "function") return null;
+var state = {
+targetObj: targetObj,
+origSetItem: origSetItem,
+lsKeys: new Map(),
+ssKeys: new Map()
+};
+var wrappedSetItem = mask(function setItem(k, v) {
+var isLs = false;
+var isSs = false;
+try { isLs = (this === window.localStorage); } catch (_) {}
+try { if (!isLs) isSs = (this === window.sessionStorage); } catch (_) {}
+var activeTag = isLs ? "ls" : (isSs ? "ss" : null);
+var keyMap = activeTag === "ls" ? state.lsKeys : (activeTag === "ss" ? state.ssKeys : null);
+var set = keyMap ? keyMap.get(String(k)) : null;
 if (set && set.size > 0) {
 var directOverride = null;
 var jsonMod = null;
 set.forEach(function(fe) {
-if (fe.rec.kind === tag) {
+if (fe.rec.kind === activeTag) {
 var numV = Number(cleanNumStr(v));
 var cmpV = (typeof fe.parsedVal === "number" && Number.isFinite(numV)) ? numV : String(v);
 if (ruleViolated(cmpV, fe.parsedVal, fe.rule)) {
@@ -1126,7 +1142,7 @@ fe.blocked++;
 fe.recentBlocked++;
 directOverride = String(fe.valStr);
 }
-} else if (fe.rec.kind === tag + "json") {
+} else if (fe.rec.kind === activeTag + "json") {
 try {
 if (!jsonMod) jsonMod = JSON.parse(String(v));
 var curG = getJsonPathVal(jsonMod, fe.rec.jpath);
@@ -1147,15 +1163,34 @@ return origSetItem.call(this, k, JSON.stringify(jsonMod));
 }
 return origSetItem.apply(this, arguments);
 }, origSetItem, "setItem");
-} catch (_) {}
-storageHooked[tag] = state;
-return state;
+try {
+Object.defineProperty(targetObj, "setItem", {
+value: wrappedSetItem,
+writable: true,
+configurable: true,
+enumerable: true
+});
+} catch (_) {
+try { targetObj.setItem = wrappedSetItem; } catch (_2) { return null; }
+}
+storageProtoHook = state;
+}
+return tag === "ls" ? { keys: storageProtoHook.lsKeys } : { keys: storageProtoHook.ssKeys };
 }
 function maybeRemoveStorageHook(tag) {
-var state = storageHooked[tag];
-if (!state || state.keys.size > 0) return;
-try { state.st.setItem = state.origSetItem; } catch (_) {}
-storageHooked[tag] = null;
+if (!storageProtoHook) return;
+if (storageProtoHook.lsKeys.size > 0 || storageProtoHook.ssKeys.size > 0) return;
+try {
+Object.defineProperty(storageProtoHook.targetObj, "setItem", {
+value: storageProtoHook.origSetItem,
+writable: true,
+configurable: true,
+enumerable: true
+});
+} catch (_) {
+try { storageProtoHook.targetObj.setItem = storageProtoHook.origSetItem; } catch (_2) {}
+}
+storageProtoHook = null;
 }
 function enforceBinaryFreezes() {
 lastEnforceTickMs = origDateNow();
@@ -1472,12 +1507,12 @@ mapWrapState.delete(mp);
 }
 } else if (fe.trapInstalled && (fe.rec.kind === "ls" || fe.rec.kind === "ss" || fe.rec.kind === "lsjson" || fe.rec.kind === "ssjson")) {
 var tagS = (fe.rec.kind === "ls" || fe.rec.kind === "lsjson") ? "ls" : "ss";
-var sh = storageHooked[tagS];
-if (sh) {
-var setS = sh.keys.get(fe.rec.key);
+if (storageProtoHook) {
+var kMap = tagS === "ls" ? storageProtoHook.lsKeys : storageProtoHook.ssKeys;
+var setS = kMap.get(fe.rec.key);
 if (setS) {
 setS.delete(fe);
-if (setS.size === 0) sh.keys.delete(fe.rec.key);
+if (setS.size === 0) kMap.delete(fe.rec.key);
 }
 maybeRemoveStorageHook(tagS);
 }

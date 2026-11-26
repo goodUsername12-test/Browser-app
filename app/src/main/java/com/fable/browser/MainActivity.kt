@@ -489,7 +489,7 @@ class MainActivity : FragmentActivity() {
                                 var bulkFreezeOk = false
                                 var blockedSum = 0L
                                 if (testMode == "multi_freeze" && st1.results.isNotEmpty()) {
-                                    // Select All -> Place All into Watch -> Select All in Watch -> Bulk Edit -> Bulk Titanium Lock -> Hold while page hammers!
+                                    memoryEngineManager.clearWatchList()
                                     memoryEngineManager.selectAllScanResults()
                                     memoryEngineManager.addSelectedScanResultsToWatch(freezeImmediately = false)
                                     memoryEngineManager.selectAllWatchEntries()

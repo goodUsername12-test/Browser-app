@@ -681,9 +681,9 @@ class MemoryEngineManager @Inject constructor(
     }
 
     fun reloadAndHookActiveTab() {
-        val tab = tabManager.activeTab ?: return
-        tab.reload()
-        _state.update { it.copy(statusText = "Reloading tab with Memory CE hooks at document_start...") }
+        resetScan()
+        tabManager.reload()
+        _state.update { it.copy(statusText = "Reloading page with CE hooks active from startup...") }
     }
 
     fun refreshScanResults() {

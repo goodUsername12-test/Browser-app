@@ -297,19 +297,22 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
   }
   if (op === "freezeBatch") {
     let locked = 0;
+    const lockedIds = [];
+    const failedIds = [];
     const freezeStats = {};
     for (const o of parsed) {
-      if (!o.ok) continue;
-      locked += Number(o.locked || 0);
-      if (o.freezeStats && typeof o.freezeStats === "object") Object.assign(freezeStats, o.freezeStats);
+      locked += Number(o.locked) || 0;
+      if (Array.isArray(o.lockedIds)) for (const id of o.lockedIds) lockedIds.push(id);
+      if (Array.isArray(o.failedIds)) for (const id of o.failedIds) failedIds.push(id);
+      if (o.freezeStats) Object.assign(freezeStats, o.freezeStats);
     }
-    return JSON.stringify({ ok: true, locked, freezeStats });
+    return JSON.stringify({ ok: locked > 0, locked, lockedIds, failedIds, freezeStats });
   }
   if (op === "unfreeze" || op === "unfreezeBatch" || op === "unfreezeAll") {
     return JSON.stringify({ ok: true });
   }
-  if (op === "write" || op === "hexDump" || op === "setFreeze") {
-    const hit = parsed.find((o) => o.ok === true) || parsed[0];
+  if (op === "write" || op === "hexDump" || op === "setFreeze" || op === "peekStruct") {
+    const hit = parsed.find((o) => o.ok) || parsed[0];
     return JSON.stringify(hit);
   }
   if (op === "regions") {

@@ -943,12 +943,22 @@ std::string mem_regions_json_impl() {
 }
 
 
+constexpr int FR_EXACT = 0;
+constexpr int FR_MIN   = 1;
+constexpr int FR_MAX   = 2;
+
 struct NativeFreezeEntry {
     std::uint64_t addr = 0;
     int dtype = DT_INT32;
+    int rule = FR_EXACT;
     std::uint8_t bytes[64] = {0};
     std::size_t len = 0;
+    double target_num = 0.0;
+    bool is_numeric = false;
     std::uint64_t blocked_writes = 0;
+    std::uint64_t recent_blocked = 0;
+    std::uint64_t rate_per_sec = 0;
+    std::int64_t rate_window_ms = 0;
     bool detached = false;
 };
 
@@ -958,8 +968,16 @@ std::atomic<bool> g_freeze_running{false};
 pthread_t g_freeze_thread{};
 bool g_freeze_thread_valid = false;
 
-bool encode_value_bytes(int dtype, const std::string& val_str, std::uint8_t out_buf[64], std::size_t& out_sz) {
+std::int64_t steady_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()
+    ).count();
+}
+
+bool encode_value_bytes(int dtype, const std::string& val_str, std::uint8_t out_buf[64], std::size_t& out_sz, double& out_num, bool& out_is_num) {
     out_sz = 0;
+    out_num = 0.0;
+    out_is_num = false;
     std::memset(out_buf, 0, 64);
     if (dtype == DT_STRING) {
         if (val_str.empty()) return false;
@@ -978,13 +996,14 @@ bool encode_value_bytes(int dtype, const std::string& val_str, std::uint8_t out_
     std::int64_t iv = 0;
     if (!parse_double_strict(val_str.c_str(), dv)) return false;
     parse_i64_strict(val_str.c_str(), iv);
+    out_is_num = true;
     switch (dtype) {
-        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(iv); std::memcpy(out_buf, &v, 1); out_sz = 1; return true; }
-        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(iv); std::memcpy(out_buf, &v, 2); out_sz = 2; return true; }
-        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(iv); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
-        case DT_INT64:  { std::memcpy(out_buf, &iv, 8); out_sz = 8; return true; }
-        case DT_FLOAT:  { float v = static_cast<float>(dv); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
-        case DT_DOUBLE: { std::memcpy(out_buf, &dv, 8); out_sz = 8; return true; }
+        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(iv); std::memcpy(out_buf, &v, 1); out_sz = 1; out_num = static_cast<double>(v); return true; }
+        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(iv); std::memcpy(out_buf, &v, 2); out_sz = 2; out_num = static_cast<double>(v); return true; }
+        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(iv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
+        case DT_INT64:  { std::memcpy(out_buf, &iv, 8); out_sz = 8; out_num = static_cast<double>(iv); return true; }
+        case DT_FLOAT:  { float v = static_cast<float>(dv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
+        case DT_DOUBLE: { std::memcpy(out_buf, &dv, 8); out_sz = 8; out_num = dv; return true; }
         default: return false;
     }
 }
@@ -993,6 +1012,7 @@ void* native_freeze_worker(void*) {
     SafeMemIo io(true);
     std::uint8_t cur[64];
     while (g_freeze_running.load(std::memory_order_acquire)) {
+        const std::int64_t now_ms = steady_now_ms();
         {
             std::lock_guard<std::mutex> lk(g_freeze_mu);
             if (g_freezes.empty()) {
@@ -1001,6 +1021,11 @@ void* native_freeze_worker(void*) {
             }
             if (io.valid()) {
                 for (auto& f : g_freezes) {
+                    if (now_ms - f.rate_window_ms >= 1000) {
+                        f.rate_per_sec = f.recent_blocked;
+                        f.recent_blocked = 0;
+                        f.rate_window_ms = now_ms;
+                    }
                     if (f.len == 0 || f.len > sizeof(cur)) continue;
                     const ssize_t got = io.read_at(f.addr, cur, f.len);
                     if (got != static_cast<ssize_t>(f.len)) {
@@ -1008,10 +1033,22 @@ void* native_freeze_worker(void*) {
                         continue;
                     }
                     f.detached = false;
-                    if (std::memcmp(cur, f.bytes, f.len) != 0) {
+                    bool should_restore = false;
+                    if (f.rule == FR_EXACT || !f.is_numeric) {
+                        should_restore = (std::memcmp(cur, f.bytes, f.len) != 0);
+                    } else {
+                        const std::uint64_t raw = load_raw_u64(cur, f.dtype);
+                        const double cur_v = decode_numeric(raw, f.dtype);
+                        if (std::isfinite(cur_v)) {
+                            if (f.rule == FR_MIN) should_restore = (cur_v < f.target_num);
+                            else if (f.rule == FR_MAX) should_restore = (cur_v > f.target_num);
+                        }
+                    }
+                    if (should_restore) {
                         const ssize_t wrote = io.write_at(f.addr, f.bytes, f.len);
                         if (wrote == static_cast<ssize_t>(f.len)) {
                             f.blocked_writes++;
+                            f.recent_blocked++;
                         } else {
                             f.detached = true;
                         }
@@ -1019,7 +1056,7 @@ void* native_freeze_worker(void*) {
                 }
             }
         }
-        ::usleep(2000); // 500 Hz enforcement loop
+        ::usleep(2000);
     }
     return nullptr;
 }
@@ -1035,22 +1072,42 @@ void stop_freeze_thread_locked(std::unique_lock<std::mutex>& lk) {
     }
 }
 
-bool mem_set_freeze_impl(std::uint64_t addr, int dtype, const std::string& val_str) {
+bool mem_set_freeze_impl(std::uint64_t addr, int dtype, const std::string& val_str, int rule = FR_EXACT) {
     std::uint8_t buf[64];
     std::size_t sz = 0;
-    if (!encode_value_bytes(dtype, val_str, buf, sz)) return false;
+    double target_num = 0.0;
+    bool is_num = false;
+    if (!encode_value_bytes(dtype, val_str, buf, sz, target_num, is_num)) return false;
     if (!is_addr_in_safe_rw_region(addr, sz)) return false;
     {
         SafeMemIo io(true);
-        if (!io.valid() || io.write_at(addr, buf, sz) != static_cast<ssize_t>(sz)) return false;
+        if (!io.valid()) return false;
+        if (rule == FR_EXACT || !is_num) {
+            if (io.write_at(addr, buf, sz) != static_cast<ssize_t>(sz)) return false;
+            std::uint8_t rb[64] = {0};
+            if (io.read_at(addr, rb, sz) == static_cast<ssize_t>(sz)) {
+                std::memcpy(buf, rb, sz);
+            }
+        } else {
+            std::uint8_t cur[64] = {0};
+            if (io.read_at(addr, cur, sz) != static_cast<ssize_t>(sz)) return false;
+            const double cur_v = decode_numeric(load_raw_u64(cur, dtype), dtype);
+            const bool need_write = (rule == FR_MIN && cur_v < target_num) || (rule == FR_MAX && cur_v > target_num);
+            if (need_write && io.write_at(addr, buf, sz) != static_cast<ssize_t>(sz)) return false;
+        }
     }
+    const int safe_rule = (rule == FR_MIN || rule == FR_MAX) ? rule : FR_EXACT;
+    const std::int64_t now_ms = steady_now_ms();
     std::unique_lock<std::mutex> lk(g_freeze_mu);
     bool updated = false;
     for (auto& f : g_freezes) {
         if (f.addr == addr) {
             f.dtype = dtype;
+            f.rule = safe_rule;
             std::memcpy(f.bytes, buf, sz);
             f.len = sz;
+            f.target_num = target_num;
+            f.is_numeric = is_num;
             f.detached = false;
             updated = true;
             break;
@@ -1060,8 +1117,12 @@ bool mem_set_freeze_impl(std::uint64_t addr, int dtype, const std::string& val_s
         NativeFreezeEntry e;
         e.addr = addr;
         e.dtype = dtype;
+        e.rule = safe_rule;
         std::memcpy(e.bytes, buf, sz);
         e.len = sz;
+        e.target_num = target_num;
+        e.is_numeric = is_num;
+        e.rate_window_ms = now_ms;
         g_freezes.push_back(e);
         const std::uint64_t fl = reinterpret_cast<std::uint64_t>(g_freezes.data());
         g_freeze_buf_start.store(fl, std::memory_order_relaxed);
@@ -1081,10 +1142,16 @@ bool mem_set_freeze_impl(std::uint64_t addr, int dtype, const std::string& val_s
                 g_freeze_thread_valid = true;
             } else {
                 g_freeze_running.store(false, std::memory_order_release);
+                g_freezes.erase(
+                    std::remove_if(g_freezes.begin(), g_freezes.end(),
+                                   [addr](const NativeFreezeEntry& e) { return e.addr == addr; }),
+                    g_freezes.end()
+                );
+                return false;
             }
         }
     }
-    return true;
+    return g_freeze_running.load(std::memory_order_acquire);
 }
 
 void mem_unfreeze_impl(std::uint64_t addr) {
@@ -1107,23 +1174,79 @@ void mem_unfreeze_all_impl() {
 
 std::string mem_freeze_stats_json_impl() {
     std::lock_guard<std::mutex> lk(g_freeze_mu);
-    std::string out = "{\"ok\":true,\"stats\":{";
+    std::string out = "{\"ok\":true,\"alive\":";
+    out += (g_freeze_running.load(std::memory_order_acquire) ? "true" : "false");
+    out += ",\"stats\":{";
     bool first = true;
     for (const auto& f : g_freezes) {
         if (!first) out += ",";
         first = false;
         char addr_hex[32];
         std::snprintf(addr_hex, sizeof(addr_hex), "0x%llX", static_cast<unsigned long long>(f.addr));
-        const char* st = f.detached ? "detached" : (f.blocked_writes > 0 ? "enforcing" : "locked");
+        const char* st = f.detached ? "detached" : (f.rate_per_sec >= 10 ? "fighting" : (f.blocked_writes > 0 ? "enforcing" : "locked"));
+        const char* rstr = f.rule == FR_MIN ? "min" : (f.rule == FR_MAX ? "max" : "eq");
         out += "\"";
         out += addr_hex;
-        out += "\":{\"mode\":\"500Hz\",\"blocked\":";
+        out += "\":{\"mode\":\"500Hz\",\"rule\":\"";
+        out += rstr;
+        out += "\",\"blocked\":";
         out += std::to_string(f.blocked_writes);
+        out += ",\"rate\":";
+        out += std::to_string(f.rate_per_sec);
         out += ",\"status\":\"";
         out += st;
         out += "\"}";
     }
     out += "}}";
+    return out;
+}
+
+std::string mem_peek_struct_impl(std::uint64_t base_addr, std::size_t radius) {
+    const std::size_t rad = std::min<std::size_t>(std::max<std::size_t>(radius, 32), 256) & ~std::size_t(3);
+    const std::uint64_t start = base_addr >= rad ? ((base_addr - rad) & ~std::uint64_t(3)) : 0;
+    const std::size_t total_len = static_cast<std::size_t>((base_addr - start) + rad);
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self mem\"}";
+    std::vector<std::uint8_t> buf(total_len, 0);
+    const ssize_t got = io.read_at(start, buf.data(), total_len);
+    if (got < 4) return "{\"ok\":false,\"error\":\"Struct memory unreadable\"}";
+    std::string out = "{\"ok\":true,\"fields\":[";
+    bool first = true;
+    const std::size_t slots = static_cast<std::size_t>(got) / 4;
+    for (std::size_t i = 0; i < slots; ++i) {
+        const std::uint64_t a = start + i * 4;
+        const std::int64_t delta = static_cast<std::int64_t>(a) - static_cast<std::int64_t>(base_addr);
+        std::int32_t iv = 0;
+        float fv = 0.0f;
+        std::memcpy(&iv, buf.data() + i * 4, 4);
+        std::memcpy(&fv, buf.data() + i * 4, 4);
+        const bool is_center = (delta == 0);
+        const bool looks_f = std::isfinite(fv) && std::fabs(fv) >= 0.001f && std::fabs(fv) <= 1e7f && (std::abs(iv) > 100000000);
+        if (!is_center && iv == 0) continue;
+        if (!first) out += ",";
+        first = false;
+        char addr_hex[32];
+        std::snprintf(addr_hex, sizeof(addr_hex), "0x%llX", static_cast<unsigned long long>(a));
+        char delta_str[24];
+        std::snprintf(delta_str, sizeof(delta_str), "%s0x%X", delta < 0 ? "-" : "+", static_cast<unsigned>(delta < 0 ? -delta : delta));
+        char f_str[48];
+        if (std::isfinite(fv) && std::fabs(fv) <= 1e9f) std::snprintf(f_str, sizeof(f_str), "%.3f", fv);
+        else std::snprintf(f_str, sizeof(f_str), "NaN");
+        out += "{\"addr\":\"";
+        out += addr_hex;
+        out += "\",\"delta\":\"";
+        out += delta_str;
+        out += "\",\"type\":\"";
+        out += (looks_f ? "f32" : "i32");
+        out += "\",\"val\":\"";
+        out += (looks_f ? f_str : std::to_string(iv));
+        out += "\",\"i32\":\"";
+        out += std::to_string(iv);
+        out += "\",\"f32\":\"";
+        out += f_str;
+        out += "\"}";
+    }
+    out += "]}";
     return out;
 }
 
@@ -1240,9 +1363,34 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeSetFreeze(
     const bool ok = mem_set_freeze_impl(
         static_cast<std::uint64_t>(addr),
         static_cast<int>(dtype),
-        jstr_to_std(env, val_str)
+        jstr_to_std(env, val_str),
+        FR_EXACT
     );
     return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeSetFreezeRule(
+    JNIEnv* env, jclass, jlong addr, jint dtype, jstring val_str, jint rule
+) {
+    const bool ok = mem_set_freeze_impl(
+        static_cast<std::uint64_t>(addr),
+        static_cast<int>(dtype),
+        jstr_to_std(env, val_str),
+        static_cast<int>(rule)
+    );
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativePeekStruct(
+    JNIEnv* env, jclass, jlong addr, jint radius
+) {
+    const std::string res = mem_peek_struct_impl(
+        static_cast<std::uint64_t>(addr),
+        static_cast<std::size_t>(radius > 0 ? radius : 64)
+    );
+    return env->NewStringUTF(res.c_str());
 }
 
 JNIEXPORT void JNICALL

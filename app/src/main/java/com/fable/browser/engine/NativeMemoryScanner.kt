@@ -63,6 +63,8 @@ object NativeMemoryScanner {
 
     @JvmStatic
     private external fun nativeSetFreeze(addr: Long, dtype: Int, valStr: String): Boolean
+    private external fun nativeSetFreezeRule(addr: Long, dtype: Int, valStr: String, rule: Int): Boolean
+    private external fun nativePeekStruct(addr: Long, radius: Int): String
 
     @JvmStatic
     private external fun nativeUnfreeze(addr: Long)
@@ -128,11 +130,21 @@ object NativeMemoryScanner {
         return runCatching { nativeWriteValue(addr, nativeType, valStr) }.getOrDefault(false)
     }
 
-    fun setFreeze(addrHex: String, dtype: MemDataType, valStr: String): Boolean {
+    fun setFreeze(addrHex: String, dtype: MemDataType, valStr: String, ruleCode: Int = 0): Boolean {
         if (!isAvailable) return false
         val addr = parseHexAddress(addrHex) ?: return false
         val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
-        return runCatching { nativeSetFreeze(addr, nativeType, valStr) }.getOrDefault(false)
+        return runCatching {
+            if (ruleCode == 0) nativeSetFreeze(addr, nativeType, valStr)
+            else nativeSetFreezeRule(addr, nativeType, valStr, ruleCode)
+        }.getOrDefault(false)
+    }
+
+    fun peekStruct(addrHex: String, radius: Int = 64): String {
+        if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
+        val addr = parseHexAddress(addrHex) ?: return "{\"ok\":false,\"error\":\"Invalid address\"}"
+        return runCatching { nativePeekStruct(addr, radius.coerceIn(32, 256)) }
+            .getOrElse { "{\"ok\":false,\"error\":\"Struct peek failed\"}" }
     }
 
     fun unfreeze(addrHex: String) {

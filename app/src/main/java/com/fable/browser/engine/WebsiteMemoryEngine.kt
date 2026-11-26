@@ -6,9 +6,12 @@ import org.json.JSONObject
 import java.util.UUID
 
 object WebsiteMemoryEngine {
-    const val MIN_PANEL_SCALE_PCT = 65
-    const val MAX_PANEL_SCALE_PCT = 150
+    const val MIN_PANEL_SCALE_PCT = 50
+    const val MAX_PANEL_SCALE_PCT = 160
     const val DEFAULT_PANEL_SCALE_PCT = 100
+    const val MIN_PANEL_HEIGHT_PCT = 55
+    const val MAX_PANEL_HEIGHT_PCT = 150
+    const val DEFAULT_PANEL_HEIGHT_PCT = 100
     const val DEFAULT_PANEL_POS_X = 0.06f
     const val DEFAULT_PANEL_POS_Y = 0.24f
 
@@ -19,6 +22,8 @@ object WebsiteMemoryEngine {
     private val CHANNEL_ID: String = "_mev_" + UUID.randomUUID().toString().replace("-", "").take(14)
 
     fun clampPanelScalePct(pct: Int): Int = pct.coerceIn(MIN_PANEL_SCALE_PCT, MAX_PANEL_SCALE_PCT)
+
+    fun clampPanelHeightPct(pct: Int): Int = pct.coerceIn(MIN_PANEL_HEIGHT_PCT, MAX_PANEL_HEIGHT_PCT)
 
     fun clampTimeoutSec(sec: Int): Int = sec.coerceIn(MIN_TIMEOUT_SEC, MAX_TIMEOUT_SEC)
 
@@ -76,21 +81,36 @@ object WebsiteMemoryEngine {
         }
         if (op == "freezeBatch") {
             var locked = 0
+            val lockedIds = JSONArray()
+            val failedIds = JSONArray()
             val mergedStats = JSONObject()
             for (o in parsed) {
-                if (!o.optBoolean("ok", false)) continue
                 locked += o.optInt("locked", 0)
+                val lArr = o.optJSONArray("lockedIds")
+                if (lArr != null) {
+                    for (i in 0 until lArr.length()) lockedIds.put(lArr.optString(i))
+                }
+                val fArr = o.optJSONArray("failedIds")
+                if (fArr != null) {
+                    for (i in 0 until fArr.length()) failedIds.put(fArr.optString(i))
+                }
                 val fs = o.optJSONObject("freezeStats")
                 if (fs != null) {
                     fs.keys().forEach { k -> mergedStats.put(k, fs.opt(k)) }
                 }
             }
-            return JSONObject().put("ok", true).put("locked", locked).put("freezeStats", mergedStats).toString()
+            return JSONObject()
+                .put("ok", locked > 0)
+                .put("locked", locked)
+                .put("lockedIds", lockedIds)
+                .put("failedIds", failedIds)
+                .put("freezeStats", mergedStats)
+                .toString()
         }
         if (op == "unfreeze" || op == "unfreezeBatch" || op == "unfreezeAll") {
             return JSONObject().put("ok", true).toString()
         }
-        if (op == "write" || op == "hexDump" || op == "setFreeze") {
+        if (op == "write" || op == "hexDump" || op == "setFreeze" || op == "peekStruct") {
             val hit = parsed.firstOrNull { it.optBoolean("ok", false) } ?: parsed[0]
             return hit.toString()
         }
@@ -280,6 +300,11 @@ if (ping()) return;
 var IS_TOP = false;
 try { IS_TOP = (window === window.top); } catch (_) { IS_TOP = false; }
 var FRAME_ID = IS_TOP ? "f0" : ("f_" + Math.random().toString(36).slice(2, 8));
+var origDateNow = Date.now;
+var origSetInterval = typeof window.setInterval === "function" ? window.setInterval.bind(window) : null;
+var origClearInterval = typeof window.clearInterval === "function" ? window.clearInterval.bind(window) : null;
+var origRAF = typeof window.requestAnimationFrame === "function" ? window.requestAnimationFrame.bind(window) : null;
+var origCancelRAF = typeof window.cancelAnimationFrame === "function" ? window.cancelAnimationFrame.bind(window) : null;
 var origToStr = Function.prototype.toString;
 var sigMap = new WeakMap();
 function mask(fn, orig, fallback) {
@@ -698,6 +723,7 @@ var mapWrapState = new WeakMap(); // Map -> { origSet, keys: Map<key, frozenEntr
 var storageHooked = { ls: null, ss: null }; // { origSetItem, keys: Map<storageKey, Set<frozenEntry>> }
 var freezeIntervalId = null;
 var freezeRafId = null;
+var lastEnforceTickMs = 0;
 var SKIP_KEYS = new Set([
 "window", "self", "globalThis", "document", "location", "navigator", "history",
 "screen", "performance", "crypto", "caches", "indexedDB", "localStorage", "sessionStorage",
@@ -957,25 +983,73 @@ if (valStr === "true") return true;
 if (valStr === "false") return false;
 return String(valStr);
 }
+function findPropertyDescriptorChain(obj, key) {
+var cur = obj;
+var depth = 0;
+while (cur && depth < 10) {
+try {
+var d = Object.getOwnPropertyDescriptor(cur, key);
+if (d) return { desc: d, owner: cur, isOwn: cur === obj };
+} catch (_) { return null; }
+try { cur = Object.getPrototypeOf(cur); } catch (_) { return null; }
+depth++;
+}
+return null;
+}
+function ruleViolated(curVal, targetVal, rule) {
+if (typeof curVal === "number" && typeof targetVal === "number" && Number.isFinite(curVal) && Number.isFinite(targetVal)) {
+if (rule === "min") return curVal < targetVal;
+if (rule === "max") return curVal > targetVal;
+return curVal !== targetVal;
+}
+if (rule === "eq") return String(curVal) !== String(targetVal);
+return false;
+}
+function captureTargetBytes(h) {
+if (h.kind !== "wasm" && h.kind !== "ta" && h.kind !== "ab") return null;
+var bi = getBufferForHit(h);
+if (!bi) return null;
+var sz = h.dt === "i8" ? 1 : (h.dt === "i16" ? 2 : ((h.dt === "i32" || h.dt === "f32") ? 4 : ((h.dt === "i64" || h.dt === "f64") ? 8 : Math.min(h.len || 16, bi.byteLen - h.off))));
+if (sz <= 0 || h.off + sz > bi.byteLen) return null;
+return new Uint8Array(bi.buf, bi.byteOff + h.off, sz).slice();
+}
+function binaryBytesDiffer(h, targetBytes) {
+if (!targetBytes || !targetBytes.length) return false;
+var bi = getBufferForHit(h);
+if (!bi || h.off + targetBytes.length > bi.byteLen) return null;
+var live = new Uint8Array(bi.buf, bi.byteOff + h.off, targetBytes.length);
+for (var i = 0; i < targetBytes.length; i++) {
+if (live[i] !== targetBytes[i]) return true;
+}
+return false;
+}
 function writeHitValue(h, valStr, bypassFreeze) {
 try {
 var fe = !bypassFreeze ? frozenMap.get(h.id) : null;
 if (fe) {
 fe.valStr = String(valStr);
 fe.parsedVal = parseTargetVal(h, valStr);
-if (fe.trapInstalled && h.kind === "js") return true;
+if (fe.trapInstalled && h.kind === "js") {
+if (fe.origSet && fe.origObj) {
+try { fe.origSet.call(fe.origObj, fe.parsedVal); } catch (_) {}
+}
+return true;
+}
 }
 if (h.kind === "js") {
 var obj = h.objRef.deref();
 if (!obj) return false;
-var cur = obj[h.key];
+var cur = undefined;
+try { cur = obj[h.key]; } catch (_) {}
 var cs = cleanNumStr(valStr);
-if (typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(cs)) && cs !== "")) {
-obj[h.key] = Number(cs);
-} else if (typeof cur === "boolean") {
-obj[h.key] = (valStr === "true" || valStr === "1");
+var nextJsVal = (typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(cs)) && cs !== ""))
+? Number(cs)
+: (typeof cur === "boolean" ? (valStr === "true" || valStr === "1") : String(valStr));
+var feJs = frozenMap.get(h.id);
+if (feJs && feJs.origSet) {
+feJs.origSet.call(obj, nextJsVal);
 } else {
-obj[h.key] = String(valStr);
+obj[h.key] = nextJsVal;
 }
 return true;
 }
@@ -1020,7 +1094,13 @@ if (h.scale) {
 var sn = Number(cleanNumStr(valStr));
 if (Number.isFinite(sn)) wStr = String(Math.round(sn * h.scale));
 }
-return writeViewVal(dv, h.off, h.dt, wStr, bi.shared);
+var okBin = writeViewVal(dv, h.off, h.dt, wStr, bi.shared);
+if (okBin && fe) {
+fe.targetBytes = captureTargetBytes(h);
+var rdB = readHitCurrent(h);
+if (rdB.ok) fe.parsedVal = rdB.val;
+}
+return okBin;
 }
 } catch (_) {}
 return false;
@@ -1035,28 +1115,32 @@ try {
 st.setItem = mask(function setItem(k, v) {
 var set = state.keys.get(k);
 if (set && set.size > 0) {
-var directBlocked = false;
+var directOverride = null;
 var jsonMod = null;
 set.forEach(function(fe) {
 if (fe.rec.kind === tag) {
-if (String(v) !== String(fe.valStr)) {
+var numV = Number(cleanNumStr(v));
+var cmpV = (typeof fe.parsedVal === "number" && Number.isFinite(numV)) ? numV : String(v);
+if (ruleViolated(cmpV, fe.parsedVal, fe.rule)) {
 fe.blocked++;
 fe.recentBlocked++;
+directOverride = String(fe.valStr);
 }
-directBlocked = true;
 } else if (fe.rec.kind === tag + "json") {
 try {
 if (!jsonMod) jsonMod = JSON.parse(String(v));
 var curG = getJsonPathVal(jsonMod, fe.rec.jpath);
-if (curG.ok && curG.val !== fe.parsedVal) {
+if (curG.ok && ruleViolated(curG.val, fe.parsedVal, fe.rule)) {
 fe.blocked++;
 fe.recentBlocked++;
-}
 setJsonPathVal(jsonMod, fe.rec.jpath, fe.parsedVal);
+}
 } catch (_) {}
 }
 });
-if (directBlocked) return;
+if (directOverride !== null) {
+return origSetItem.call(this, k, directOverride);
+}
 if (jsonMod) {
 return origSetItem.call(this, k, JSON.stringify(jsonMod));
 }
@@ -1074,35 +1158,59 @@ try { state.st.setItem = state.origSetItem; } catch (_) {}
 storageHooked[tag] = null;
 }
 function enforceBinaryFreezes() {
+lastEnforceTickMs = origDateNow();
 if (frozenMap.size === 0) {
 stopFreezeLoops();
 return;
 }
-var now = Date.now();
+var now = lastEnforceTickMs;
 frozenMap.forEach(function(fe) {
 if (now - fe.rateWindowStart >= 1000) {
 fe.ratePerSec = fe.recentBlocked;
 fe.recentBlocked = 0;
 fe.rateWindowStart = now;
 }
+var h = fe.rec;
 if (fe.trapInstalled) {
+if (fe.origGet && fe.origSet && fe.origObj) {
+try {
+var liveAcc = fe.origGet.call(fe.origObj);
+if (ruleViolated(liveAcc, fe.parsedVal, fe.rule)) {
+fe.origSet.call(fe.origObj, fe.parsedVal);
+fe.blocked++;
+fe.recentBlocked++;
+}
+} catch (_) {}
+}
 fe.status = fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked");
 return;
 }
-var h = fe.rec;
+if (h.kind === "wasm" || h.kind === "ta" || h.kind === "ab") {
+if (fe.rule === "eq" && fe.targetBytes) {
+var diffB = binaryBytesDiffer(h, fe.targetBytes);
+if (diffB === null) {
+fe.status = "detached";
+return;
+}
+if (diffB) {
+if (writeHitValue(h, fe.valStr, true)) {
+fe.blocked++;
+fe.recentBlocked++;
+} else {
+fe.status = "detached";
+return;
+}
+}
+fe.status = fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked");
+return;
+}
+}
 var rd = readHitCurrent(h);
 if (!rd.ok) {
 fe.status = "detached";
 return;
 }
-var differed = false;
-if (typeof fe.parsedVal === "number" && typeof rd.val === "number") {
-var eps = numEps(h.dt);
-differed = Math.abs(rd.val - fe.parsedVal) > (eps > 0 ? eps : 0);
-} else {
-differed = String(rd.val) !== String(fe.parsedVal);
-}
-if (differed) {
+if (ruleViolated(rd.val, fe.parsedVal, fe.rule)) {
 if (writeHitValue(h, fe.valStr, true)) {
 fe.blocked++;
 fe.recentBlocked++;
@@ -1116,73 +1224,170 @@ fe.status = fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "
 }
 function startFreezeLoops() {
 if (freezeIntervalId === null) {
-freezeIntervalId = setInterval(enforceBinaryFreezes, 4);
+var si = origSetInterval || setInterval;
+freezeIntervalId = si(enforceBinaryFreezes, 4);
 }
-if (freezeRafId === null && typeof window.requestAnimationFrame === "function") {
+if (freezeRafId === null && (origRAF || typeof window.requestAnimationFrame === "function")) {
+var rafFn = origRAF || window.requestAnimationFrame.bind(window);
 var rafTick = function() {
 if (frozenMap.size === 0) {
 freezeRafId = null;
 return;
 }
 enforceBinaryFreezes();
-freezeRafId = window.requestAnimationFrame(rafTick);
+freezeRafId = rafFn(rafTick);
 };
-freezeRafId = window.requestAnimationFrame(rafTick);
+freezeRafId = rafFn(rafTick);
 }
 }
 function stopFreezeLoops() {
 if (freezeIntervalId !== null) {
-clearInterval(freezeIntervalId);
+try { (origClearInterval || clearInterval)(freezeIntervalId); } catch (_) {}
 freezeIntervalId = null;
 }
-if (freezeRafId !== null && typeof window.cancelAnimationFrame === "function") {
-try { window.cancelAnimationFrame(freezeRafId); } catch (_) {}
+if (freezeRafId !== null) {
+try {
+if (origCancelRAF) origCancelRAF(freezeRafId);
+else if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(freezeRafId);
+} catch (_) {}
 freezeRafId = null;
 }
 }
-function installFreezeEntry(localId, valStr) {
+function ensureFreezeLoopAlive() {
+if (frozenMap.size === 0) return;
+var now = origDateNow();
+if (freezeIntervalId === null || (lastEnforceTickMs > 0 && (now - lastEnforceTickMs) > 120)) {
+stopFreezeLoops();
+startFreezeLoops();
+enforceBinaryFreezes();
+}
+}
+function installFreezeEntry(localId, valStr, ruleStr) {
 var rec = watchRefs.get(localId);
 if (!rec) return { ok: false, error: "Entry not found in frame" };
+var rule = (ruleStr === "min" || ruleStr === "max") ? ruleStr : "eq";
 var existing = frozenMap.get(localId);
 if (existing) {
 existing.valStr = String(valStr);
 existing.parsedVal = parseTargetVal(rec, valStr);
-writeHitValue(rec, valStr, true);
-return { ok: true, mode: existing.mode, blocked: existing.blocked, status: existing.status };
+existing.rule = rule;
+if (rule === "eq") {
+if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
+} else {
+var rdE = readHitCurrent(rec);
+if (!rdE.ok) return { ok: false, error: "Target detached" };
+if (ruleViolated(rdE.val, existing.parsedVal, rule)) {
+if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
+}
+}
+if (rec.kind === "wasm" || rec.kind === "ta" || rec.kind === "ab") {
+existing.targetBytes = captureTargetBytes(rec);
+var rdSnapE = readHitCurrent(rec);
+if (rdSnapE.ok && rule === "eq") existing.parsedVal = rdSnapE.val;
+}
+ensureFreezeLoopAlive();
+return { ok: true, mode: existing.mode, rule: existing.rule, blocked: existing.blocked, status: existing.status };
 }
 var fe = {
 localId: localId,
 rec: rec,
 valStr: String(valStr),
 parsedVal: parseTargetVal(rec, valStr),
+rule: rule,
 mode: "250Hz",
 blocked: 0,
 recentBlocked: 0,
 ratePerSec: 0,
-rateWindowStart: Date.now(),
+rateWindowStart: origDateNow(),
 trapInstalled: false,
 origDesc: null,
+origWasOwn: false,
+origGet: null,
+origSet: null,
 origObj: null,
+targetBytes: null,
 status: "locked"
 };
-writeHitValue(rec, valStr, true);
+if (rule === "eq") {
+if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
+} else {
+var rdInit = readHitCurrent(rec);
+if (!rdInit.ok) return { ok: false, error: "Target detached" };
+if (ruleViolated(rdInit.val, fe.parsedVal, rule)) {
+if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
+}
+}
+if (rec.kind === "wasm" || rec.kind === "ta" || rec.kind === "ab") {
+fe.targetBytes = captureTargetBytes(rec);
+var rdSnap = readHitCurrent(rec);
+if (rdSnap.ok && rule === "eq") fe.parsedVal = rdSnap.val;
+}
 if (rec.kind === "js") {
 var obj = rec.objRef ? rec.objRef.deref() : null;
-if (obj) {
+if (!obj) return { ok: false, error: "Object garbage-collected" };
 try {
-var desc = Object.getOwnPropertyDescriptor(obj, rec.key);
-if (!desc || desc.configurable !== false) {
-fe.origDesc = desc || { value: fe.parsedVal, writable: true, enumerable: true, configurable: true };
+var chain = findPropertyDescriptorChain(obj, rec.key);
+var ownDesc = chain && chain.isOwn ? chain.desc : null;
+var chainDesc = chain ? chain.desc : null;
+var isAccessor = !!(chainDesc && (typeof chainDesc.get === "function" || typeof chainDesc.set === "function"));
+if (isAccessor && (!ownDesc || ownDesc.configurable !== false)) {
+fe.origDesc = ownDesc;
+fe.origWasOwn = !!ownDesc;
+fe.origGet = typeof chainDesc.get === "function" ? chainDesc.get : null;
+fe.origSet = typeof chainDesc.set === "function" ? chainDesc.set : null;
 fe.origObj = obj;
 Object.defineProperty(obj, rec.key, {
 configurable: true,
-enumerable: fe.origDesc.enumerable !== false,
-get: function() { return fe.parsedVal; },
-set: function(attempted) {
-if (attempted !== fe.parsedVal) {
+enumerable: chainDesc.enumerable !== false,
+get: function() {
+if (fe.origGet) {
+var liveV = fe.origGet.call(this);
+if (ruleViolated(liveV, fe.parsedVal, fe.rule)) {
+if (fe.origSet) {
+try { fe.origSet.call(this, fe.parsedVal); } catch (_) {}
+}
 fe.blocked++;
 fe.recentBlocked++;
+return fe.parsedVal;
 }
+return liveV;
+}
+return fe.parsedVal;
+},
+set: function(attempted) {
+if (ruleViolated(attempted, fe.parsedVal, fe.rule)) {
+fe.blocked++;
+fe.recentBlocked++;
+if (fe.origSet) {
+try { fe.origSet.call(this, fe.parsedVal); } catch (_) {}
+}
+return;
+}
+if (fe.origSet) {
+try { fe.origSet.call(this, attempted); } catch (_) {}
+}
+}
+});
+fe.trapInstalled = true;
+fe.mode = "accessor-trap";
+} else if (!ownDesc || ("value" in ownDesc && ownDesc.configurable !== false)) {
+var curStored = obj[rec.key];
+fe.origDesc = ownDesc || { value: curStored, writable: true, enumerable: true, configurable: true };
+fe.origWasOwn = !!ownDesc;
+fe.origObj = obj;
+var backingVal = rule === "eq" ? fe.parsedVal : curStored;
+Object.defineProperty(obj, rec.key, {
+configurable: true,
+enumerable: fe.origDesc.enumerable !== false,
+get: function() { return fe.rule === "eq" ? fe.parsedVal : backingVal; },
+set: function(attempted) {
+if (ruleViolated(attempted, fe.parsedVal, fe.rule)) {
+fe.blocked++;
+fe.recentBlocked++;
+backingVal = fe.parsedVal;
+return;
+}
+backingVal = attempted;
 }
 });
 fe.trapInstalled = true;
@@ -1190,10 +1395,9 @@ fe.mode = "trap";
 }
 } catch (_) {}
 }
-}
 else if (rec.kind === "map") {
 var mp = rec.objRef ? rec.objRef.deref() : null;
-if (mp) {
+if (!mp) return { ok: false, error: "Map garbage-collected" };
 try {
 var mw = mapWrapState.get(mp);
 if (!mw) {
@@ -1202,22 +1406,22 @@ mw = { origSet: origSet, keys: new Map() };
 mp.set = mask(function set(mk, mv) {
 var f = mw.keys.get(mk);
 if (f) {
-if (mv !== f.parsedVal) {
+if (ruleViolated(mv, f.parsedVal, f.rule)) {
 f.blocked++;
 f.recentBlocked++;
+return origSet.call(this, mk, f.parsedVal);
 }
-return this;
+return origSet.apply(this, arguments);
 }
 return origSet.apply(this, arguments);
 }, origSet, "set");
 mapWrapState.set(mp, mw);
 }
 mw.keys.set(rec.key, fe);
-mw.origSet.call(mp, rec.key, fe.parsedVal);
+if (rule === "eq") mw.origSet.call(mp, rec.key, fe.parsedVal);
 fe.trapInstalled = true;
 fe.mode = "trap";
 } catch (_) {}
-}
 }
 else if (rec.kind === "ls" || rec.kind === "ss" || rec.kind === "lsjson" || rec.kind === "ssjson") {
 var tagS = (rec.kind === "ls" || rec.kind === "lsjson") ? "ls" : "ss";
@@ -1232,7 +1436,7 @@ fe.mode = "trap";
 }
 frozenMap.set(localId, fe);
 startFreezeLoops();
-return { ok: true, mode: fe.mode, blocked: fe.blocked, status: fe.status };
+return { ok: true, mode: fe.mode, rule: fe.rule, blocked: fe.blocked, status: fe.status };
 }
 function removeFreezeEntry(localId) {
 var fe = frozenMap.get(localId);
@@ -1240,6 +1444,9 @@ if (!fe) return false;
 frozenMap.delete(localId);
 try {
 if (fe.trapInstalled && fe.rec.kind === "js" && fe.origObj) {
+if (!fe.origWasOwn) {
+try { delete fe.origObj[fe.rec.key]; } catch (_) {}
+} else {
 var restoreDesc = fe.origDesc || { value: fe.parsedVal, writable: true, enumerable: true, configurable: true };
 if ("value" in restoreDesc) {
 restoreDesc = {
@@ -1250,6 +1457,7 @@ configurable: true
 };
 }
 Object.defineProperty(fe.origObj, fe.rec.key, restoreDesc);
+}
 } else if (fe.trapInstalled && fe.rec.kind === "map") {
 var mp = fe.rec.objRef ? fe.rec.objRef.deref() : null;
 if (mp) {
@@ -1284,10 +1492,12 @@ for (var i = 0; i < keys.length; i++) removeFreezeEntry(keys[i]);
 stopFreezeLoops();
 }
 function collectFreezeStatsMap() {
+ensureFreezeLoopAlive();
 var out = {};
 frozenMap.forEach(function(fe, localId) {
 out[qualifyId(localId)] = {
 mode: fe.mode,
+rule: fe.rule || "eq",
 blocked: fe.blocked,
 rate: fe.ratePerSec || 0,
 status: fe.status
@@ -1808,13 +2018,40 @@ keys = cur.depth <= 2 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
 } catch (_) {
 try { keys = Object.keys(obj); } catch (_2) { skippedXOriginCount++; continue; }
 }
+if (cur.depth > 0 && cur.depth <= 4) {
+try {
+var proto = Object.getPrototypeOf(obj);
+if (proto && proto !== Object.prototype && proto !== Array.prototype && proto !== Function.prototype) {
+var pKeys = Object.getOwnPropertyNames(proto);
+if (pKeys.length > 0 && pKeys.length <= 64) {
+var kSet = new Set(keys);
+for (var pki = 0; pki < pKeys.length; pki++) {
+var pk = pKeys[pki];
+if (pk === "constructor" || kSet.has(pk) || SKIP_KEYS.has(pk) || INTERNAL_KEY_RE.test(pk)) continue;
+var pd = null;
+try { pd = Object.getOwnPropertyDescriptor(proto, pk); } catch (_) {}
+if (pd && typeof pd.get === "function" && typeof pd.set === "function") {
+keys.push(pk);
+kSet.add(pk);
+}
+}
+}
+}
+} catch (_) {}
+}
 var maxKeys = cur.depth === 0 ? keys.length : Math.min(keys.length, 450);
 for (var i = 0; i < maxKeys && out.length < cap; i++) {
 var k = keys[i];
 if (SKIP_KEYS.has(k) || INTERNAL_KEY_RE.test(k) || SENSITIVE_KEY_RE.test(k)) continue;
 if (k.length > 2 && k[0] === "o" && k[1] === "n" && k[2] >= "a" && k[2] <= "z") continue;
 var desc = null;
-try { desc = Object.getOwnPropertyDescriptor(obj, k); } catch (_) { skippedXOriginCount++; continue; }
+try {
+desc = Object.getOwnPropertyDescriptor(obj, k);
+if (!desc && cur.depth > 0) {
+var pCh = findPropertyDescriptorChain(obj, k);
+if (pCh && pCh.desc && typeof pCh.desc.get === "function" && typeof pCh.desc.set === "function") desc = pCh.desc;
+}
+} catch (_) { skippedXOriginCount++; continue; }
 var isWritable = false;
 var val = undefined;
 if (desc) {
@@ -2141,20 +2378,27 @@ return { ok: true, frameId: FRAME_ID, wrote: wroteB, values: valsW };
 }
 if (cmd.op === "setFreeze") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
-var fr = installFreezeEntry(stripOwnFramePrefix(cmd.id), cmd.val);
+var fr = installFreezeEntry(stripOwnFramePrefix(cmd.id), cmd.val, cmd.rule || "eq");
 fr.frameId = FRAME_ID;
 return fr;
 }
 if (cmd.op === "freezeBatch") {
 var entriesF = Array.isArray(cmd.entries) ? cmd.entries : [];
 var locked = 0;
+var lockedIds = [];
+var failedIds = [];
 for (var fbi = 0; fbi < entriesF.length; fbi++) {
 var ef = entriesF[fbi];
 if (!ef || !isForThisFrame(ef.id)) continue;
-var rF = installFreezeEntry(stripOwnFramePrefix(ef.id), ef.val);
-if (rF.ok) locked++;
+var rF = installFreezeEntry(stripOwnFramePrefix(ef.id), ef.val, ef.rule || "eq");
+if (rF.ok) {
+locked++;
+lockedIds.push(ef.id);
+} else {
+failedIds.push(ef.id);
 }
-return { ok: true, frameId: FRAME_ID, locked: locked, freezeStats: collectFreezeStatsMap() };
+}
+return { ok: locked > 0, frameId: FRAME_ID, locked: locked, lockedIds: lockedIds, failedIds: failedIds, freezeStats: collectFreezeStatsMap() };
 }
 if (cmd.op === "unfreeze") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
@@ -2355,6 +2599,55 @@ var u8h = new Uint8Array(biH.buf, biH.byteOff + baseOff, len);
 var hex = "";
 for (var hi = 0; hi < u8h.length; hi++) hex += u8h[hi].toString(16).toUpperCase().padStart(2, "0");
 return { ok: true, frameId: FRAME_ID, addr: "0x" + baseOff.toString(16).toUpperCase(), offset: baseOff, len: len, hex: hex };
+}
+if (cmd.op === "peekStruct") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var localP = stripOwnFramePrefix(cmd.id);
+var recP = watchRefs.get(localP);
+if (!recP || (recP.kind !== "wasm" && recP.kind !== "ta" && recP.kind !== "ab")) {
+return { ok: false, error: "Struct peek supports WASM / ArrayBuffer / TypedArray" };
+}
+var biP = getBufferForHit(recP);
+if (!biP) return { ok: false, error: "Buffer detached" };
+var rad = Math.max(32, Math.min(256, Number(cmd.radius) || 64)) & ~3;
+var baseP = recP.off & ~3;
+var startP = Math.max(0, baseP - rad);
+var endP = Math.min(biP.byteLen, baseP + rad + 4) & ~3;
+var dvP = new DataView(biP.buf, biP.byteOff, biP.byteLen);
+var fields = [];
+var lblPref = recP.id.split("+0x")[0];
+for (var po = startP; po + 4 <= endP; po += 4) {
+var delta = po - baseP;
+var iv = dvP.getInt32(po, true);
+var fv = dvP.getFloat32(po, true);
+if (delta !== 0 && iv === 0) continue;
+var looksF = Number.isFinite(fv) && Math.abs(fv) >= 0.001 && Math.abs(fv) <= 1e7 && Math.abs(iv) > 100000000;
+var fType = looksF ? "f32" : "i32";
+var fLocalId = lblPref + "+0x" + po.toString(16).toUpperCase() + ":" + fType;
+if (!watchRefs.has(fLocalId)) {
+watchRefs.set(fLocalId, {
+id: fLocalId,
+kind: recP.kind,
+bufIdx: recP.bufIdx,
+memRef: recP.memRef,
+abRef: recP.abRef,
+off: po,
+dt: fType,
+len: 4,
+prev: looksF ? fv : iv,
+scale: 0
+});
+}
+fields.push({
+addr: qualifyId(fLocalId),
+delta: (delta < 0 ? "-0x" : "+0x") + Math.abs(delta).toString(16).toUpperCase(),
+type: fType,
+val: looksF ? formatVal(fv, "f32") : String(iv),
+i32: String(iv),
+f32: (Number.isFinite(fv) && Math.abs(fv) <= 1e9) ? formatVal(fv, "f32") : "NaN"
+});
+}
+return { ok: true, frameId: FRAME_ID, fields: fields };
 }
 if (cmd.op === "regions") {
 var memsR = liveWasmEntries();

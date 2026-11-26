@@ -1194,10 +1194,12 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     val childFrames = topObj?.optInt("childFrames", 0) ?: 0
                     val needsSubframes = childFrames > 0 || (targetFrame.isNotBlank() && targetFrame != "f0")
                     if (needsSubframes) {
-                        val discoveryMs = when (op) {
-                            "firstScan" -> 260L
-                            "nextScan", "writeAll", "writeBatch", "freezeBatch", "regions" -> 180L
-                            else -> 110L
+                        val discoveryMs = when {
+                            targetFrame.isNotBlank() && targetFrame != "f0" -> 600L
+                            op == "firstScan" -> 450L
+                            op == "nextScan" || op == "writeAll" || op == "writeBatch" || op == "freezeBatch" || op == "regions" -> 380L
+                            op == "readBatch" -> 240L
+                            else -> 280L
                         }
                         val minWaitUntil = System.currentTimeMillis() + discoveryMs
                         val hardDeadline = startMs + timeoutMs + 1_500L

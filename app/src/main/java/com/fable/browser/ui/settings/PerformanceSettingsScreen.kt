@@ -29,6 +29,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -656,30 +657,67 @@ fun PerformanceSettingsScreen(
         SectionHeader("Memory Engine (Mobile Cheat Engine)")
         SwitchRow(
             title = "Enable Memory Engine (Self-Process + Page/WASM)",
-            subtitle = "Non-root mobile Cheat Engine inside Fable only: First/Next/Unknown/Delta scans, Watch/Freeze/Restore, Hex Viewer, and Memory Map for GeckoView, Blink x Gecko, and Fable process memory. Completely unloaded when OFF.",
+            subtitle = "Non-root mobile Cheat Engine inside Fable only: First/Next/Unknown/Delta scans, Instant-Replace & 500Hz Freeze (= / >= / <=), Hex & Struct Dissector, and Memory Map for GeckoView, Blink x Gecko, and Fable process memory. Completely unloaded when OFF.",
             checked = settings.memoryEngineEnabled,
             onCheckedChange = viewModel::setMemoryEngineEnabled
         )
-        if (settings.memoryEngineEnabled) {
-            var localMemScale by remember { mutableIntStateOf(com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(settings.memoryEnginePanelScalePct)) }
-            var draggingMemScale by remember { mutableStateOf(false) }
-            var memPreviewExpanded by remember { mutableStateOf(true) }
-            LaunchedEffect(settings.memoryEnginePanelScalePct) {
-                if (!draggingMemScale) {
-                    localMemScale = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(settings.memoryEnginePanelScalePct)
-                }
+        run {
+            val savedScale = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(settings.memoryEnginePanelScalePct)
+            val savedHeight = com.fable.browser.engine.WebsiteMemoryEngine.clampPanelHeightPct(settings.memoryEnginePanelHeightPct)
+            var draftScale by remember { mutableIntStateOf(savedScale) }
+            var draftHeight by remember { mutableIntStateOf(savedHeight) }
+            var previewModeIdx by remember { mutableIntStateOf(0) } // 0 = Scan, 1 = Watch/Freeze, 2 = Mini pill
+            LaunchedEffect(savedScale, savedHeight) {
+                draftScale = savedScale
+                draftHeight = savedHeight
             }
-            val shownMemScale = if (draggingMemScale) localMemScale else com.fable.browser.engine.WebsiteMemoryEngine.clampPanelScalePct(settings.memoryEnginePanelScalePct)
+            val hasPendingSizeChange = (draftScale != savedScale) || (draftHeight != savedHeight)
             val sampleMemState = remember {
                 com.fable.browser.engine.MemoryEngineUiState(
-                    totalMatches = 2,
+                    totalMatches = 3,
                     hasActiveScan = true,
                     canUndo = true,
+                    wasmCount = 1,
+                    bufCount = 2,
+                    detectedEngines = listOf("Unity"),
                     results = listOf(
-                        com.fable.browser.engine.MemScanResultItem("wasm#0+0x40:i32", "1500", "i32", "wasm"),
-                        com.fable.browser.engine.MemScanResultItem("js:game.player.hp", "250", "i32", "js")
+                        com.fable.browser.engine.MemScanResultItem("wasm#0+0x40:i32", "1500", "1200", "i32", "wasm", "Unity"),
+                        com.fable.browser.engine.MemScanResultItem("js:player.coins", "1500", "1500", "i32", "js", "Unity"),
+                        com.fable.browser.engine.MemScanResultItem("ls:save$.gems", "1500", "900", "i32", "lsjson", "Unity")
                     ),
-                    statusText = "Preview: drag panel anywhere on screen"
+                    watchList = listOf(
+                        com.fable.browser.engine.MemWatchEntry(
+                            id = "preview_1",
+                            scope = com.fable.browser.engine.MemScope.PAGE_WASM,
+                            addr = "js:player.coins",
+                            label = "Coins (Accessor)",
+                            dataType = com.fable.browser.engine.MemDataType.INT32,
+                            currentValue = "999999",
+                            originalValue = "1500",
+                            frozen = true,
+                            frozenValue = "999999",
+                            freezeRule = com.fable.browser.engine.MemFreezeRule.EXACT,
+                            freezeMode = "accessor-trap",
+                            blockedWrites = 14L,
+                            freezeStatus = "enforcing"
+                        ),
+                        com.fable.browser.engine.MemWatchEntry(
+                            id = "preview_2",
+                            scope = com.fable.browser.engine.MemScope.PAGE_WASM,
+                            addr = "wasm#0+0x40:i32",
+                            label = "Health Floor",
+                            dataType = com.fable.browser.engine.MemDataType.INT32,
+                            currentValue = "100",
+                            originalValue = "100",
+                            frozen = true,
+                            frozenValue = "100",
+                            freezeRule = com.fable.browser.engine.MemFreezeRule.MIN,
+                            freezeMode = "250Hz",
+                            blockedWrites = 6L,
+                            freezeStatus = "enforcing"
+                        )
+                    ),
+                    statusText = "Preview: exact size after you tap Apply"
                 )
             }
 
@@ -691,67 +729,123 @@ fun PerformanceSettingsScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
-                    Text(
-                        text = "Memory Engine Panel size: $shownMemScale%",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Slide to resize and preview how big the floating Memory CE panel appears. Drag it anywhere on screen or collapse it into a tiny pill.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Slider(
-                        value = shownMemScale.toFloat(),
-                        onValueChange = { raw ->
-                            draggingMemScale = true
-                            localMemScale = ((raw / 5f).roundToInt() * 5).coerceIn(
-                                com.fable.browser.engine.WebsiteMemoryEngine.MIN_PANEL_SCALE_PCT,
-                                com.fable.browser.engine.WebsiteMemoryEngine.MAX_PANEL_SCALE_PCT
-                            )
-                        },
-                        onValueChangeFinished = {
-                            draggingMemScale = false
-                            viewModel.setMemoryEnginePanelScalePct(localMemScale)
-                        },
-                        valueRange = com.fable.browser.engine.WebsiteMemoryEngine.MIN_PANEL_SCALE_PCT.toFloat()..com.fable.browser.engine.WebsiteMemoryEngine.MAX_PANEL_SCALE_PCT.toFloat(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "CE Panel Size & Live Preview",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (hasPendingSizeChange) {
+                                    "Saved: $savedScale% × $savedHeight%  ->  Preview after Apply: $draftScale% × $draftHeight%"
+                                } else {
+                                    "Current size: $savedScale% scale × $savedHeight% height"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (hasPendingSizeChange) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = if (hasPendingSizeChange) FontWeight.SemiBold else FontWeight.Normal
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                    ) {
+                        listOf(
+                            Triple("Mini", 65, 75),
+                            Triple("Compact", 80, 85),
+                            Triple("Normal", 100, 100),
+                            Triple("Large", 125, 115),
+                            Triple("XL", 150, 135)
+                        ).forEach { (lbl, sc, ht) ->
+                            val isSel = draftScale == sc && draftHeight == ht
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                                modifier = Modifier.clickable {
+                                    draftScale = sc
+                                    draftHeight = ht
+                                }
+                            ) {
+                                Text(
+                                    text = "$lbl ($sc%)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isSel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "Panel scale (width & fonts): $draftScale%",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Slider(
+                        value = draftScale.toFloat(),
+                        onValueChange = { raw ->
+                            draftScale = ((raw / 5f).roundToInt() * 5).coerceIn(
+                                com.fable.browser.engine.WebsiteMemoryEngine.MIN_PANEL_SCALE_PCT,
+                                com.fable.browser.engine.WebsiteMemoryEngine.MAX_PANEL_SCALE_PCT
+                            )
+                        },
+                        valueRange = com.fable.browser.engine.WebsiteMemoryEngine.MIN_PANEL_SCALE_PCT.toFloat()..com.fable.browser.engine.WebsiteMemoryEngine.MAX_PANEL_SCALE_PCT.toFloat(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text(
+                        text = "List height (rows visible): $draftHeight%",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Slider(
+                        value = draftHeight.toFloat(),
+                        onValueChange = { raw ->
+                            draftHeight = ((raw / 5f).roundToInt() * 5).coerceIn(
+                                com.fable.browser.engine.WebsiteMemoryEngine.MIN_PANEL_HEIGHT_PCT,
+                                com.fable.browser.engine.WebsiteMemoryEngine.MAX_PANEL_HEIGHT_PCT
+                            )
+                        },
+                        valueRange = com.fable.browser.engine.WebsiteMemoryEngine.MIN_PANEL_HEIGHT_PCT.toFloat()..com.fable.browser.engine.WebsiteMemoryEngine.MAX_PANEL_HEIGHT_PCT.toFloat(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(
-                            text = "Live actual-size preview",
+                            text = "Preview",
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.weight(1f)
                         )
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (memPreviewExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                            modifier = Modifier.clickable { memPreviewExpanded = true }
-                        ) {
-                            Text(
-                                text = "Expanded",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (memPreviewExpanded) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                        Spacer(Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (!memPreviewExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                            modifier = Modifier.clickable { memPreviewExpanded = false }
-                        ) {
-                            Text(
-                                text = "Mini pill",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (!memPreviewExpanded) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
+                        listOf(0 to "Scan", 1 to "Watch/Freeze", 2 to "Mini pill").forEach { (idx, lbl) ->
+                            val sel = previewModeIdx == idx
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                                modifier = Modifier.clickable { previewModeIdx = idx }
+                            ) {
+                                Text(
+                                    text = lbl,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
                         }
                     }
                     Spacer(Modifier.height(8.dp))
@@ -760,60 +854,88 @@ fun PerformanceSettingsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(Color(0xFF0B1120), RoundedCornerShape(12.dp))
-                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
-                            .padding(vertical = 14.dp, horizontal = 8.dp)
+                            .border(
+                                width = if (hasPendingSizeChange) 1.5.dp else 1.dp,
+                                color = if (hasPendingSizeChange) Color(0xFF10B981) else MaterialTheme.colorScheme.outlineVariant,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .padding(vertical = 12.dp, horizontal = 6.dp)
                     ) {
-                        com.fable.browser.ui.components.MemoryEnginePanel(
-                            state = sampleMemState,
-                            scalePct = shownMemScale,
-                            expanded = memPreviewExpanded,
-                            onSelectScope = {},
-                            onSelectDataType = {},
-                            onSelectScanType = {},
-                            onFirstScan = { _, _ -> },
-                            onNextScan = { _, _ -> },
-                            onUndoScan = {},
-                            onResetScan = {},
-                            onAddWatch = {},
-                            onSetWatchValue = { _, _ -> },
-                            onRestoreWatchOriginal = {},
-                            onToggleWatchFreeze = {},
-                            onRemoveWatch = {},
-                            onUnfreezeAll = {},
-                            onInspectHex = { _, _, _ -> },
-                            onRefreshRegions = {},
-                            onToggleExpanded = { memPreviewExpanded = !memPreviewExpanded },
-                            onTurnOff = {},
-                            maxWidthDp = (maxWidth - 8.dp).coerceAtLeast(170.dp),
-                            previewMode = true
-                        )
+                        key(previewModeIdx) {
+                            com.fable.browser.ui.components.MemoryEnginePanel(
+                                state = sampleMemState,
+                                scalePct = draftScale,
+                                heightPct = draftHeight,
+                                expanded = previewModeIdx != 2,
+                                previewInitialTab = if (previewModeIdx == 1) 1 else 0,
+                                onSelectScope = {},
+                                onSelectDataType = {},
+                                onSelectScanType = {},
+                                onFirstScan = { _, _ -> },
+                                onNextScan = { _, _ -> },
+                                onUndoScan = {},
+                                onResetScan = {},
+                                onAddWatch = {},
+                                onSetWatchValue = { _, _ -> },
+                                onRestoreWatchOriginal = {},
+                                onToggleWatchFreeze = {},
+                                onRemoveWatch = {},
+                                onUnfreezeAll = {},
+                                onInspectHex = { _, _, _ -> },
+                                onRefreshRegions = {},
+                                onToggleExpanded = { previewModeIdx = if (previewModeIdx == 2) 0 else 2 },
+                                onTurnOff = {},
+                                maxWidthDp = (maxWidth - 6.dp).coerceAtLeast(160.dp),
+                                previewMode = true
+                            )
+                        }
                     }
-                    Spacer(Modifier.height(8.dp))
+
+                    Spacer(Modifier.height(10.dp))
                     Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = "Position: X ${(settings.memoryEnginePanelPosX * 100f).roundToInt()}% · Y ${(settings.memoryEnginePanelPosY * 100f).roundToInt()}%",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        Button(
+                            onClick = { viewModel.setMemoryEnginePanelSize(draftScale, draftHeight) },
+                            enabled = hasPendingSizeChange,
                             modifier = Modifier.weight(1f)
-                        )
+                        ) {
+                            Text(if (hasPendingSizeChange) "Apply Size ($draftScale%)" else "Size Applied")
+                        }
+                        if (hasPendingSizeChange) {
+                            OutlinedButton(onClick = {
+                                draftScale = savedScale
+                                draftHeight = savedHeight
+                            }) {
+                                Text("Revert")
+                            }
+                        }
                         OutlinedButton(onClick = {
-                            localMemScale = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT
+                            draftScale = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_SCALE_PCT
+                            draftHeight = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_HEIGHT_PCT
                             viewModel.resetMemoryEnginePanelLayout()
                         }) {
-                            Text("Reset layout")
+                            Text("Reset")
                         }
                     }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Saved position: X ${(settings.memoryEnginePanelPosX * 100f).roundToInt()}% · Y ${(settings.memoryEnginePanelPosY * 100f).roundToInt()}% (drag floating header anytime)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
-            SwitchRow(
-                title = "Show floating Memory Engine panel while ON",
-                subtitle = "Moveable, collapsible panel with Scan, Watch/Freeze, Hex Viewer, and Memory Map",
-                checked = settings.memoryEngineShowPanel,
-                onCheckedChange = viewModel::setMemoryEngineShowPanel
-            )
+            if (settings.memoryEngineEnabled) {
+                SwitchRow(
+                    title = "Show floating Memory Engine panel while ON",
+                    subtitle = "Moveable, collapsible panel with Scan, Watch/Freeze, Hex & Struct Dissector, and Memory Map",
+                    checked = settings.memoryEngineShowPanel,
+                    onCheckedChange = viewModel::setMemoryEngineShowPanel
+                )
+            }
         }
         ListDivider()
 

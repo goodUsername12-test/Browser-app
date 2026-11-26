@@ -17,13 +17,43 @@ import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
+enum class MemFreezeRule(val jsCode: String, val nativeCode: Int, val symbol: String, val label: String) {
+    EXACT("eq", 0, "=", "Exact Lock"),
+    MIN("min", 1, ">=", "Min Floor (>=)"),
+    MAX("max", 2, "<=", "Max Cap (<=)");
+
+    fun next(): MemFreezeRule = when (this) {
+        EXACT -> MIN
+        MIN -> MAX
+        MAX -> EXACT
+    }
+
+    companion object {
+        fun fromCode(code: String?): MemFreezeRule = when (code) {
+            "min" -> MIN
+            "max" -> MAX
+            else -> EXACT
+        }
+    }
+}
+
+data class MemStructField(
+    val addr: String,
+    val delta: String,
+    val type: String,
+    val value: String,
+    val i32Val: String,
+    val f32Val: String
+)
+
 data class MemScanResultItem(
     val addr: String,
     val value: String,
     val prevValue: String = "",
     val type: String = "i32",
     val kind: String = "native",
-    val engine: String = ""
+    val engine: String = "",
+    val lastChangedAtMs: Long = 0L
 )
 
 data class MemWatchEntry(
@@ -36,9 +66,11 @@ data class MemWatchEntry(
     val originalValue: String,
     val frozen: Boolean = false,
     val frozenValue: String = "",
+    val freezeRule: MemFreezeRule = MemFreezeRule.EXACT,
     val freezeMode: String = "",
     val blockedWrites: Long = 0L,
-    val freezeStatus: String = ""
+    val freezeStatus: String = "",
+    val lastChangedAtMs: Long = 0L
 )
 
 data class MemRegionItem(
@@ -83,6 +115,9 @@ data class MemoryEngineUiState(
     val watchList: List<MemWatchEntry> = emptyList(),
     val selectedWatchIds: Set<String> = emptySet(),
     val hex: MemHexState = MemHexState(),
+    val structOriginAddr: String = "",
+    val structScope: MemScope = MemScope.PAGE_WASM,
+    val structFields: List<MemStructField> = emptyList(),
     val regions: List<MemRegionItem> = emptyList(),
     val regionsTotalKb: Long = 0L,
     val statusText: String = "Enter a number and tap First Scan",
@@ -606,7 +641,7 @@ class MemoryEngineManager @Inject constructor(
                         val norm = WebsiteMemoryEngine.normalizeNumericInput(clean, w.dataType)
                         if (NativeMemoryScanner.writeValue(w.addr, w.dataType, norm)) {
                             okIds.add(w.id)
-                            if (w.frozen) NativeMemoryScanner.setFreeze(w.addr, w.dataType, norm)
+                            if (w.frozen) NativeMemoryScanner.setFreeze(w.addr, w.dataType, norm, w.freezeRule.nativeCode)
                         }
                     }
                 }
@@ -642,7 +677,8 @@ class MemoryEngineManager @Inject constructor(
             e.copy(
                 frozen = freeze,
                 frozenValue = if (freeze) (e.frozenValue.ifBlank { e.currentValue }) else e.frozenValue,
-                freezeStatus = if (freeze) "locked" else "",
+                freezeStatus = if (freeze) "arming" else "",
+                freezeMode = if (freeze) e.freezeMode else "",
                 blockedWrites = if (freeze) e.blockedWrites else 0L
             )
         }
@@ -652,15 +688,17 @@ class MemoryEngineManager @Inject constructor(
                     if (e.id in targetIds) e.copy(
                         frozen = freeze,
                         frozenValue = if (freeze) (e.frozenValue.ifBlank { e.currentValue }) else e.frozenValue,
-                        freezeStatus = if (freeze) "locked" else "",
+                        freezeStatus = if (freeze) "arming" else "",
                         freezeMode = if (freeze) e.freezeMode else "",
                         blockedWrites = if (freeze) e.blockedWrites else 0L
                     ) else e
                 },
-                statusText = if (freeze) "Titanium-locked ${targets.size} watched entries" else "Unfroze ${targets.size} entries"
+                statusText = if (freeze) "Arming freeze on ${targets.size} entries..." else "Unfroze ${targets.size} entries"
             )
         }
-        scope.launch { applyFreezeBatch(updatedTargets, freeze = freeze) }
+        scope.launch {
+            applyFreezeBatch(updatedTargets, freeze = freeze)
+        }
         ensureWatchLoop()
     }
 
@@ -728,6 +766,55 @@ class MemoryEngineManager @Inject constructor(
         }
     }
 
+    fun renameWatch(watchId: String, newLabel: String) {
+        val clean = newLabel.trim().take(36)
+        if (clean.isEmpty()) return
+        _state.update { st ->
+            st.copy(
+                watchList = st.watchList.map { e -> if (e.id == watchId) e.copy(label = clean) else e },
+                statusText = "Renamed watch entry to $clean"
+            )
+        }
+    }
+
+    fun applyWatchQuickMath(watchId: String, mathOp: String) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        val curNum = WebsiteMemoryEngine.normalizeNumericInput(entry.currentValue, entry.dataType).toDoubleOrNull()
+        val nextStr = when (mathOp) {
+            "+100" -> if (curNum != null) formatMathNum(curNum + 100.0, entry.dataType) else "100"
+            "+1000" -> if (curNum != null) formatMathNum(curNum + 1000.0, entry.dataType) else "1000"
+            "x2" -> if (curNum != null) formatMathNum(curNum * 2.0, entry.dataType) else "200"
+            "x10" -> if (curNum != null) formatMathNum(curNum * 10.0, entry.dataType) else "1000"
+            "999999" -> "999999"
+            "0" -> "0"
+            else -> return
+        }
+        setWatchValue(watchId, nextStr)
+    }
+
+    private fun formatMathNum(v: Double, dt: MemDataType): String {
+        return if (dt == MemDataType.FLOAT32 || dt == MemDataType.FLOAT64) {
+            if (v % 1.0 == 0.0) v.toLong().toString() else String.format(java.util.Locale.US, "%.3f", v)
+        } else {
+            v.toLong().toString()
+        }
+    }
+
+    fun cycleWatchFreezeRule(watchId: String) {
+        val existing = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        val nextRule = existing.freezeRule.next()
+        val updated = existing.copy(freezeRule = nextRule)
+        _state.update { st ->
+            st.copy(
+                watchList = st.watchList.map { e -> if (e.id == watchId) updated else e },
+                statusText = "${existing.label} freeze mode: ${nextRule.label}"
+            )
+        }
+        if (updated.frozen) {
+            scope.launch { applyFreezeSingle(updated, freeze = true) }
+        }
+    }
+
     fun setWatchValue(watchId: String, newValue: String) {
         val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
         scope.launch {
@@ -740,7 +827,8 @@ class MemoryEngineManager @Inject constructor(
                     watchList = st.watchList.map { e ->
                         if (e.id == watchId) e.copy(
                             currentValue = if (ok) newValue else e.currentValue,
-                            frozenValue = if (e.frozen && ok) newValue else e.frozenValue
+                            frozenValue = if (e.frozen && ok) newValue else e.frozenValue,
+                            lastChangedAtMs = if (ok) System.currentTimeMillis() else e.lastChangedAtMs
                         ) else e
                     },
                     statusText = if (ok) "Set ${entry.label} = $newValue" else "Write blocked or address invalid"
@@ -769,14 +857,14 @@ class MemoryEngineManager @Inject constructor(
         val updated = existing.copy(
             frozen = nextFreeze,
             frozenValue = lockVal,
-            freezeStatus = if (nextFreeze) "locked" else "",
+            freezeStatus = if (nextFreeze) "arming" else "",
             freezeMode = if (nextFreeze) existing.freezeMode else "",
             blockedWrites = if (nextFreeze) existing.blockedWrites else 0L
         )
         _state.update { st ->
             st.copy(
                 watchList = st.watchList.map { e -> if (e.id == watchId) updated else e },
-                statusText = if (nextFreeze) "Locked ${existing.label} @ $lockVal" else "Unlocked ${existing.label}"
+                statusText = if (nextFreeze) "Arming ${existing.freezeRule.symbol} freeze @ $lockVal..." else "Unlocked ${existing.label}"
             )
         }
         scope.launch { applyFreezeSingle(updated, freeze = nextFreeze) }
@@ -798,58 +886,104 @@ class MemoryEngineManager @Inject constructor(
         }
     }
 
-    private suspend fun applyFreezeSingle(entry: MemWatchEntry, freeze: Boolean) {
+    private suspend fun applyFreezeSingle(entry: MemWatchEntry, freeze: Boolean): Boolean {
         when (entry.scope) {
-            MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) {
-                if (freeze) {
-                    val norm = WebsiteMemoryEngine.normalizeNumericInput(entry.frozenValue.ifBlank { entry.currentValue }, entry.dataType)
-                    NativeMemoryScanner.setFreeze(entry.addr, entry.dataType, norm)
-                } else {
-                    NativeMemoryScanner.unfreeze(entry.addr)
+            MemScope.FABLE_NATIVE -> {
+                if (!freeze) {
+                    withContext(Dispatchers.IO) { NativeMemoryScanner.unfreeze(entry.addr) }
+                    return true
                 }
+                val norm = WebsiteMemoryEngine.normalizeNumericInput(entry.frozenValue.ifBlank { entry.currentValue }, entry.dataType)
+                val ok = withContext(Dispatchers.IO) {
+                    NativeMemoryScanner.setFreeze(entry.addr, entry.dataType, norm, entry.freezeRule.nativeCode)
+                }
+                _state.update { st ->
+                    st.copy(
+                        watchList = st.watchList.map { e ->
+                            if (e.id == entry.id) {
+                                if (ok) e.copy(frozen = true, freezeMode = "500Hz", freezeStatus = "locked")
+                                else e.copy(frozen = false, freezeMode = "", freezeStatus = "failed")
+                            } else e
+                        },
+                        statusText = if (ok) "Confirmed 500Hz ${entry.freezeRule.symbol} lock on ${entry.label}" else "Freeze FAILED on ${entry.label}: native address invalid or worker unavailable"
+                    )
+                }
+                return ok
             }
             MemScope.PAGE_WASM -> {
                 val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
-                if (freeze) {
-                    val raw = runPageCommand(JSONObject().apply {
-                        put("op", "setFreeze")
-                        put("id", entry.addr)
-                        if (tFrame != null) put("targetFrame", tFrame)
-                        put("val", WebsiteMemoryEngine.normalizeNumericInput(entry.frozenValue.ifBlank { entry.currentValue }, entry.dataType))
-                    })
-                    val obj = runCatching { JSONObject(raw) }.getOrNull()
-                    if (obj != null && obj.optBoolean("ok", false)) {
-                        val mode = obj.optString("mode")
-                        val stStr = obj.optString("status", "locked")
-                        _state.update { st ->
-                            st.copy(watchList = st.watchList.map { e ->
-                                if (e.id == entry.id) e.copy(freezeMode = mode, freezeStatus = stStr) else e
-                            })
-                        }
-                    }
-                } else {
+                if (!freeze) {
                     runPageCommand(JSONObject().apply {
                         put("op", "unfreeze")
                         put("id", entry.addr)
                         if (tFrame != null) put("targetFrame", tFrame)
                     })
+                    return true
                 }
+                val cmd = JSONObject().apply {
+                    put("op", "setFreeze")
+                    put("id", entry.addr)
+                    put("rule", entry.freezeRule.jsCode)
+                    if (tFrame != null) put("targetFrame", tFrame)
+                    put("val", WebsiteMemoryEngine.normalizeNumericInput(entry.frozenValue.ifBlank { entry.currentValue }, entry.dataType))
+                }
+                var raw = runPageCommand(cmd)
+                var obj = runCatching { JSONObject(raw) }.getOrNull()
+                if (obj == null || !obj.optBoolean("ok", false)) {
+                    delay(80)
+                    raw = runPageCommand(cmd)
+                    obj = runCatching { JSONObject(raw) }.getOrNull()
+                }
+                val ok = obj != null && obj.optBoolean("ok", false)
+                val mode = obj?.optString("mode").orEmpty()
+                val stStr = if (ok) obj?.optString("status", "locked").orEmpty().ifBlank { "locked" } else "failed"
+                val errMsg = obj?.optString("error").orEmpty().ifBlank { "entry not in active frame" }
+                _state.update { st ->
+                    st.copy(
+                        watchList = st.watchList.map { e ->
+                            if (e.id == entry.id) {
+                                if (ok) e.copy(frozen = true, freezeMode = mode, freezeStatus = stStr)
+                                else e.copy(frozen = false, freezeMode = "", freezeStatus = "failed", blockedWrites = 0L)
+                            } else e
+                        },
+                        statusText = if (ok) "Confirmed $mode (${entry.freezeRule.symbol}) lock on ${entry.label}" else "Freeze FAILED on ${entry.label}: $errMsg"
+                    )
+                }
+                return ok
             }
         }
     }
 
-    private suspend fun applyFreezeBatch(entries: List<MemWatchEntry>, freeze: Boolean) {
+    private suspend fun applyFreezeBatch(entries: List<MemWatchEntry>, freeze: Boolean): Int {
         val pageEntries = entries.filter { it.scope == MemScope.PAGE_WASM }
         val nativeEntries = entries.filter { it.scope == MemScope.FABLE_NATIVE }
+        val confirmedIds = HashSet<String>()
+        val failedIds = HashSet<String>()
+
         if (nativeEntries.isNotEmpty()) {
             withContext(Dispatchers.IO) {
                 for (e in nativeEntries) {
                     if (freeze) {
                         val norm = WebsiteMemoryEngine.normalizeNumericInput(e.frozenValue.ifBlank { e.currentValue }, e.dataType)
-                        NativeMemoryScanner.setFreeze(e.addr, e.dataType, norm)
+                        if (NativeMemoryScanner.setFreeze(e.addr, e.dataType, norm, e.freezeRule.nativeCode)) {
+                            confirmedIds.add(e.id)
+                        } else {
+                            failedIds.add(e.id)
+                        }
                     } else {
                         NativeMemoryScanner.unfreeze(e.addr)
                     }
+                }
+            }
+            if (freeze) {
+                _state.update { st ->
+                    st.copy(watchList = st.watchList.map { e ->
+                        when {
+                            e.id in confirmedIds -> e.copy(frozen = true, freezeMode = "500Hz", freezeStatus = "locked")
+                            e.id in failedIds -> e.copy(frozen = false, freezeMode = "", freezeStatus = "failed", blockedWrites = 0L)
+                            else -> e
+                        }
+                    })
                 }
             }
         }
@@ -859,6 +993,7 @@ class MemoryEngineManager @Inject constructor(
                 for (e in pageEntries) {
                     arr.put(JSONObject().apply {
                         put("id", e.addr)
+                        put("rule", e.freezeRule.jsCode)
                         put("val", WebsiteMemoryEngine.normalizeNumericInput(e.frozenValue.ifBlank { e.currentValue }, e.dataType))
                     })
                 }
@@ -866,8 +1001,42 @@ class MemoryEngineManager @Inject constructor(
                     put("op", "freezeBatch")
                     put("entries", arr)
                 })
-                val statsObj = runCatching { JSONObject(raw).optJSONObject("freezeStats") }.getOrNull()
-                if (statsObj != null) applyFreezeStatsJson(MemScope.PAGE_WASM, statsObj)
+                val respObj = runCatching { JSONObject(raw) }.getOrNull()
+                val lockedAddrSet = HashSet<String>()
+                val lArr = respObj?.optJSONArray("lockedIds")
+                if (lArr != null) {
+                    for (i in 0 until lArr.length()) lockedAddrSet.add(lArr.optString(i))
+                }
+                val statsObj = respObj?.optJSONObject("freezeStats")
+                for (e in pageEntries) {
+                    val isLocked = e.addr in lockedAddrSet || (statsObj != null && statsObj.has(e.addr))
+                    if (isLocked) confirmedIds.add(e.id) else failedIds.add(e.id)
+                }
+                _state.update { st ->
+                    st.copy(
+                        watchList = st.watchList.map { e ->
+                            if (e.scope != MemScope.PAGE_WASM) return@map e
+                            when {
+                                e.id in confirmedIds -> {
+                                    val info = statsObj?.optJSONObject(e.addr)
+                                    e.copy(
+                                        frozen = true,
+                                        freezeMode = info?.optString("mode", e.freezeMode).orEmpty().ifBlank { e.freezeMode },
+                                        blockedWrites = info?.optLong("blocked", e.blockedWrites) ?: e.blockedWrites,
+                                        freezeStatus = info?.optString("status", "locked").orEmpty().ifBlank { "locked" }
+                                    )
+                                }
+                                e.id in failedIds -> e.copy(frozen = false, freezeMode = "", freezeStatus = "failed", blockedWrites = 0L)
+                                else -> e
+                            }
+                        },
+                        statusText = when {
+                            confirmedIds.isNotEmpty() && failedIds.isEmpty() -> "Confirmed freeze on ${confirmedIds.size} entries"
+                            confirmedIds.isNotEmpty() -> "Frozen ${confirmedIds.size} entries (${failedIds.size} failed/detached)"
+                            else -> "Freeze FAILED (0/${entries.size} locked) · tap Hook Reload"
+                        }
+                    )
+                }
             } else {
                 val arr = JSONArray()
                 pageEntries.forEach { arr.put(it.addr) }
@@ -877,6 +1046,7 @@ class MemoryEngineManager @Inject constructor(
                 })
             }
         }
+        return confirmedIds.size
     }
 
     private fun applyFreezeStatsJson(targetScope: MemScope, statsObj: JSONObject) {
@@ -891,6 +1061,84 @@ class MemoryEngineManager @Inject constructor(
                 )
             })
         }
+    }
+
+    fun peekNearbyStruct(addr: String, scopeOverride: MemScope = _state.value.scope, radius: Int = 64) {
+        scope.launch {
+            val raw = when (scopeOverride) {
+                MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) { NativeMemoryScanner.peekStruct(addr, radius) }
+                MemScope.PAGE_WASM -> {
+                    val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(addr)
+                    runPageCommand(JSONObject().apply {
+                        put("op", "peekStruct")
+                        put("id", addr)
+                        if (tFrame != null) put("targetFrame", tFrame)
+                        put("radius", radius)
+                    })
+                }
+            }
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val arr = obj.optJSONArray("fields") ?: JSONArray()
+                val fields = ArrayList<MemStructField>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val f = arr.optJSONObject(i) ?: continue
+                    fields.add(
+                        MemStructField(
+                            addr = f.optString("addr"),
+                            delta = f.optString("delta"),
+                            type = f.optString("type", "i32"),
+                            value = f.optString("val"),
+                            i32Val = f.optString("i32"),
+                            f32Val = f.optString("f32")
+                        )
+                    )
+                }
+                _state.update {
+                    it.copy(
+                        structOriginAddr = addr,
+                        structScope = scopeOverride,
+                        structFields = fields,
+                        statusText = "Found ${fields.size} nearby struct fields (±${radius}B)"
+                    )
+                }
+            } else {
+                _state.update {
+                    it.copy(
+                        structOriginAddr = addr,
+                        structFields = emptyList(),
+                        statusText = obj?.optString("error") ?: "Struct peek unavailable for this address"
+                    )
+                }
+            }
+        }
+    }
+
+    fun addStructFieldToWatch(field: MemStructField) {
+        val st = _state.value
+        val dt = resolveDataType(field.type, MemDataType.INT32)
+        val curScope = st.structScope
+        val watchId = "${curScope.name}|${field.addr}"
+        if (st.watchList.any { it.id == watchId }) {
+            _state.update { it.copy(statusText = "Field ${field.delta} already in Watch Table") }
+            return
+        }
+        val entry = MemWatchEntry(
+            id = watchId,
+            scope = curScope,
+            addr = field.addr,
+            label = "Struct ${field.delta} (${field.type})",
+            dataType = dt,
+            currentValue = field.value,
+            originalValue = field.value
+        )
+        _state.update {
+            it.copy(
+                watchList = it.watchList + entry,
+                statusText = "Added nearby field ${field.delta} to Watch Table"
+            )
+        }
+        ensureWatchLoop()
     }
 
     fun inspectHex(addr: String, scopeOverride: MemScope = _state.value.scope, offsetDelta: Long = 0L) {
@@ -1021,6 +1269,10 @@ class MemoryEngineManager @Inject constructor(
                     val fStats = obj?.optJSONObject("freezeStats")
                     if (fStats != null) {
                         applyFreezeStatsJson(MemScope.PAGE_WASM, fStats)
+                        val missingFrozen = pageWatches.filter { it.frozen && it.freezeStatus != "arming" && !fStats.has(it.addr) }
+                        if (missingFrozen.isNotEmpty()) {
+                            applyFreezeBatch(missingFrozen, freeze = true)
+                        }
                     }
                 }
                 if (nativeWatches.isNotEmpty()) {
@@ -1035,10 +1287,17 @@ class MemoryEngineManager @Inject constructor(
                         applyFreezeStatsJson(MemScope.FABLE_NATIVE, natStats)
                     }
                 }
+                val nowMs = System.currentTimeMillis()
                 if (updatedMap.isNotEmpty()) {
                     _state.update { st ->
                         st.copy(watchList = st.watchList.map { e ->
-                            updatedMap[e.id]?.let { e.copy(currentValue = it) } ?: e
+                            val nv = updatedMap[e.id]
+                            if (nv != null) {
+                                e.copy(
+                                    currentValue = nv,
+                                    lastChangedAtMs = if (nv != e.currentValue) nowMs else e.lastChangedAtMs
+                                )
+                            } else e
                         })
                     }
                 }

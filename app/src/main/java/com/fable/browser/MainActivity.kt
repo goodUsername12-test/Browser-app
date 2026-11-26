@@ -433,10 +433,29 @@ class MainActivity : FragmentActivity() {
                                                 buf.putInt(0, 111)
                                                 Thread.sleep(10)
                                             }
-                                            Thread.sleep(15)
+                                            Thread.sleep(20)
                                             val held = buf.getInt(0) == 555444333
                                             val stats = com.fable.browser.engine.NativeMemoryScanner.getFreezeStats()
-                                            freezeOk = held && stats.contains("\"mode\":\"500Hz\"")
+                                            val statsObj = runCatching { org.json.JSONObject(stats).optJSONObject("stats") }.getOrNull()
+                                            val natBlocked = statsObj?.optJSONObject(firstAddr)?.optLong("blocked", 0L) ?: 0L
+                                            val minLocked = com.fable.browser.engine.NativeMemoryScanner.setFreeze(
+                                                firstAddr,
+                                                com.fable.browser.engine.MemDataType.INT32,
+                                                "500",
+                                                com.fable.browser.engine.MemFreezeRule.MIN.nativeCode
+                                            )
+                                            var minRuleOk = false
+                                            if (minLocked) {
+                                                buf.putInt(0, 900)
+                                                Thread.sleep(15)
+                                                val allowedUp = buf.getInt(0) == 900
+                                                buf.putInt(0, 100)
+                                                Thread.sleep(15)
+                                                val clampedFloor = buf.getInt(0) == 500
+                                                minRuleOk = allowedUp && clampedFloor
+                                            }
+                                            val structOk = com.fable.browser.engine.NativeMemoryScanner.peekStruct(firstAddr, 64).contains("\"ok\":true")
+                                            freezeOk = held && natBlocked > 0L && minRuleOk && structOk && stats.contains("\"mode\":\"500Hz\"")
                                         }
                                         com.fable.browser.engine.NativeMemoryScanner.unfreezeAll()
                                     }
@@ -480,7 +499,8 @@ class MainActivity : FragmentActivity() {
                                     kotlinx.coroutines.delay(2000)
                                     val stF = memoryEngineManager.state.value
                                     blockedSum = stF.watchList.sumOf { it.blockedWrites }
-                                    bulkFreezeOk = stF.watchList.size >= 4 && stF.watchList.all { it.frozen }
+                                    val failedCnt = stF.watchList.count { it.freezeStatus == "failed" || it.freezeStatus == "detached" }
+                                    bulkFreezeOk = stF.watchList.size >= 4 && stF.watchList.all { it.frozen } && failedCnt == 0 && blockedSum > 0L
                                     memoryEngineManager.unfreezeAll()
                                     memoryEngineManager.selectAllWatchEntries()
                                     memoryEngineManager.removeSelectedWatchEntries()

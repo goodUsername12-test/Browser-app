@@ -59,6 +59,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fable.browser.engine.MemDataType
+import com.fable.browser.engine.MemFreezeRule
+import com.fable.browser.engine.MemStructField
 import com.fable.browser.engine.MemScanResultItem
 import com.fable.browser.engine.MemScanType
 import com.fable.browser.engine.MemScope
@@ -109,9 +111,17 @@ fun MemoryEnginePanel(
     onEditSelectedWatchEntries: (String) -> Unit = {},
     onFreezeSelectedWatchEntries: (Boolean) -> Unit = {},
     onRestoreSelectedWatchEntries: () -> Unit = {},
-    onRemoveSelectedWatchEntries: () -> Unit = {}
+    onRemoveSelectedWatchEntries: () -> Unit = {},
+    heightPct: Int = WebsiteMemoryEngine.DEFAULT_PANEL_HEIGHT_PCT,
+    previewInitialTab: Int = 0,
+    onCycleWatchFreezeRule: (String) -> Unit = {},
+    onRenameWatch: (String, String) -> Unit = { _, _ -> },
+    onWatchQuickMath: (String, String) -> Unit = { _, _ -> },
+    onPeekNearbyStruct: (String, MemScope) -> Unit = { _, _ -> },
+    onAddStructFieldToWatch: (MemStructField) -> Unit = {}
 ) {
     val s = WebsiteMemoryEngine.clampPanelScalePct(scalePct) / 100f
+    val hScale = WebsiteMemoryEngine.clampPanelHeightPct(heightPct) / 100f
     val corner = (14f * s).coerceIn(8f, 22f).dp
     val accent = Color(0xFF10B981)
     val bg = Color(0xF50B1220)
@@ -182,7 +192,7 @@ fun MemoryEnginePanel(
         return
     }
 
-    var activeTab by remember { mutableIntStateOf(0) }
+    var activeTab by remember { mutableIntStateOf(previewInitialTab) }
     var query1 by remember { mutableStateOf("") }
     var query2 by remember { mutableStateOf("") }
     var showTypePicker by remember { mutableStateOf(false) }
@@ -197,6 +207,7 @@ fun MemoryEnginePanel(
     var scanEditDraft by remember { mutableStateOf("") }
     var editingWatchId by remember { mutableStateOf<String?>(null) }
     var editDraft by remember { mutableStateOf("") }
+    var renameDraft by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
 
     val panelWidth = (332f * s).dp.coerceAtMost(maxWidthDp)
@@ -921,7 +932,7 @@ fun MemoryEnginePanel(
                             verticalArrangement = Arrangement.spacedBy((4f * s).dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = (175f * s).coerceIn(105f, 275f).dp)
+                                .heightIn(max = (175f * s * hScale).coerceIn(72f, 380f).dp)
                                 .verticalScroll(rememberScrollState())
                         ) {
                             visibleSlice.forEach { item ->
@@ -1239,7 +1250,7 @@ fun MemoryEnginePanel(
                             verticalArrangement = Arrangement.spacedBy((5f * s).dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = (195f * s).coerceIn(115f, 290f).dp)
+                                .heightIn(max = (195f * s * hScale).coerceIn(80f, 400f).dp)
                                 .verticalScroll(rememberScrollState())
                         ) {
                             state.watchList.forEach { w ->
@@ -1272,7 +1283,11 @@ fun MemoryEnginePanel(
                                         Spacer(Modifier.width((4f * s).dp))
                                         Surface(
                                             shape = RoundedCornerShape((6f * s).dp),
-                                            color = if (w.frozen) Color(0xFF0284C7) else Color(0xFF334155),
+                                            color = when {
+                                                w.freezeStatus == "failed" || w.freezeStatus == "detached" -> Color(0xFFB91C1C)
+                                                w.frozen -> Color(0xFF0284C7)
+                                                else -> Color(0xFF334155)
+                                            },
                                             modifier = Modifier
                                                 .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
                                                 .clickable(enabled = !previewMode) { onToggleWatchFreeze(w.id) }
@@ -1281,7 +1296,23 @@ fun MemoryEnginePanel(
                                                 Text(text = if (w.frozen) "LOCK" else "Free", color = Color.White, fontSize = fsTiny, fontWeight = FontWeight.Bold)
                                             }
                                         }
-                                        Spacer(Modifier.width((5f * s).dp))
+                                        Spacer(Modifier.width((3f * s).dp))
+                                        Surface(
+                                            shape = RoundedCornerShape((6f * s).dp),
+                                            color = when (w.freezeRule) {
+                                                MemFreezeRule.EXACT -> Color(0xFF1E293B)
+                                                MemFreezeRule.MIN -> Color(0xFF065F46)
+                                                MemFreezeRule.MAX -> Color(0xFF7C2D12)
+                                            },
+                                            modifier = Modifier
+                                                .heightIn(min = (28f * s).coerceIn(24f, 36f).dp)
+                                                .clickable(enabled = !previewMode) { onCycleWatchFreezeRule(w.id) }
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (5f * s).dp)) {
+                                                Text(text = w.freezeRule.symbol, color = Color(0xFFE2E8F0), fontSize = fsTiny, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        Spacer(Modifier.width((4f * s).dp))
                                         Column(
                                             modifier = Modifier
                                                 .weight(1f)
@@ -1303,22 +1334,28 @@ fun MemoryEnginePanel(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
-                                            if (w.frozen) {
+                                            if (w.frozen || w.freezeStatus == "failed" || w.freezeStatus == "detached") {
                                                 val modeTxt = when (w.freezeMode) {
-                                                    "trap" -> "Hard Trap"
+                                                    "trap" -> "Instant Trap"
+                                                    "accessor-trap" -> "Accessor Trap"
                                                     "250Hz" -> "250Hz Lock"
                                                     "500Hz" -> "500Hz Native"
-                                                    else -> "Locked"
+                                                    else -> "Lock"
                                                 }
+                                                val ruleTxt = w.freezeRule.symbol
                                                 val badgeTxt = when (w.freezeStatus) {
+                                                    "failed" -> "FREEZE FAILED (not in active frame)"
                                                     "detached" -> "DETACHED / GC'd"
-                                                    "fighting" -> "$modeTxt · ${w.blockedWrites} blocked (ext/server fighting)"
-                                                    "enforcing" -> "$modeTxt · ${w.blockedWrites} blocked"
-                                                    else -> "$modeTxt @ ${w.frozenValue}"
+                                                    "arming" -> "Arming $ruleTxt lock..."
+                                                    "fighting" -> "$modeTxt ($ruleTxt) · ${w.blockedWrites} blocked (fighting)"
+                                                    "enforcing" -> "$modeTxt ($ruleTxt) · ${w.blockedWrites} blocked"
+                                                    else -> "$modeTxt ($ruleTxt ${w.frozenValue}) · verified"
                                                 }
                                                 val badgeColor = when (w.freezeStatus) {
-                                                    "detached" -> Color(0xFFF87171)
+                                                    "failed", "detached" -> Color(0xFFF87171)
+                                                    "arming" -> Color(0xFF94A3B8)
                                                     "fighting" -> Color(0xFFFBBF24)
+                                                    "enforcing" -> Color(0xFF34D399)
                                                     else -> Color(0xFF38BDF8)
                                                 }
                                                 Text(
@@ -1338,6 +1375,7 @@ fun MemoryEnginePanel(
                                                 .clickable(enabled = !previewMode) {
                                                     editingWatchId = if (editingWatchId == w.id) null else w.id
                                                     editDraft = w.currentValue
+                                                    renameDraft = w.label
                                                 }
                                         ) {
                                             Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (6f * s).dp)) {
@@ -1400,6 +1438,59 @@ fun MemoryEnginePanel(
                                                 }
                                             )
                                         }
+                                        Spacer(Modifier.height((4f * s).dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
+                                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                                        ) {
+                                            listOf("+100", "+1000", "x2", "x10", "999999", "0").forEach { mop ->
+                                                Surface(
+                                                    shape = RoundedCornerShape((6f * s).dp),
+                                                    color = Color(0xFF1E293B),
+                                                    modifier = Modifier.clickable(enabled = !previewMode) {
+                                                        onWatchQuickMath(w.id, mop)
+                                                    }
+                                                ) {
+                                                    Text(
+                                                        text = mop,
+                                                        color = Color(0xFF34D399),
+                                                        fontSize = fsTiny,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        modifier = Modifier.padding(horizontal = (7f * s).dp, vertical = (4f * s).dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.height((4f * s).dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy((5f * s).dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            CeInputField(
+                                                value = renameDraft,
+                                                onValueChange = { renameDraft = it },
+                                                placeholder = "Label name (e.g. Coins)",
+                                                fontSize = fsSmall,
+                                                enabled = !previewMode,
+                                                onDone = {
+                                                    onRenameWatch(w.id, renameDraft)
+                                                    focusManager.clearFocus()
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            CeButton(
+                                                text = "Name",
+                                                bg = Color(0xFF334155),
+                                                fg = Color.White,
+                                                fontSize = fsTiny,
+                                                minHeight = (28f * s).coerceIn(24f, 36f).dp,
+                                                enabled = !previewMode,
+                                                onClick = {
+                                                    onRenameWatch(w.id, renameDraft)
+                                                    focusManager.clearFocus()
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1429,6 +1520,9 @@ fun MemoryEnginePanel(
                             CeButton(text = "+64", bg = cardBg, fg = Color.White, fontSize = fsSmall, minHeight = minBtnH, enabled = !previewMode, onClick = {
                                 onInspectHex(hx.targetAddr, hx.scope, +64L)
                             })
+                            CeButton(text = "Struct", bg = Color(0xFF0F766E), fg = Color.White, fontSize = fsSmall, minHeight = minBtnH, enabled = !previewMode, onClick = {
+                                onPeekNearbyStruct(hx.targetAddr, hx.scope)
+                            })
                         }
                     }
                     Spacer(Modifier.height((5f * s).dp))
@@ -1446,7 +1540,7 @@ fun MemoryEnginePanel(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(Color(0xFF070B14), RoundedCornerShape((6f * s).dp))
-                                .heightIn(max = (170f * s).coerceIn(100f, 250f).dp)
+                                .heightIn(max = (170f * s * hScale).coerceIn(72f, 360f).dp)
                                 .verticalScroll(rememberScrollState())
                                 .padding((6f * s).dp)
                         ) {
@@ -1457,6 +1551,72 @@ fun MemoryEnginePanel(
                                     fontSize = (8.5f * s).coerceIn(6.5f, 13f).sp,
                                     fontFamily = FontFamily.Monospace
                                 )
+                            }
+                        }
+                        val decodedLine = remember(hx.hexBytes) { decodeHexFirstValues(hx.hexBytes) }
+                        if (decodedLine.isNotBlank()) {
+                            Spacer(Modifier.height((4f * s).dp))
+                            Text(
+                                text = decodedLine,
+                                color = Color(0xFFFDE68A),
+                                fontSize = fsTiny,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                    if (state.structFields.isNotEmpty()) {
+                        Spacer(Modifier.height((6f * s).dp))
+                        Text(
+                            text = "Nearby Struct Fields (${state.structFields.size}) · tap + to Watch",
+                            color = Color(0xFF5EEAD4),
+                            fontSize = fsTiny,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height((3f * s).dp))
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy((3f * s).dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = (115f * s * hScale).coerceIn(60f, 220f).dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            state.structFields.take(32).forEach { sf ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(cardBg, RoundedCornerShape((6f * s).dp))
+                                        .padding(horizontal = (6f * s).dp, vertical = (3.5f * s).dp)
+                                ) {
+                                    Text(
+                                        text = sf.delta,
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = fsTiny,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.width((42f * s).dp)
+                                    )
+                                    Text(
+                                        text = "i32=${sf.i32Val}  f32=${sf.f32Val}",
+                                        color = Color.White,
+                                        fontSize = fsTiny,
+                                        fontFamily = FontFamily.Monospace,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape((5f * s).dp),
+                                        color = Color(0xFF065F46),
+                                        modifier = Modifier.clickable(enabled = !previewMode) { onAddStructFieldToWatch(sf) }
+                                    ) {
+                                        Text(
+                                            text = "+Watch",
+                                            color = Color(0xFFA7F3D0),
+                                            fontSize = fsTiny,
+                                            modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (2.5f * s).dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -1491,7 +1651,7 @@ fun MemoryEnginePanel(
                         verticalArrangement = Arrangement.spacedBy((4f * s).dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = (170f * s).coerceIn(100f, 250f).dp)
+                            .heightIn(max = (170f * s * hScale).coerceIn(72f, 360f).dp)
                             .verticalScroll(rememberScrollState())
                     ) {
                         if (state.regions.isEmpty()) {
@@ -1661,6 +1821,27 @@ private fun formatHexLines(hex: String): List<String> {
     return lines
 }
 
+private fun decodeHexFirstValues(hex: String): String {
+    if (hex.length < 8) return ""
+    return runCatching {
+        val b = ByteArray((hex.length / 2).coerceAtMost(8)) { i ->
+            hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+        }
+        val bb = java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val i32 = bb.getInt(0)
+        val f32 = bb.getFloat(0)
+        val f32Txt = if (f32.isFinite() && kotlin.math.abs(f32) < 1e9f) String.format(java.util.Locale.US, "%.3f", f32) else "NaN"
+        val i16 = bb.getShort(0).toInt()
+        if (b.size >= 8) {
+            val f64 = bb.getDouble(0)
+            val f64Txt = if (f64.isFinite() && kotlin.math.abs(f64) < 1e12) String.format(java.util.Locale.US, "%.3f", f64) else "NaN"
+            "@+0: i16=$i16 · i32=$i32 · f32=$f32Txt · f64=$f64Txt"
+        } else {
+            "@+0: i16=$i16 · i32=$i32 · f32=$f32Txt"
+        }
+    }.getOrDefault("")
+}
+
 @Composable
 fun DraggableMemoryEnginePanel(
     state: MemoryEngineUiState,
@@ -1706,7 +1887,13 @@ fun DraggableMemoryEnginePanel(
     onEditSelectedWatchEntries: (String) -> Unit = {},
     onFreezeSelectedWatchEntries: (Boolean) -> Unit = {},
     onRestoreSelectedWatchEntries: () -> Unit = {},
-    onRemoveSelectedWatchEntries: () -> Unit = {}
+    onRemoveSelectedWatchEntries: () -> Unit = {},
+    heightPct: Int = WebsiteMemoryEngine.DEFAULT_PANEL_HEIGHT_PCT,
+    onCycleWatchFreezeRule: (String) -> Unit = {},
+    onRenameWatch: (String, String) -> Unit = { _, _ -> },
+    onWatchQuickMath: (String, String) -> Unit = { _, _ -> },
+    onPeekNearbyStruct: (String, MemScope) -> Unit = { _, _ -> },
+    onAddStructFieldToWatch: (MemStructField) -> Unit = {}
 ) {
     val density = LocalDensity.current
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
@@ -1806,6 +1993,12 @@ fun DraggableMemoryEnginePanel(
             onFreezeSelectedWatchEntries = onFreezeSelectedWatchEntries,
             onRestoreSelectedWatchEntries = onRestoreSelectedWatchEntries,
             onRemoveSelectedWatchEntries = onRemoveSelectedWatchEntries,
+            heightPct = heightPct,
+            onCycleWatchFreezeRule = onCycleWatchFreezeRule,
+            onRenameWatch = onRenameWatch,
+            onWatchQuickMath = onWatchQuickMath,
+            onPeekNearbyStruct = onPeekNearbyStruct,
+            onAddStructFieldToWatch = onAddStructFieldToWatch,
             modifier = Modifier
                 .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
                 .onSizeChanged {

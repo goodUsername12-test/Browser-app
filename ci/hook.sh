@@ -327,12 +327,14 @@ MULTI_ENGINE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>F
       clearInterval(poll);
       // Wait 550ms for bulk freeze to engage, then hammer values aggressively!
       setTimeout(function() {
-        let jsSlips = 0, lsSlips = 0;
+        let jsSlips = 0, lsSlips = 0, accSlips = 0;
         let ticks = 0;
         const hammer = setInterval(function() {
           ticks++;
           window.$gameParty._gold = 1;
           if (window.$gameParty._gold !== 888222) jsSlips++;
+          window.Phaser.GAMES[0].scene.scenes[0].registry.coins = 1;
+          if (_pCoins !== 888222) accSlips++;
           try {
             localStorage.setItem("saveV63", JSON.stringify({ coins: 1 }));
             if (JSON.parse(localStorage.getItem("saveV63")).coins !== 888222) lsSlips++;
@@ -347,7 +349,8 @@ MULTI_ENGINE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>F
                 hiddenSave.hiddenCoins === 888222 && hiddenMap.get("gems") === 888222);
               const stealth = checkStealth();
               const q = "tag=" + encodeURIComponent(tag) + "&stealth=" + stealth +
-                "&jsLocked=" + (jsSlips === 0) + "&lsLocked=" + (lsSlips === 0) +
+                "&jsLocked=" + (jsSlips === 0) + "&accLocked=" + (accSlips === 0) +
+                "&lsLocked=" + (lsSlips === 0) +
                 "&wasmLocked=" + wasmHeld + "&allEdited=" + allEdited;
               document.getElementById("out").textContent = q;
               fetch("/multi-engine-probe?" + q).catch(() => {});
@@ -852,8 +855,8 @@ echo "$MEM_XORIG_BLINK" | grep -q 'engine=Blink x Gecko total=[1-9].*hit=@f_.*wa
 grep -q 'XORIGIN_UNITY_PROBE q=stealth=true&coins=9999999' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-write-stealth"; }
 echo "$MEM_MULTI_GECKO" | grep -qE 'engine=GeckoView total=([5-9]|[1-9][0-9]+).*bulkFreezeOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-gecko(${MEM_MULTI_GECKO:-missing})"; }
 echo "$MEM_MULTI_BLINK" | grep -qE 'engine=Blink x Gecko total=([5-9]|[1-9][0-9]+).*bulkFreezeOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-blink(${MEM_MULTI_BLINK:-missing})"; }
-grep -q 'MULTI_ENGINE_PROBE q=tag=multi_gecko&stealth=true&jsLocked=true&lsLocked=true&wasmLocked=true&allEdited=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-gecko-probe"; }
-grep -q 'MULTI_ENGINE_PROBE q=tag=multi_blink&stealth=true&jsLocked=true&lsLocked=true&wasmLocked=true&allEdited=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-blink-probe"; }
+grep -q 'MULTI_ENGINE_PROBE q=tag=multi_gecko&stealth=true&jsLocked=true&accLocked=true&lsLocked=true&wasmLocked=true&allEdited=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-gecko-probe"; }
+grep -q 'MULTI_ENGINE_PROBE q=tag=multi_blink&stealth=true&jsLocked=true&accLocked=true&lsLocked=true&wasmLocked=true&allEdited=true' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-multi-blink-probe"; }
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"

@@ -120,7 +120,7 @@ fun SettingsScreen(
         ListDivider()
         SettingRow(
             title = "Performance",
-            subtitle = "${settings.performanceProfile.label}  ·  Tabs: ${settings.tabUnloadMode.label}",
+            subtitle = "${settings.performanceProfile.label}  ·  Memory CE (${settings.memoryEnginePanelScalePct}%)  ·  Speed Control",
             icon = Icons.Outlined.Speed,
             onClick = { onNavigate(Routes.SETTINGS_PERFORMANCE) }
         )

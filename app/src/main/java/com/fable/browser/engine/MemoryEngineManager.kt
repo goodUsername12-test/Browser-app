@@ -793,7 +793,7 @@ class MemoryEngineManager @Inject constructor(
     }
 
     private fun formatMathNum(v: Double, dt: MemDataType): String {
-        return if (dt == MemDataType.FLOAT32 || dt == MemDataType.FLOAT64) {
+        return if (dt == MemDataType.FLOAT || dt == MemDataType.DOUBLE) {
             if (v % 1.0 == 0.0) v.toLong().toString() else String.format(java.util.Locale.US, "%.3f", v)
         } else {
             v.toLong().toString()

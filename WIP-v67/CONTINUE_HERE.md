@@ -1,0 +1,13 @@
+# Fable Browser v67 OMEGA (`v67-ce-omega-1`, v1.67.0 / versionCode 59)
+
+## Implemented in v67 OMEGA
+1. **SpiderMonkey / GeckoView `WebAssembly.Memory` GC Pin Fix**: Fixed `trackWasmMem` to retain a bounded strong pin (up to 16 active WASM memories per frame) + `trackRawBuf(mem.buffer)` so GeckoView never prematurely GCs an active `WebAssembly.Memory` wrapper while a game holds only its `DataView`/`TypedArray` views.
+2. **Persistent Value Identity & 6-Stage Auto-Reattachment**: `captureIdentity` + `reattachIdentity` in JS/WASM and `nativeMakeSignature` + `nativeResolveSignature` in C++20 verify saved AOB signatures before accepting stale binary offsets, automatically recovering moved structs after level/page reload and reporting honest statuses (`Reattached ✓`, `Moved`, `Ambiguous`, `Lost`).
+3. **10 Persistent Value Rules (JS/WASM/Storage/Map + Native C++20)**: Exact `=`, Min Floor `>=`, Max Cap `<=`, Range `[a..b]`, Step `+/s`, Override on Change `Δ->V`, Restore on Decrease `↓↩`, Add on Change `Δ+X`, Multiply on Change `Δ×X`, and Unlimited MAX SAFE `∞Safe`.
+4. **Safe Unlimited / MAX SAFE / Literal Infinity with Auto-Fallback**: `setSafeMax` computes safe maxima per type (`i8..f64`, JS `9007199254740991`, `BigInt`) and automatically falls back from literal `Infinity` to `MAX SAFE` if a game converts `Infinity` to `null`/`NaN`/`0`.
+5. **Find Same & Linked Groups + Group Transactions & Rollback**: `CeFindSamePanel` separates Gameplay copies from Display (UI) copies with 1-tap `Set+Link`, `MAX`, `Lock All`, and atomic `Undo Tx` rollback.
+6. **Non-Destructive Authority Testing (`Test Real`)**: Probes a candidate, checks readback and external reset, automatically restores the original value, and assigns an Authority Score + verdict.
+7. **Multi-Snapshot History & Pattern Filters**: `Snap(N)` records up to 8 scan snapshots with `Always ↑`, `Always ↓`, and `Orig ↩` filters.
+8. **Saved Cheat Recipes & Struct-to-Table**: Save and 1-tap `Run` reusable per-site Cheat Recipes (`MemCheatRecipeCodec`) and save reconstructed Structs directly as Cheat Tables.
+9. **Modular, Contactable Mobile UI (`MemoryEngineTabs.kt` + `MemoryEnginePanel.kt`)**: Search bar inside Watch, Filter pills (`All / ★ / Locked / UI? / Lost`), Sort (`Fav / Auth / Blk`), Favorites (`★`), 6 Color Tag dots, 4 Performance & Battery Profiles (`Low Battery`, `Balanced`, `Performance`, `Max Fighting`), and clean modular Composables well under JVM bytecode limits.
+10. **Strict Zero-Mutation / Page-Code Untouched Isolation**: Zero modification to stored page files, zero website globals, `[native code]` masking, clean descriptor restore on disable/unfreeze, zero-load when OFF, `:local-bloxd` preserved byte-for-byte.

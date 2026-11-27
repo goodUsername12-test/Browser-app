@@ -45,11 +45,16 @@ constexpr int SC_UNCHANGED    = 10;
 constexpr int SC_GROUP        = 11;
 constexpr int SC_XOR          = 12;
 
-constexpr int FR_EXACT = 0;
-constexpr int FR_MIN   = 1;
-constexpr int FR_MAX   = 2;
-constexpr int FR_RANGE = 3;
-constexpr int FR_STEP  = 4;
+constexpr int FR_EXACT          = 0;
+constexpr int FR_MIN            = 1;
+constexpr int FR_MAX            = 2;
+constexpr int FR_RANGE          = 3;
+constexpr int FR_STEP           = 4;
+constexpr int FR_ON_CHANGE_SET  = 5;
+constexpr int FR_ON_DEC_RESTORE = 6;
+constexpr int FR_ON_CHANGE_ADD  = 7;
+constexpr int FR_ON_CHANGE_MUL  = 8;
+constexpr int FR_UNLIMITED_MAX  = 9;
 
 constexpr std::size_t MAX_RESULTS_CAP        = 400000;
 constexpr std::size_t MAX_UNKNOWN_SNAP_BYTES = 96 * 1024 * 1024;
@@ -1779,6 +1784,8 @@ struct NativeFreezeEntry {
     double target_num = 0.0;
     double target_max = 0.0;
     double step_delta = 0.0;
+    double last_seen_num = 0.0;
+    bool has_last_seen = false;
     std::int64_t last_step_ms = 0;
     bool is_numeric = false;
     int xor_mode = 0;
@@ -1878,6 +1885,53 @@ void* native_freeze_worker(void*) {
                                     std::memcpy(wr, f.bytes_hi, f.len);
                                     should_write = true;
                                 }
+                            } else if (f.rule == FR_ON_CHANGE_SET) {
+                                if (!f.has_last_seen) {
+                                    f.last_seen_num = cur_v;
+                                    f.has_last_seen = true;
+                                } else if (std::fabs(cur_v - f.last_seen_num) > 1e-6 && std::fabs(cur_v - f.target_num) > 1e-6) {
+                                    std::memcpy(wr, f.bytes, f.len);
+                                    f.last_seen_num = f.target_num;
+                                    should_write = true;
+                                }
+                            } else if (f.rule == FR_ON_DEC_RESTORE) {
+                                if (!f.has_last_seen) {
+                                    f.last_seen_num = cur_v;
+                                    f.has_last_seen = true;
+                                } else if (cur_v < f.last_seen_num - 1e-6) {
+                                    if (encode_numeric_val_bytes(f.dtype, f.last_seen_num, wr, write_len)) {
+                                        should_write = true;
+                                    }
+                                } else if (cur_v > f.last_seen_num) {
+                                    f.last_seen_num = cur_v;
+                                }
+                            } else if (f.rule == FR_ON_CHANGE_ADD) {
+                                if (!f.has_last_seen) {
+                                    f.last_seen_num = cur_v;
+                                    f.has_last_seen = true;
+                                } else if (std::fabs(cur_v - f.last_seen_num) > 1e-6) {
+                                    const double nv = cur_v + f.step_delta;
+                                    if (encode_numeric_val_bytes(f.dtype, nv, wr, write_len)) {
+                                        f.last_seen_num = nv;
+                                        should_write = true;
+                                    }
+                                }
+                            } else if (f.rule == FR_ON_CHANGE_MUL) {
+                                if (!f.has_last_seen) {
+                                    f.last_seen_num = cur_v;
+                                    f.has_last_seen = true;
+                                } else if (std::fabs(cur_v - f.last_seen_num) > 1e-6) {
+                                    const double nv = cur_v * f.step_delta;
+                                    if (encode_numeric_val_bytes(f.dtype, nv, wr, write_len)) {
+                                        f.last_seen_num = nv;
+                                        should_write = true;
+                                    }
+                                }
+                            } else if (f.rule == FR_UNLIMITED_MAX) {
+                                if (cur_v < f.target_num) {
+                                    std::memcpy(wr, f.bytes, f.len);
+                                    should_write = true;
+                                }
                             }
                         }
                     }
@@ -1942,7 +1996,7 @@ bool mem_set_freeze_ex_impl(std::uint64_t addr, int dtype, const std::string& va
     double step_delta = 0.0;
     bool is_num = false;
 
-    const int safe_rule = (rule >= FR_EXACT && rule <= FR_STEP) ? rule : FR_EXACT;
+    const int safe_rule = (rule >= FR_EXACT && rule <= FR_UNLIMITED_MAX) ? rule : FR_EXACT;
     if (safe_rule == FR_RANGE) {
         double lo = 0.0, hi = 0.0;
         if (!parse_range_pair(val_str, lo, hi)) {
@@ -1955,10 +2009,27 @@ bool mem_set_freeze_ex_impl(std::uint64_t addr, int dtype, const std::string& va
         target_num = lo;
         target_max = hi;
         is_num = true;
-    } else if (safe_rule == FR_STEP) {
-        if (!parse_double_strict(val_str.c_str(), step_delta)) return false;
+    } else if (safe_rule == FR_STEP || safe_rule == FR_ON_CHANGE_ADD || safe_rule == FR_ON_CHANGE_MUL) {
+        if (!parse_double_strict(val_str.c_str(), step_delta)) {
+            if (safe_rule == FR_STEP) return false;
+            step_delta = (safe_rule == FR_ON_CHANGE_MUL ? 2.0 : 10.0);
+        }
         sz = type_size(dtype, 0);
         if (sz == 0 || sz > 8 || dtype == DT_STRING || dtype == DT_AOB) return false;
+        is_num = true;
+    } else if (safe_rule == FR_UNLIMITED_MAX) {
+        target_num = (dtype == DT_INT8) ? 127.0
+            : (dtype == DT_INT16 ? 32767.0
+            : (dtype == DT_INT32 ? 2147483647.0
+            : (dtype == DT_UINT32 ? 4294967295.0
+            : (dtype == DT_INT64 ? 9007199254740991.0
+            : (dtype == DT_FLOAT ? 1.0e30 : 9007199254740991.0)))));
+        if (!encode_numeric_val_bytes(dtype, target_num, buf, sz)) return false;
+        is_num = true;
+    } else if (safe_rule == FR_ON_DEC_RESTORE) {
+        sz = type_size(dtype, 0);
+        if (sz == 0 || sz > 8 || dtype == DT_STRING || dtype == DT_AOB) return false;
+        parse_double_strict(val_str.c_str(), target_num);
         is_num = true;
     } else {
         if (!encode_value_bytes(dtype, val_str, buf, sz, target_num, is_num)) return false;
@@ -1972,7 +2043,7 @@ bool mem_set_freeze_ex_impl(std::uint64_t addr, int dtype, const std::string& va
         if (xor_mode != 0 && sz == 4) {
             if (!read_live_xor_key(io, xor_mode, xor_key, xor_key_addr, live_k)) return false;
         }
-        if (safe_rule == FR_EXACT || !is_num) {
+        if (safe_rule == FR_EXACT || safe_rule == FR_UNLIMITED_MAX || !is_num) {
             std::uint8_t wbuf[64];
             std::memcpy(wbuf, buf, sz);
             if (xor_mode != 0 && sz == 4) {
@@ -2026,6 +2097,7 @@ bool mem_set_freeze_ex_impl(std::uint64_t addr, int dtype, const std::string& va
             f.target_num = target_num;
             f.target_max = target_max;
             f.step_delta = step_delta;
+            f.has_last_seen = false;
             f.last_step_ms = now_ms;
             f.is_numeric = is_num;
             f.xor_mode = xor_mode;
@@ -2119,7 +2191,12 @@ std::string mem_freeze_stats_json_impl() {
         const char* rstr = f.rule == FR_MIN ? "min"
             : (f.rule == FR_MAX ? "max"
             : (f.rule == FR_RANGE ? "range"
-            : (f.rule == FR_STEP ? "step" : "eq")));
+            : (f.rule == FR_STEP ? "step"
+            : (f.rule == FR_ON_CHANGE_SET ? "on_change_set"
+            : (f.rule == FR_ON_DEC_RESTORE ? "on_dec_restore"
+            : (f.rule == FR_ON_CHANGE_ADD ? "on_change_add"
+            : (f.rule == FR_ON_CHANGE_MUL ? "on_change_mul"
+            : (f.rule == FR_UNLIMITED_MAX ? "unlimited_max" : "eq"))))))));
         out += "\"";
         out += addr_hex;
         out += "\":{\"mode\":\"";
@@ -2250,6 +2327,140 @@ std::string mem_find_mirrors_impl(std::uint64_t target_addr, int dtype, std::siz
     out += "],\"count\":";
     out += std::to_string(found);
     out += "}";
+    return out;
+}
+
+std::string mem_make_signature_impl(std::uint64_t target_addr) {
+    if (target_addr < 16) return "{\"ok\":false,\"error\":\"Invalid address\"}";
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self mem\"}";
+    std::uint8_t buf[32] = {0};
+    const std::uint64_t base = target_addr - 12;
+    if (io.read_at(base, buf, 32) != 32) {
+        return "{\"ok\":false,\"error\":\"Signature bytes unreadable\"}";
+    }
+    std::string sig;
+    sig.reserve(96);
+    int fixed_cnt = 0;
+    for (int i = 0; i < 32; ++i) {
+        if (i > 0) sig.push_back(' ');
+        if (i >= 12 && i < 16) {
+            sig += "??";
+        } else {
+            char hx[4];
+            std::snprintf(hx, sizeof(hx), "%02X", static_cast<unsigned>(buf[i]));
+            sig += hx;
+            fixed_cnt++;
+        }
+    }
+    std::string out = "{\"ok\":true,\"sig\":\"";
+    out += sig;
+    out += "\",\"valueOffset\":12,\"fixedBytes\":";
+    out += std::to_string(fixed_cnt);
+    out += "}";
+    return out;
+}
+
+std::string mem_resolve_signature_impl(const std::string& sig_hex, int value_offset, int timeout_ms) {
+    AobPattern pat = parse_aob(sig_hex);
+    if (pat.bytes.size() < 8) {
+        return "{\"ok\":false,\"error\":\"Invalid AOB signature\"}";
+    }
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self mem\"}";
+    const auto regions = parse_self_maps();
+    const std::int64_t deadline = steady_now_ms() + std::clamp<int>(timeout_ms, 1000, 15000);
+    std::vector<std::uint8_t> chunk(CHUNK_BYTES);
+    const std::uint64_t chunk_lo = reinterpret_cast<std::uint64_t>(chunk.data());
+    const std::uint64_t chunk_hi = chunk_lo + chunk.capacity();
+    const std::size_t plen = pat.bytes.size();
+    std::vector<std::uint64_t> found;
+    found.reserve(16);
+    for (const auto& reg : regions) {
+        if (found.size() >= 16 || steady_now_ms() >= deadline) break;
+        const std::uint64_t reg_len = reg.end - reg.start;
+        if (reg_len < plen || reg_len > MAX_REGION_BYTES) continue;
+        std::uint64_t off = 0;
+        while (off + plen <= reg_len && found.size() < 16 && steady_now_ms() < deadline) {
+            const std::size_t to_read = static_cast<std::size_t>(std::min<std::uint64_t>(CHUNK_BYTES, reg_len - off));
+            const ssize_t got = io.read_at(reg.start + off, chunk.data(), to_read);
+            if (got >= static_cast<ssize_t>(plen)) {
+                const std::size_t last = static_cast<std::size_t>(got) - plen;
+                for (std::size_t i = 0; i <= last && found.size() < 16; ++i) {
+                    bool ok = true;
+                    for (std::size_t k = 0; k < plen; ++k) {
+                        if (pat.mask[k] && chunk[i + k] != pat.bytes[k]) { ok = false; break; }
+                    }
+                    if (ok) {
+                        const std::uint64_t a = reg.start + off + i + static_cast<std::uint64_t>(std::max(0, value_offset));
+                        if (!is_inside_scanner_internal(a, 4, chunk_lo, chunk_hi)) {
+                            found.push_back(a);
+                        }
+                    }
+                }
+            }
+            const std::size_t step = (to_read > plen) ? (to_read - plen + 1) : to_read;
+            off += step;
+        }
+    }
+    std::string out = "{\"ok\":";
+    out += (found.empty() ? "false" : "true");
+    out += ",\"count\":";
+    out += std::to_string(found.size());
+    out += ",\"addrs\":[";
+    for (std::size_t i = 0; i < found.size(); ++i) {
+        if (i > 0) out += ",";
+        char hx[32];
+        std::snprintf(hx, sizeof(hx), "\"0x%llX\"", static_cast<unsigned long long>(found[i]));
+        out += hx;
+    }
+    out += "]}";
+    return out;
+}
+
+std::string mem_test_authority_impl(std::uint64_t addr, int dtype) {
+    const std::size_t sz = type_size(dtype, 0);
+    if (sz == 0 || sz > 8) return "{\"ok\":false,\"error\":\"Authority test requires numeric type\"}";
+    SafeMemIo io(true);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self mem\"}";
+    std::uint8_t orig[8] = {0};
+    if (io.read_at(addr, orig, sz) != static_cast<ssize_t>(sz)) {
+        return "{\"ok\":false,\"error\":\"Address unreadable\"}";
+    }
+    const double cur_v = decode_numeric(load_raw_u64(orig, dtype), dtype);
+    if (!std::isfinite(cur_v)) return "{\"ok\":false,\"error\":\"Non-finite value\"}";
+    std::uint8_t probe[64] = {0};
+    std::size_t psz = sz;
+    const double test_v = cur_v + 1.0;
+    if (!encode_numeric_val_bytes(dtype, test_v, probe, psz)) {
+        return "{\"ok\":false,\"error\":\"Cannot encode probe\"}";
+    }
+    const bool writable = (io.write_at(addr, probe, sz) == static_cast<ssize_t>(sz));
+    std::uint8_t rb[8] = {0};
+    bool accepted = false;
+    bool overwritten = false;
+    if (writable) {
+        ::usleep(12000);
+        if (io.read_at(addr, rb, sz) == static_cast<ssize_t>(sz)) {
+            accepted = (std::memcmp(rb, probe, sz) == 0);
+            overwritten = (std::memcmp(rb, orig, sz) == 0);
+        }
+        // Always restore original bytes cleanly!
+        io.write_at(addr, orig, sz);
+    }
+    const int score = !writable ? 5 : (accepted ? 92 : (overwritten ? 55 : 70));
+    const char* verdict = !writable ? "read-only" : (accepted ? "writable-stable" : (overwritten ? "externally-restored" : "active-dynamic"));
+    std::string out = "{\"ok\":true,\"writable\":";
+    out += (writable ? "true" : "false");
+    out += ",\"accepted\":";
+    out += (accepted ? "true" : "false");
+    out += ",\"externallyRestored\":";
+    out += (overwritten ? "true" : "false");
+    out += ",\"score\":";
+    out += std::to_string(score);
+    out += ",\"verdict\":\"";
+    out += verdict;
+    out += "\"}";
     return out;
 }
 
@@ -2481,6 +2692,26 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeFindMirrors(
         static_cast<std::size_t>(std::clamp<int>(maxReturn, 1, 100)),
         timeoutMs
     );
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeMakeSignature(JNIEnv* env, jclass, jlong addr) {
+    const std::string res = mem_make_signature_impl(static_cast<std::uint64_t>(addr));
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeResolveSignature(
+        JNIEnv* env, jclass, jstring sigHex, jint valueOffset, jint timeoutMs) {
+    const std::string s = jstr_to_std(env, sigHex);
+    const std::string res = mem_resolve_signature_impl(s, valueOffset, timeoutMs);
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeTestAuthority(JNIEnv* env, jclass, jlong addr, jint dtype) {
+    const std::string res = mem_test_authority_impl(static_cast<std::uint64_t>(addr), dtype);
     return env->NewStringUTF(res.c_str());
 }
 

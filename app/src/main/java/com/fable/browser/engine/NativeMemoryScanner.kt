@@ -31,7 +31,10 @@ enum class MemScanType(val code: Int, val jsCode: String, val label: String, val
     INCREASED_BY(7, "increased_by", "Increased by", nextOnly = true),
     DECREASED_BY(8, "decreased_by", "Decreased by", nextOnly = true),
     CHANGED(9, "changed", "Changed", nextOnly = true),
-    UNCHANGED(10, "unchanged", "Unchanged", nextOnly = true)
+    UNCHANGED(10, "unchanged", "Unchanged", nextOnly = true),
+    ALWAYS_INC(13, "always_inc", "Always Inc (Snaps)", nextOnly = true),
+    ALWAYS_DEC(14, "always_dec", "Always Dec (Snaps)", nextOnly = true),
+    RETURNED_ORIG(15, "returned_orig", "Returned Orig", nextOnly = true)
 }
 
 object NativeMemoryScanner {
@@ -105,6 +108,15 @@ object NativeMemoryScanner {
 
     @JvmStatic
     private external fun nativeFindMirrors(targetAddr: Long, dtype: Int, maxReturn: Int, timeoutMs: Int): String
+
+    @JvmStatic
+    private external fun nativeMakeSignature(addr: Long): String
+
+    @JvmStatic
+    private external fun nativeResolveSignature(sigHex: String, valueOffset: Int, timeoutMs: Int): String
+
+    @JvmStatic
+    private external fun nativeTestAuthority(addr: Long, dtype: Int): String
 
     fun firstScan(
         dtype: MemDataType,
@@ -253,6 +265,25 @@ object NativeMemoryScanner {
         val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
         return runCatching { nativeFindMirrors(addr, nativeType, maxReturn.coerceIn(1, 100), timeoutMs.coerceIn(1_000, 20_000)) }
             .getOrElse { "{\"ok\":false,\"error\":\"Mirror scan failed\"}" }
+    }
+
+    fun makeSignature(addrHex: String): String {
+        if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
+        val addr = parseHexAddress(addrHex) ?: return "{\"ok\":false,\"error\":\"Invalid address\"}"
+        return runCatching { nativeMakeSignature(addr) }.getOrElse { "{\"ok\":false,\"error\":\"Signature error\"}" }
+    }
+
+    fun resolveSignature(sigHex: String, valueOffset: Int = 12, timeoutMs: Int = 8_000): String {
+        if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
+        return runCatching { nativeResolveSignature(sigHex, valueOffset, timeoutMs.coerceIn(1_000, 15_000)) }
+            .getOrElse { "{\"ok\":false,\"error\":\"Signature resolve error\"}" }
+    }
+
+    fun testAuthority(addrHex: String, dtype: MemDataType): String {
+        if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
+        val addr = parseHexAddress(addrHex) ?: return "{\"ok\":false,\"error\":\"Invalid address\"}"
+        val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
+        return runCatching { nativeTestAuthority(addr, nativeType) }.getOrElse { "{\"ok\":false,\"error\":\"Authority test error\"}" }
     }
 
     fun hexDump(addrHex: String, len: Int = 128): String {

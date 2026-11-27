@@ -1093,6 +1093,42 @@ fun PerformanceSettingsScreen(
                     checked = settings.memoryEngineAutoReattach,
                     onCheckedChange = viewModel::setMemoryEngineAutoReattach
                 )
+                SwitchRow(
+                    title = "Prefer literal Infinity for MAX / Unlimited (with auto-fallback)",
+                    subtitle = "Attempts JavaScript Infinity where supported and automatically falls back to type MAX SAFE if a game converts Infinity to null/NaN/0.",
+                    checked = settings.memoryEnginePreferInfinity,
+                    onCheckedChange = viewModel::setMemoryEnginePreferInfinity
+                )
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Text(text = "Performance & Battery Profile", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        text = "Balances watch-loop polling speed, freeze frequency, and battery consumption",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        com.fable.browser.engine.MemPerfProfile.entries.forEach { prof ->
+                            val sel = settings.memoryEnginePerfProfile == prof.level
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { viewModel.setMemoryEnginePerfProfile(prof.level) }
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 4.dp, vertical = 9.dp)) {
+                                    Text(
+                                        text = prof.shortLabel,
+                                        color = if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
                     Text(
                         text = "Freeze Strength Mode",

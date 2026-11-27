@@ -371,7 +371,7 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
   if (op === "unfreeze" || op === "unfreezeBatch" || op === "unfreezeAll" || op === "clearTrace" || op === "setFreezeStrength") {
     return JSON.stringify({ ok: true });
   }
-  if (op === "write" || op === "hexDump" || op === "writeHex" || op === "setFreeze" || op === "peekStruct" || op === "pointerScan" || op === "setTrace" || op === "reattach" || op === "findMirrors") {
+  if (op === "write" || op === "hexDump" || op === "writeHex" || op === "setFreeze" || op === "peekStruct" || op === "pointerScan" || op === "setTrace" || op === "reattach" || op === "findMirrors" || op === "captureIdentity" || op === "reattachIdentity" || op === "testAuthority" || op === "setSafeMax" || op === "takeSnapshot") {
     const hit = parsed.find((o) => o.ok) || parsed[0];
     return JSON.stringify(hit);
   }

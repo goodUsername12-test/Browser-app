@@ -557,8 +557,9 @@ class MainActivity : FragmentActivity() {
                                 val mirOk = withContext(Dispatchers.IO) {
                                     com.fable.browser.engine.NativeMemoryScanner.setFreezeStrength(2)
                                     val mirRaw = if (firstAddr.isNotEmpty()) com.fable.browser.engine.NativeMemoryScanner.findMirrors(firstAddr, com.fable.browser.engine.MemDataType.INT32, 20, 4000) else "{}"
+                                    val authRaw = if (firstAddr.isNotEmpty()) com.fable.browser.engine.NativeMemoryScanner.testAuthority(firstAddr, com.fable.browser.engine.MemDataType.INT32) else "{}"
                                     com.fable.browser.engine.NativeMemoryScanner.setFreezeStrength(1)
-                                    runCatching { org.json.JSONObject(mirRaw).optBoolean("ok", false) }.getOrDefault(false)
+                                    runCatching { org.json.JSONObject(mirRaw).optBoolean("ok", false) && org.json.JSONObject(authRaw).optBoolean("writable", false) }.getOrDefault(false)
                                 }
                                 val sizeMgrOk = (s1Set.memoryEnginePanelWidthPct == 75 && s1Set.memoryEnginePanelHeightPct == 80 && s1Set.memoryEnginePanelScalePct == 115) &&
                                     (s2Clamp.memoryEnginePanelWidthPct == 55 && s2Clamp.memoryEnginePanelHeightPct == 95 && s2Clamp.memoryEnginePanelScalePct == 140) &&

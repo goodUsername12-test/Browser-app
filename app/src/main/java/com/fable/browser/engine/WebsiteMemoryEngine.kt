@@ -209,7 +209,7 @@ object WebsiteMemoryEngine {
             return JSONObject().put("ok", true).toString()
         }
         if (op == "write" || op == "hexDump" || op == "writeHex" || op == "setFreeze" ||
-            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach" || op == "findMirrors") {
+            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach" || op == "findMirrors" || op == "captureIdentity" || op == "reattachIdentity" || op == "testAuthority" || op == "setSafeMax" || op == "takeSnapshot") {
             val hit = parsed.firstOrNull { it.optBoolean("ok", false) } ?: parsed[0]
             return hit.toString()
         }
@@ -353,7 +353,7 @@ object WebsiteMemoryEngine {
 
     fun buildBootstrapScriptInternal(channelId: String = CHANNEL_ID): String {
         val chJson = JSONObject.quote(channelId)
-        val sb = StringBuilder(170_000)
+        val sb = StringBuilder(190_000)
         sb.append(JS_PART_1.replace("__CH_ARG__", chJson))
         sb.append("\n").append(JS_PART_2)
         sb.append("\n").append(JS_PART_3)
@@ -361,6 +361,7 @@ object WebsiteMemoryEngine {
         sb.append("\n").append(JS_PART_5)
         sb.append("\n").append(JS_PART_6)
         sb.append("\n").append(JS_PART_7)
+        sb.append("\n").append(JS_PART_8)
         return sb.toString()
     }
 
@@ -484,12 +485,16 @@ var MAX_UNKNOWN_SNAP_BYTES = 128 * 1024 * 1024;
 function mkRef(o) {
 return typeof WeakRef === "function" ? new WeakRef(o) : { deref: function() { return o; } };
 }
+var wasmStrongPins = [];
 function trackWasmMem(mem) {
 try {
 if (!mem || !mem.buffer || wasmSeen.has(mem)) return;
 wasmSeen.add(mem);
 var id = nextWasmId++;
 wasmEntries.push({ id: id, ref: mkRef(mem) });
+wasmStrongPins.push(mem);
+if (wasmStrongPins.length > 16) wasmStrongPins.shift();
+trackRawBuf(mem.buffer);
 } catch (_) {}
 }
 function trackRawBuf(ab) {
@@ -1021,10 +1026,10 @@ if (isShared && typeof Atomics === "object") {
 try {
 if (dt === "i8") { Atomics.store(new Int8Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
 if (dt === "i16" && (absOff & 1) === 0) { Atomics.store(new Int16Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
-if (dt === "i32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
     """.trimStart('\n').trimEnd('\n')
 
     private val JS_PART_2 = """
+if (dt === "i32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
 if (dt === "u32" && (absOff & 3) === 0) { Atomics.store(new Uint32Array(dv.buffer, absOff, 1), 0, (num < 0 ? 0 : num) >>> 0); return true; }
 if (dt === "f32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, f32ToI32Bits(num)); return true; }
 } catch (_) {}
@@ -1250,13 +1255,50 @@ return null;
 function ruleEval(curVal, fe) {
 var rule = fe.rule || "eq";
 if (rule === "step") return { violated: false, nextVal: curVal };
-if (typeof curVal === "number" && Number.isFinite(curVal)) {
+if (typeof curVal === "number" && (Number.isFinite(curVal) || curVal === Infinity)) {
 if (rule === "range") {
 if (typeof fe.rangeLo === "number" && curVal < fe.rangeLo) return { violated: true, nextVal: fe.rangeLo };
 if (typeof fe.rangeHi === "number" && curVal > fe.rangeHi) return { violated: true, nextVal: fe.rangeHi };
 return { violated: false, nextVal: curVal };
 }
-if (typeof fe.parsedVal === "number" && Number.isFinite(fe.parsedVal)) {
+if (rule === "on_dec_restore") {
+if (typeof fe.highWater !== "number") { fe.highWater = curVal; return { violated: false, nextVal: curVal }; }
+if (curVal < fe.highWater) return { violated: true, nextVal: fe.highWater };
+if (curVal > fe.highWater) fe.highWater = curVal;
+return { violated: false, nextVal: curVal };
+}
+if (rule === "on_change_set") {
+if (typeof fe.lastSeen !== "number") { fe.lastSeen = curVal; return { violated: false, nextVal: curVal }; }
+if (curVal !== fe.lastSeen && curVal !== fe.parsedVal) {
+fe.lastSeen = fe.parsedVal;
+return { violated: true, nextVal: fe.parsedVal };
+}
+return { violated: false, nextVal: curVal };
+}
+if (rule === "on_change_add") {
+if (typeof fe.lastSeen !== "number") { fe.lastSeen = curVal; return { violated: false, nextVal: curVal }; }
+if (curVal !== fe.lastSeen) {
+var addNext = curVal + (fe.stepDelta || 10);
+fe.lastSeen = addNext;
+return { violated: true, nextVal: addNext };
+}
+return { violated: false, nextVal: curVal };
+}
+if (rule === "on_change_mul") {
+if (typeof fe.lastSeen !== "number") { fe.lastSeen = curVal; return { violated: false, nextVal: curVal }; }
+if (curVal !== fe.lastSeen) {
+var mulNext = curVal * (fe.stepDelta || 2);
+fe.lastSeen = mulNext;
+return { violated: true, nextVal: mulNext };
+}
+return { violated: false, nextVal: curVal };
+}
+if (rule === "unlimited_max") {
+var wantU = fe.parsedVal;
+if (typeof wantU === "number" && curVal < wantU) return { violated: true, nextVal: wantU };
+return { violated: false, nextVal: curVal };
+}
+if (typeof fe.parsedVal === "number" && (Number.isFinite(fe.parsedVal) || fe.parsedVal === Infinity)) {
 if (rule === "min") return curVal < fe.parsedVal ? { violated: true, nextVal: fe.parsedVal } : { violated: false, nextVal: curVal };
 if (rule === "max") return curVal > fe.parsedVal ? { violated: true, nextVal: fe.parsedVal } : { violated: false, nextVal: curVal };
 return curVal !== fe.parsedVal ? { violated: true, nextVal: fe.parsedVal } : { violated: false, nextVal: curVal };
@@ -1266,6 +1308,17 @@ if (rule === "eq" && String(curVal) !== String(fe.parsedVal)) {
 return { violated: true, nextVal: fe.parsedVal };
 }
 return { violated: false, nextVal: curVal };
+}
+function safeMaxForType(dt, kind) {
+if (kind === "js" || kind === "map" || kind === "ls" || kind === "ss" || kind === "lsjson" || kind === "ssjson") return 9007199254740991;
+if (dt === "i8") return 127;
+if (dt === "i16") return 32767;
+if (dt === "i32") return 2147483647;
+if (dt === "u32") return 4294967295;
+if (dt === "i64") return 9007199254740991;
+if (dt === "f32") return 1e30;
+if (dt === "f64" || dt === "auto") return 9007199254740991;
+return 2147483647;
 }
 function captureTargetBytes(h) {
 if (h.kind !== "wasm" && h.kind !== "ta" && h.kind !== "ab") return null;
@@ -1324,13 +1377,16 @@ caller: callerStr || "write"
 if (te.events.length > MAX_TRACE_EVENTS) te.events.shift();
 te.writeCount++;
 }
+var VALID_RULES = { eq:1, min:1, max:1, range:1, step:1, on_change_set:1, on_dec_restore:1, on_change_add:1, on_change_mul:1, unlimited_max:1 };
 function configureFreezeRuleValues(fe, h, valStr, ruleStr) {
-var rule = (ruleStr === "min" || ruleStr === "max" || ruleStr === "range" || ruleStr === "step") ? ruleStr : "eq";
+var rule = VALID_RULES[ruleStr] ? ruleStr : "eq";
 fe.rule = rule;
 fe.valStr = String(valStr);
 fe.rangeLo = null;
 fe.rangeHi = null;
 fe.stepDelta = 0;
+fe.highWater = undefined;
+fe.lastSeen = undefined;
 if (rule === "range") {
 var rp = parseRangePair(valStr);
 if (rp) {
@@ -1343,13 +1399,22 @@ fe.rangeLo = typeof singleN === "number" ? singleN : 0;
 fe.rangeHi = fe.rangeLo;
 fe.parsedVal = fe.rangeLo;
 }
-} else if (rule === "step") {
+} else if (rule === "step" || rule === "on_change_add" || rule === "on_change_mul") {
 var dn = Number(cleanNumStr(valStr));
-fe.stepDelta = Number.isFinite(dn) ? dn : 1;
+fe.stepDelta = Number.isFinite(dn) ? dn : (rule === "on_change_mul" ? 2 : 10);
 fe.parsedVal = fe.stepDelta;
 fe.lastStepMs = origDateNow();
+} else if (rule === "unlimited_max") {
+var wantInf = (String(valStr).trim().toLowerCase() === "infinity" || String(valStr).trim() === "∞") &&
+(h.kind === "js" || h.dt === "f32" || h.dt === "f64");
+fe.parsedVal = wantInf ? Infinity : safeMaxForType(h.dt, h.kind);
+fe.valStr = String(fe.parsedVal);
+} else {
+if ((String(valStr).trim().toLowerCase() === "infinity") && (h.kind === "js" || h.dt === "f32" || h.dt === "f64")) {
+fe.parsedVal = Infinity;
 } else {
 fe.parsedVal = parseTargetVal(h, valStr);
+}
 }
 }
 function writeHitValue(h, valStr, bypassFreeze) {
@@ -1387,11 +1452,13 @@ else return false;
 var cur = undefined;
 try { cur = obj[h.key]; } catch (_) {}
 var cs = cleanNumStr(valStr);
-var nextJsVal = (typeof cur === "bigint" && typeof BigInt === "function" && !Number.isNaN(Number(cs)) && cs !== "")
-? BigInt(Math.trunc(Number(cs)))
+var isInfReq = String(valStr).trim().toLowerCase() === "infinity";
+var nextJsVal = (typeof cur === "bigint" && typeof BigInt === "function" && cs !== "")
+? (isInfReq ? BigInt("999999999999999999999999999999") : (!Number.isNaN(Number(cs)) ? BigInt(Math.trunc(Number(cs))) : cur))
+: (isInfReq ? Infinity
 : ((typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(cs)) && cs !== ""))
 ? Number(cs)
-: (typeof cur === "boolean" ? (valStr === "true" || valStr === "1") : String(valStr)));
+: (typeof cur === "boolean" ? (valStr === "true" || valStr === "1") : String(valStr))));
 var rawJsWrite = nextJsVal;
 if (h.xorMode === 3 && typeof nextJsVal === "number") {
 var lkJw = readLiveXorKey(h, null);
@@ -1544,6 +1611,9 @@ return origSetItem.apply(this, arguments);
 }, origSetItem, "setItem");
 
 var wrappedRemoveItem = origRemoveItem ? mask(function removeItem(k) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_3 = """
 var ctx = resolveActive(this);
 var set = ctx ? ctx.keyMap.get(String(k)) : null;
 if (set && set.size > 0) {
@@ -1643,9 +1713,6 @@ return;
 }
 var isStorage = (h.kind === "ls" || h.kind === "ss" || h.kind === "lsjson" || h.kind === "ssjson");
 if (fe.trapInstalled && !isStorage) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_3 = """
 if (fe.origGet && fe.origSet && fe.origObj) {
 try {
 var liveAcc = fe.origGet.call(fe.origObj);
@@ -2055,8 +2122,8 @@ targetBytes: null,
 status: "locked"
 };
 configureFreezeRuleValues(fe, rec, valStr, ruleStr);
-if (fe.rule === "eq") {
-if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
+if (fe.rule === "eq" || fe.rule === "unlimited_max") {
+if (!writeHitValue(rec, fe.valStr, true)) return { ok: false, error: "Write failed (detached)" };
 fe.backingVal = fe.parsedVal;
 } else if (fe.rule !== "step") {
 var rdInit = readHitCurrent(rec);
@@ -2274,6 +2341,9 @@ origObj: null,
 rule: "trace"
 };
 if (rec.kind === "js") {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_4 = """
 var obj = rec.objRef ? rec.objRef.deref() : null;
 if (obj) {
 var existingF = frozenMap.get(localId);
@@ -2358,9 +2428,6 @@ if (!aob.bytes.length || scanLen < aob.bytes.length) return;
 var u8b = new Uint8Array(buf, byteOff, scanLen);
 var lim2 = scanLen - aob.bytes.length;
 for (var o2 = 0; o2 <= lim2 && out.length < cap; o2++) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_4 = """
 if ((o2 & 262143) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
 var ok2 = true;
 for (var k2 = 0; k2 < aob.bytes.length; k2++) {
@@ -2859,6 +2926,9 @@ var keys;
 try {
 keys = cur.depth <= 2 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
 } catch (_) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_5 = """
 try { keys = Object.keys(obj); } catch (_2) { skippedXOriginCount++; continue; }
 }
 if (cur.depth > 0 && cur.depth <= 4) {
@@ -2937,9 +3007,6 @@ out.push({ id: "js:" + nextPath, kind: "js", objRef: mkRef(obj), key: k, dt: Num
 } else if (typeof val === "bigint") {
 if (!isWritable) continue;
 var bNum = Number(val);
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_5 = """
 if (dt !== "str" && dt !== "aob" && Number.isFinite(bNum) && matchNum(bNum, 0, false, "i64", sc, v1, v2)) {
 out.push({ id: "js:" + nextPath, kind: "js", objRef: mkRef(obj), key: k, dt: "i64", prev: bNum });
 }
@@ -3412,6 +3479,9 @@ return id;
 }
 function isForThisFrame(fullId) {
 if (typeof fullId !== "string") return false;
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_6 = """
 if (fullId.charAt(0) === "@") {
 return fullId.indexOf("@" + FRAME_ID + "|") === 0;
 }
@@ -3461,9 +3531,6 @@ var items = [];
 for (var i = 0; i < lim; i++) {
 var sh = scored[i];
 var h = sh.h;
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_6 = """
 watchRefs.set(h.id, h);
 var rd = readHitCurrent(h);
 items.push({
@@ -3559,6 +3626,222 @@ if (frozenMap.size > 0) { stopFreezeLoops(); startFreezeLoops(); }
 }
 return { ok: true, frameId: FRAME_ID, freezeStrength: freezeStrength };
 }
+if (cmd.op === "takeSnapshot") {
+var snapCnt = 0;
+for (var tsi = 0; tsi < hits.length && tsi < 50000; tsi++) {
+var th = hits[tsi];
+var trd = readHitCurrent(th);
+if (!trd.ok) continue;
+if (!th.hist) th.hist = [th.prev];
+th.hist.push(trd.val);
+if (th.hist.length > 8) th.hist.shift();
+th.prev = trd.val;
+snapCnt++;
+}
+var maxD = hits.length > 0 && hits[0].hist ? hits[0].hist.length : 1;
+return { ok: true, frameId: FRAME_ID, count: snapCnt, snapshotCount: maxD };
+}
+if (cmd.op === "setSafeMax") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var locSM = stripOwnFramePrefix(cmd.id);
+var recSM = watchRefs.get(locSM);
+if (!recSM) return { ok: false, error: "Entry not found in frame" };
+var useInf = !!cmd.useInfinity && (recSM.kind === "js" || recSM.dt === "f32" || recSM.dt === "f64");
+var safeVal = safeMaxForType(recSM.dt, recSM.kind);
+var wantStr = useInf ? "Infinity" : String(safeVal);
+var okSM = writeHitValue(recSM, wantStr, false);
+var rdSM = readHitCurrent(recSM);
+var fellBack = false;
+if (useInf && (!okSM || !rdSM.ok || rdSM.val === null || rdSM.val === undefined || rdSM.val === 0 || (typeof rdSM.val === "number" && Number.isNaN(rdSM.val)))) {
+fellBack = true;
+okSM = writeHitValue(recSM, String(safeVal), false);
+rdSM = readHitCurrent(recSM);
+}
+return { ok: okSM, frameId: FRAME_ID, val: formatVal(rdSM.val, recSM.dt), fellBackToSafeMax: fellBack, safeMax: String(safeVal) };
+}
+if (cmd.op === "captureIdentity") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var locId = stripOwnFramePrefix(cmd.id);
+var recId = watchRefs.get(locId);
+if (!recId) return { ok: false, error: "Entry not found" };
+var rdId = readHitCurrent(recId);
+var clId = classifyHitAuthority(recId);
+var sigHex = "";
+var sigOff = 12;
+var nearby = [];
+if (recId.kind === "wasm" || recId.kind === "ab" || recId.kind === "ta") {
+var biId = getBufferForHit(recId);
+if (biId && recId.off >= 12 && recId.off + 20 <= biId.byteLen) {
+var u8s = new Uint8Array(biId.buf, biId.byteOff + recId.off - 12, 32);
+var sp = [];
+for (var bi2 = 0; bi2 < 32; bi2++) {
+if (bi2 >= 12 && bi2 < 16) sp.push("??");
+else sp.push(u8s[bi2].toString(16).toUpperCase().padStart(2, "0"));
+}
+sigHex = sp.join(" ");
+var dvs = new DataView(biId.buf, biId.byteOff, biId.byteLen);
+for (var nd = -8; nd <= 8; nd += 4) {
+if (nd !== 0 && recId.off + nd >= 0 && recId.off + nd + 4 <= biId.byteLen) {
+nearby.push({ d: nd, v: dvs.getInt32(recId.off + nd, true) });
+}
+}
+}
+} else if (recId.kind === "js") {
+var objId = recId.objRef ? recId.objRef.deref() : null;
+if (objId) {
+try {
+var oKs = Object.keys(objId).slice(0, 12);
+for (var oki = 0; oki < oKs.length; oki++) {
+if (oKs[oki] !== recId.key && typeof objId[oKs[oki]] === "number") {
+nearby.push({ k: oKs[oki], v: objId[oKs[oki]] });
+}
+}
+} catch (_) {}
+}
+}
+return {
+ok: true, frameId: FRAME_ID,
+identity: {
+addr: cmd.id, localId: locId, kind: recId.kind, dt: recId.dt,
+lastVal: rdId.ok ? formatVal(rdId.val, recId.dt) : "",
+role: clId.role, score: clId.score,
+sig: sigHex, sigOff: sigOff, nearby: nearby
+}
+};
+}
+if (cmd.op === "reattachIdentity") {
+var ident = cmd.identity || {};
+var targetFull = String(ident.addr || cmd.id || "");
+if (targetFull && !isForThisFrame(targetFull)) return { ok: false, skippedFrame: true };
+var locRe = stripOwnFramePrefix(targetFull || String(ident.localId || ""));
+// Stage 1: Existing watchRef live (for binary hits with a saved AOB signature, verify signature still matches at old offset!)
+var exRe = watchRefs.get(locRe);
+if (exRe) {
+var sigStillOk = true;
+if (ident.sig && typeof ident.sig === "string" && (exRe.kind === "wasm" || exRe.kind === "ab" || exRe.kind === "ta")) {
+var biChk = getBufferForHit(exRe);
+var patChk = parseAob(ident.sig);
+var sOffChk = Number(ident.sigOff) || 12;
+if (biChk && patChk.bytes.length >= 8 && exRe.off >= sOffChk && exRe.off - sOffChk + patChk.bytes.length <= biChk.byteLen) {
+var u8c = new Uint8Array(biChk.buf, biChk.byteOff + exRe.off - sOffChk, patChk.bytes.length);
+for (var ciS = 0; ciS < patChk.bytes.length; ciS++) {
+if (patChk.mask[ciS] && u8c[ciS] !== patChk.bytes[ciS]) { sigStillOk = false; break; }
+}
+} else {
+sigStillOk = false;
+}
+}
+if (sigStillOk) {
+var rdEx2 = readHitCurrent(exRe);
+if (rdEx2.ok) return { ok: true, frameId: FRAME_ID, addr: qualifyId(locRe), moved: false, val: formatVal(rdEx2.val, exRe.dt), method: "live", status: "reattached" };
+}
+}
+// Stage 2: Direct JS path / Storage / WASM offset
+var dtRe = ident.dt || "i32";
+if (locRe.indexOf("js:") === 0) {
+var resJ2 = resolveJsPathFromWindow(locRe);
+if (resJ2) {
+var vJ2 = resJ2.obj[resJ2.key];
+var recJ2 = { id: locRe, kind: "js", objRef: mkRef(resJ2.obj), key: resJ2.key, dt: dtRe, prev: vJ2 };
+watchRefs.set(locRe, recJ2);
+return { ok: true, frameId: FRAME_ID, addr: qualifyId(locRe), moved: false, val: formatVal(vJ2, dtRe), method: "path", status: "reattached" };
+}
+}
+if (locRe.indexOf("ls:") === 0 || locRe.indexOf("ss:") === 0) {
+var reOld = handleCmd({ op: "reattach", id: targetFull, dt: dtRe });
+if (reOld && reOld.ok) return { ok: true, frameId: FRAME_ID, addr: targetFull, moved: false, val: reOld.val, method: "storage", status: "reattached" };
+}
+// Stage 3: Saved AOB Signature across live WASM & Buffers!
+if (ident.sig && typeof ident.sig === "string" && ident.sig.length >= 16) {
+var patS = parseAob(ident.sig);
+var sOff = Number(ident.sigOff) || 12;
+if (patS.bytes.length >= 8) {
+var sigHits = [];
+var memsS = liveWasmEntries();
+for (var smi = 0; smi < memsS.length && sigHits.length < 4; smi++) {
+var smb = memsS[smi].mem.buffer;
+var su8 = new Uint8Array(smb, 0, Math.min(smb.byteLength, 32 * 1024 * 1024));
+var plen = patS.bytes.length;
+for (var offS = 0; offS + plen <= su8.length && sigHits.length < 4; offS++) {
+var okS = true;
+for (var piS = 0; piS < plen; piS++) { if (patS.mask[piS] && su8[offS + piS] !== patS.bytes[piS]) { okS = false; break; } }
+if (okS) {
+var valOff = offS + sOff;
+var newLoc = "wasm#" + memsS[smi].id + "+0x" + valOff.toString(16).toUpperCase() + ":" + dtRe;
+var nRec = { id: newLoc, kind: "wasm", bufIdx: memsS[smi].id, memRef: memsS[smi].ref, abRef: null, off: valOff, dt: dtRe, len: 4, prev: 0, scale: 0 };
+var rdN = readHitCurrent(nRec);
+if (rdN.ok) { nRec.prev = rdN.val; sigHits.push({ rec: nRec, val: formatVal(rdN.val, dtRe) }); }
+}
+}
+}
+if (sigHits.length === 1) {
+watchRefs.set(sigHits[0].rec.id, sigHits[0].rec);
+return { ok: true, frameId: FRAME_ID, addr: qualifyId(sigHits[0].rec.id), moved: sigHits[0].rec.id !== locRe, oldAddr: targetFull, val: sigHits[0].val, method: "signature", status: "reattached" };
+}
+if (sigHits.length > 1) {
+return { ok: false, frameId: FRAME_ID, status: "ambiguous", candidateCount: sigHits.length, error: "Multiple signature matches (" + sigHits.length + ")" };
+}
+}
+}
+// Stage 4: Direct WASM offset fallback
+if (locRe.indexOf("wasm#") === 0) {
+var reW2 = handleCmd({ op: "reattach", id: targetFull, dt: dtRe });
+if (reW2 && reW2.ok) return { ok: true, frameId: FRAME_ID, addr: targetFull, moved: false, val: reW2.val, method: "wasm_offset", status: "reattached" };
+}
+// Stage 5: JS Leaf Key + Sibling Fingerprint recovery (survives scene array index shifts!)
+if (locRe.indexOf("js:") === 0 && ident.lastVal !== "") {
+var leafKey = locRe.split(".").pop();
+var targetNum = Number(cleanNumStr(ident.lastVal));
+if (leafKey && leafKey.length >= 2 && Number.isFinite(targetNum)) {
+var fOut = [];
+var fSeen = new WeakSet();
+collectJsAndTypedArrays("auto", "exact", targetNum, 0, "", { bytes: [], mask: [] }, fOut, 200, fSeen, Date.now() + 2500, { timedOut: false });
+var keyMatches = [];
+for (var fi = 0; fi < fOut.length; fi++) {
+if (fOut[fi].kind === "js" && String(fOut[fi].key) === leafKey && classifyHitAuthority(fOut[fi]).role !== "ui") {
+keyMatches.push(fOut[fi]);
+}
+}
+if (keyMatches.length === 1) {
+watchRefs.set(keyMatches[0].id, keyMatches[0]);
+return { ok: true, frameId: FRAME_ID, addr: qualifyId(keyMatches[0].id), moved: keyMatches[0].id !== locRe, oldAddr: targetFull, val: formatVal(keyMatches[0].prev, keyMatches[0].dt), method: "fingerprint", status: "reattached" };
+}
+if (keyMatches.length > 1) {
+return { ok: false, frameId: FRAME_ID, status: "ambiguous", candidateCount: keyMatches.length, error: "Multiple candidates (" + keyMatches.length + ")" };
+}
+}
+}
+return { ok: false, frameId: FRAME_ID, status: "lost", error: "Waiting for object / not found after reload" };
+}
+if (cmd.op === "testAuthority") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var locA = stripOwnFramePrefix(cmd.id);
+var recA = watchRefs.get(locA);
+if (!recA) return { ok: false, error: "Entry not found" };
+var rdA0 = readHitCurrent(recA);
+if (!rdA0.ok) return { ok: false, error: "Target unreadable" };
+var clA = classifyHitAuthority(recA);
+var origVal = rdA0.val;
+var isNumA = (typeof origVal === "number" && Number.isFinite(origVal));
+var probeVal = isNumA ? (origVal + 1) : (String(origVal) + "_t");
+var writableA = writeHitValue(recA, String(probeVal), true);
+var rdA1 = readHitCurrent(recA);
+var acceptedA = writableA && rdA1.ok && (isNumA ? Math.abs(Number(rdA1.val) - probeVal) <= 0.01 : String(rdA1.val) === String(probeVal));
+var restoredExt = writableA && rdA1.ok && String(rdA1.val) === String(origVal);
+// Always restore original cleanly!
+if (writableA) writeHitValue(recA, String(origVal), true);
+var authScore = clA.score;
+var verdict = "gameplay-candidate";
+if (!writableA) { authScore = 5; verdict = "read-only"; }
+else if (clA.role === "ui") { authScore = Math.min(authScore, 18); verdict = "display-only-ui"; }
+else if (restoredExt) { authScore = 45; verdict = "externally-restored"; }
+else if (acceptedA) { authScore = Math.max(authScore, 92); verdict = "verified-writable-game"; }
+return {
+ok: true, frameId: FRAME_ID,
+writable: writableA, accepted: acceptedA, externallyRestored: restoredExt,
+role: clA.role, score: authScore, verdict: verdict
+};
+}
 if (cmd.op === "findMirrors") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
 var locMir = stripOwnFramePrefix(cmd.id);
@@ -3579,17 +3862,17 @@ var mwb = mWasm[mwi].mem.buffer;
 mSeen.add(mwb);
 scanBuffer(mwb, 0, mwb.byteLength, "wasm", mWasm[mwi].id, "wasm#" + mWasm[mwi].id, "auto", "exact", mVal, 0, "", { bytes: [], mask: [] }, mOut, mCap, mWasm[mwi].ref, mDead, mFlags);
 }
-collectJsAndTypedArrays("auto", "exact", mVal, 0, "", { bytes: [], mask: [] }, mOut, mCap, mSeen, mDead, mFlags);
+collectJsAndTypedArrays("auto", "exact", mVal, 0, String(mVal), { bytes: [], mask: [] }, mOut, mCap, mSeen, mDead, mFlags);
 var mItems = [];
+var uiItems = [];
 var mEng = detectEngines();
 var mPrim = mEng.length ? mEng[0] : "";
 for (var mri = 0; mri < mOut.length; mri++) {
 var mh = mOut[mri];
 if (mh.id === locMir) continue;
 var mcl = classifyHitAuthority(mh);
-if (mcl.role === "ui") continue;
 watchRefs.set(mh.id, mh);
-mItems.push({
+var mObj = {
 addr: qualifyId(mh.id),
 val: formatVal(mh.prev, mh.dt),
 type: mh.dt,
@@ -3597,10 +3880,12 @@ kind: mh.kind,
 role: mcl.role,
 score: mcl.score,
 engine: mPrim
-});
+};
+if (mcl.role === "ui") uiItems.push(mObj);
+else mItems.push(mObj);
 }
 mItems.sort(function(a, b) { return b.score - a.score; });
-return { ok: true, frameId: FRAME_ID, count: Math.min(mItems.length, 60), items: mItems.slice(0, 60) };
+return { ok: true, frameId: FRAME_ID, count: Math.min(mItems.length, 60), uiCount: Math.min(uiItems.length, 20), items: mItems.slice(0, 60), uiItems: uiItems.slice(0, 20) };
 }
 if (cmd.op === "reset") {
 hits = []; undoStack = []; unknownSnaps = null;
@@ -3726,6 +4011,9 @@ if (locR.indexOf("js:") === 0) {
 var resJ = resolveJsPathFromWindow(locR);
 if (!resJ) return { ok: false, frameId: FRAME_ID, error: "JS path not found" };
 var vJ = resJ.obj[resJ.key];
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_7 = """
 var recJ = { id: locR, kind: "js", objRef: mkRef(resJ.obj), key: resJ.key, dt: dtR, prev: vJ };
 watchRefs.set(locR, recJ);
 return { ok: true, frameId: FRAME_ID, val: formatVal(vJ, dtR) };
@@ -3949,7 +4237,24 @@ if (sc2 === "changed" ? (rd.val !== h.prev) : (sc2 === "unchanged" ? (rd.val ===
 h.prev = rd.val; next.push(h);
 }
 } else {
-if (matchNum(rd.val, h.prev, true, h.dt, sc2, v1n, v2n)) {
+if (!h.hist) h.hist = [h.prev];
+var matchedN = false;
+if (sc2 === "always_inc") {
+var seqI = h.hist.concat([rd.val]);
+matchedN = seqI.length >= 2;
+for (var qi = 1; qi < seqI.length && matchedN; qi++) { if (!(Number(seqI[qi]) > Number(seqI[qi - 1]))) matchedN = false; }
+} else if (sc2 === "always_dec") {
+var seqD = h.hist.concat([rd.val]);
+matchedN = seqD.length >= 2;
+for (var qd = 1; qd < seqD.length && matchedN; qd++) { if (!(Number(seqD[qd]) < Number(seqD[qd - 1]))) matchedN = false; }
+} else if (sc2 === "returned_orig") {
+matchedN = h.hist.length >= 2 && Number(rd.val) === Number(h.hist[0]) && Number(rd.val) !== Number(h.prev);
+} else {
+matchedN = matchNum(rd.val, h.prev, true, h.dt, sc2, v1n, v2n);
+}
+if (matchedN) {
+h.hist.push(rd.val);
+if (h.hist.length > 8) h.hist.shift();
 h.prev = rd.val; next.push(h);
 }
 }
@@ -4005,9 +4310,6 @@ if (cmd.op === "writeHex") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
 var localWH = stripOwnFramePrefix(cmd.id);
 var recWH = watchRefs.get(localWH);
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_7 = """
 if (!recWH || (recWH.kind !== "wasm" && recWH.kind !== "ta" && recWH.kind !== "ab")) {
 return { ok: false, error: "Hex write supports WASM / ArrayBuffer / TypedArray" };
 }
@@ -4198,6 +4500,9 @@ totalKb += bkb;
 var shB = isSharedBuf(rawR[rbi]);
 regs.push({ start: qualifyId("buf#" + rbi), end: "0x" + rawR[rbi].byteLength.toString(16).toUpperCase(), kb: bkb, perms: shB ? "rw-sab" : "rw-buf", label: prefixLbl + (shB ? "SharedArrayBuffer #" : "ArrayBuffer #") + rbi });
 }
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_8 = """
 for (var tai = 0; tai < Math.min(taRegistry.length, 40); tai++) {
 var taObj = taRegistry[tai].deref();
 if (taObj) {

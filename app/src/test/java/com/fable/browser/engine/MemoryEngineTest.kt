@@ -90,7 +90,8 @@ class MemoryEngineTest {
         assertEquals(MemFreezeRule.MAX, MemFreezeRule.MIN.next())
         assertEquals(MemFreezeRule.RANGE, MemFreezeRule.MAX.next())
         assertEquals(MemFreezeRule.STEP, MemFreezeRule.RANGE.next())
-        assertEquals(MemFreezeRule.EXACT, MemFreezeRule.STEP.next())
+        assertEquals(MemFreezeRule.ON_CHANGE_SET, MemFreezeRule.STEP.next())
+        assertEquals(MemFreezeRule.EXACT, MemFreezeRule.UNLIMITED_MAX.next())
         assertEquals(MemFreezeRule.RANGE, MemFreezeRule.fromCode("range"))
         assertEquals(MemFreezeRule.STEP, MemFreezeRule.fromCode("step"))
     }
@@ -203,5 +204,23 @@ class MemoryEngineTest {
         assertEquals("@f1|js:board.moves", sMerged.getJSONArray("items").getJSONObject(0).getString("addr"))
         assertEquals(MemFreezeStrength.MAX, MemFreezeStrength.fromLevel(2))
         assertEquals(MemFreezeStrength.STRONG, MemFreezeStrength.fromLevel(99))
+
+        // v67: 10 persistent rules + recipe codec + performance profiles + reattachIdentity merge
+        assertEquals(10, MemFreezeRule.entries.size)
+        assertEquals(MemFreezeRule.ON_DEC_RESTORE, MemFreezeRule.fromCode("on_dec_restore"))
+        assertEquals(MemFreezeRule.UNLIMITED_MAX, MemFreezeRule.fromCode("unlimited_max"))
+        assertEquals(MemPerfProfile.MAX_FIGHTING, MemPerfProfile.fromLevel(3))
+        val recList = listOf(
+            MemCheatRecipe(
+                id = "r1", name = "Infinite Coins", origin = "game.local",
+                targetAddr = "wasm#0+0x10C:i32", targetType = MemDataType.INT32,
+                savedSig = "BE BA FE CA ?? ?? ?? ?? 44 33 22 11", rule = MemFreezeRule.UNLIMITED_MAX, targetValue = "999999"
+            )
+        )
+        val recEnc = MemCheatRecipeCodec.encode(recList)
+        val recDec = MemCheatRecipeCodec.decode(recEnc)
+        assertEquals(1, recDec.size)
+        assertEquals("Infinite Coins", recDec[0].name)
+        assertEquals(MemFreezeRule.UNLIMITED_MAX, recDec[0].rule)
     }
 }

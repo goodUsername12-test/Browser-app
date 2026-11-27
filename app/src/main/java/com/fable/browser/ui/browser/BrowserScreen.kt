@@ -578,6 +578,14 @@ fun BrowserScreen(
         LaunchedEffect(settings.memoryEngineAutoReattach) {
             viewModel.memoryEngineManager.setAutoReattachOnReload(settings.memoryEngineAutoReattach)
         }
+        LaunchedEffect(settings.memoryEnginePerfProfile) {
+            viewModel.memoryEngineManager.setPerfProfile(
+                com.fable.browser.engine.MemPerfProfile.fromLevel(settings.memoryEnginePerfProfile)
+            )
+        }
+        LaunchedEffect(settings.memoryEnginePreferInfinity) {
+            viewModel.memoryEngineManager.setPreferInfinity(settings.memoryEnginePreferInfinity)
+        }
         LaunchedEffect(url, loading, settings.memoryEngineEnabled) {
             viewModel.memoryEngineManager.onActiveTabPageStateChanged(url, loading)
         }
@@ -648,6 +656,19 @@ fun BrowserScreen(
                 onFindMirrorsForWatch = viewModel.memoryEngineManager::findMirrorsForWatch,
                 onLockAllMirrors = viewModel.memoryEngineManager::lockAllMirrors,
                 onFindRealValueFromUiWatch = viewModel.memoryEngineManager::findRealValueFromUiWatch,
+                onSetPerfProfile = viewModel::setMemoryEnginePerfProfile,
+                onToggleMinAuthorityFilter = viewModel.memoryEngineManager::toggleMinAuthorityFilter,
+                onTakeScanSnapshot = viewModel.memoryEngineManager::takeScanSnapshot,
+                onSetAllMirrorsValue = viewModel.memoryEngineManager::setAllMirrorsValue,
+                onTestWatchAuthority = viewModel.memoryEngineManager::testWatchAuthority,
+                onSetWatchSafeMax = viewModel.memoryEngineManager::setWatchSafeMax,
+                onToggleWatchFavorite = viewModel.memoryEngineManager::toggleWatchFavorite,
+                onCycleWatchColorTag = viewModel.memoryEngineManager::cycleWatchColorTag,
+                onSaveCheatRecipe = { id -> viewModel.memoryEngineManager.saveCheatRecipeFromWatch(id) },
+                onRunCheatRecipe = viewModel.memoryEngineManager::runCheatRecipe,
+                onDeleteCheatRecipe = viewModel.memoryEngineManager::deleteCheatRecipe,
+                onSaveStructAsCheatTable = viewModel.memoryEngineManager::saveStructAsCheatTable,
+                onUndoLastTransaction = viewModel.memoryEngineManager::undoLastTransaction,
                 onPositionChangeFinished = viewModel::setMemoryEnginePanelPosition,
                 onToggleExpanded = { viewModel.setMemoryEnginePanelExpanded(!settings.memoryEnginePanelExpanded) },
                 onTurnOff = { viewModel.setMemoryEngineEnabled(false) },

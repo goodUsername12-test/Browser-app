@@ -237,6 +237,9 @@ data class Settings(
     val memoryEngineTimeoutSec: Int = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_TIMEOUT_SEC,
     val memoryEngineFreezeStrength: Int = 1,
     val memoryEngineAutoReattach: Boolean = true,
+    val memoryEnginePerfProfile: Int = 1,
+    val memoryEnginePreferInfinity: Boolean = false,
+    val memoryEngineRecipesJson: String = "[]",
 ) {
     val timeScaleRate: Float
         get() = com.fable.browser.engine.WebsiteSpeedEngine.rateFromTenths(timeScaleMultiplierTenths)
@@ -467,6 +470,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val MEM_ENGINE_TIMEOUT_SEC = intPreferencesKey("mem_engine_timeout_sec")
         val MEM_ENGINE_FREEZE_STRENGTH = intPreferencesKey("mem_engine_freeze_strength")
         val MEM_ENGINE_AUTO_REATTACH = booleanPreferencesKey("mem_engine_auto_reattach")
+        val MEM_ENGINE_PERF_PROFILE = intPreferencesKey("mem_engine_perf_profile")
+        val MEM_ENGINE_PREFER_INF = booleanPreferencesKey("mem_engine_prefer_inf")
+        val MEM_ENGINE_RECIPES = stringPreferencesKey("mem_engine_recipes_v1")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -669,6 +675,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             memoryEngineTimeoutSec = com.fable.browser.engine.WebsiteMemoryEngine.clampTimeoutSec(p[Keys.MEM_ENGINE_TIMEOUT_SEC] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_TIMEOUT_SEC),
             memoryEngineFreezeStrength = (p[Keys.MEM_ENGINE_FREEZE_STRENGTH] ?: 1).coerceIn(0, 2),
             memoryEngineAutoReattach = p[Keys.MEM_ENGINE_AUTO_REATTACH] ?: true,
+            memoryEnginePerfProfile = (p[Keys.MEM_ENGINE_PERF_PROFILE] ?: 1).coerceIn(0, 3),
+            memoryEnginePreferInfinity = p[Keys.MEM_ENGINE_PREFER_INF] ?: false,
+            memoryEngineRecipesJson = p[Keys.MEM_ENGINE_RECIPES] ?: "[]",
         )
     }.distinctUntilChanged()
 
@@ -961,6 +970,11 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setMemoryEngineTimeoutSec(v: Int) = set(Keys.MEM_ENGINE_TIMEOUT_SEC, com.fable.browser.engine.WebsiteMemoryEngine.clampTimeoutSec(v))
     suspend fun setMemoryEngineFreezeStrength(v: Int) = set(Keys.MEM_ENGINE_FREEZE_STRENGTH, v.coerceIn(0, 2))
     suspend fun setMemoryEngineAutoReattach(v: Boolean) = set(Keys.MEM_ENGINE_AUTO_REATTACH, v)
+    suspend fun setMemoryEnginePerfProfile(v: Int) = set(Keys.MEM_ENGINE_PERF_PROFILE, v.coerceIn(0, 3))
+    suspend fun setMemoryEnginePreferInfinity(v: Boolean) = set(Keys.MEM_ENGINE_PREFER_INF, v)
+    suspend fun setMemoryEngineRecipesJson(json: String) {
+        if (json.length <= 65_536) set(Keys.MEM_ENGINE_RECIPES, json)
+    }
     suspend fun setMemoryEnginePanelPosition(x: Float, y: Float) {
         context.dataStore.edit {
             it[Keys.MEM_ENGINE_X] = x.coerceIn(0f, 1f)

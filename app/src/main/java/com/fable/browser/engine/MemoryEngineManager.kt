@@ -29,31 +29,61 @@ enum class MemFreezeStrength(val level: Int, val label: String, val shortLabel: 
     }
 }
 
+enum class MemPerfProfile(
+    val level: Int,
+    val label: String,
+    val shortLabel: String,
+    val watchDelayActiveMs: Long,
+    val watchDelayIdleMs: Long,
+    val defaultFreezeStrength: MemFreezeStrength
+) {
+    LOW_BATTERY(0, "Low Battery", "Battery", 700L, 1200L, MemFreezeStrength.NORMAL),
+    BALANCED(1, "Balanced", "Balanced", 320L, 550L, MemFreezeStrength.STRONG),
+    PERFORMANCE(2, "Performance", "Perf", 180L, 380L, MemFreezeStrength.STRONG),
+    MAX_FIGHTING(3, "Max Fighting", "MaxFight", 140L, 260L, MemFreezeStrength.MAX);
+
+    companion object {
+        fun fromLevel(lvl: Int): MemPerfProfile = entries.firstOrNull { it.level == lvl } ?: BALANCED
+    }
+}
+
 enum class MemFreezeRule(val jsCode: String, val nativeCode: Int, val symbol: String, val label: String) {
     EXACT("eq", 0, "=", "Exact Lock"),
     MIN("min", 1, ">=", "Min Floor (>=)"),
     MAX("max", 2, "<=", "Max Cap (<=)"),
     RANGE("range", 3, "[a..b]", "Range Clamp (a..b)"),
-    STEP("step", 4, "+=/s", "Step Ramp (+/s)");
+    STEP("step", 4, "+=/s", "Step Ramp (+/s)"),
+    ON_CHANGE_SET("on_change_set", 5, "Δ→V", "Override on Change"),
+    ON_DEC_RESTORE("on_dec_restore", 6, "↓↩", "Restore on Decrease"),
+    ON_CHANGE_ADD("on_change_add", 7, "Δ+X", "Add on Change"),
+    ON_CHANGE_MUL("on_change_mul", 8, "Δ×X", "Multiply on Change"),
+    UNLIMITED_MAX("unlimited_max", 9, "∞Safe", "Unlimited MAX SAFE");
 
-    fun next(): MemFreezeRule = when (this) {
-        EXACT -> MIN
-        MIN -> MAX
-        MAX -> RANGE
-        RANGE -> STEP
-        STEP -> EXACT
-    }
+    fun next(): MemFreezeRule = entries[(ordinal + 1) % entries.size]
 
     companion object {
-        fun fromCode(code: String?): MemFreezeRule = when (code) {
-            "min" -> MIN
-            "max" -> MAX
-            "range" -> RANGE
-            "step" -> STEP
-            else -> EXACT
-        }
+        fun fromCode(code: String?): MemFreezeRule = entries.firstOrNull { it.jsCode == code } ?: EXACT
     }
 }
+
+data class MemCheatRecipe(
+    val id: String,
+    val name: String,
+    val origin: String,
+    val targetAddr: String,
+    val targetType: MemDataType,
+    val savedSig: String = "",
+    val savedSigOff: Int = 12,
+    val rule: MemFreezeRule = MemFreezeRule.UNLIMITED_MAX,
+    val targetValue: String = "",
+    val linkMirrors: Boolean = true,
+    val useInfinity: Boolean = false
+)
+
+data class MemGroupTx(
+    val label: String,
+    val prevValues: Map<String, String>
+)
 
 data class MemStructField(
     val addr: String,
@@ -117,6 +147,14 @@ data class MemWatchEntry(
     val xorMode: Int = 0,
     val xorKey: Long = 0L,
     val xorKeyAddr: String = "",
+    val favorite: Boolean = false,
+    val colorTag: Int = 0,
+    val groupTag: String = "",
+    val authorityScore: Int = -1,
+    val authorityVerdict: String = "",
+    val savedSig: String = "",
+    val savedSigOff: Int = 12,
+    val reattachStatus: String = "",
     val tracing: Boolean = false,
     val traceCount: Int = 0,
     val traceEvents: List<MemTraceEvent> = emptyList(),
@@ -192,9 +230,17 @@ data class MemoryEngineUiState(
     val pageHookLive: Boolean = false,
     val hookedEarly: Boolean = false,
     val docGen: String = "",
+    val perfProfile: MemPerfProfile = MemPerfProfile.BALANCED,
+    val preferInfinity: Boolean = false,
+    val snapshotCount: Int = 1,
+    val minAuthorityFilter: Int = 0,
     val mirrorOriginAddr: String = "",
     val mirrorScope: MemScope = MemScope.PAGE_WASM,
     val mirrorResults: List<MemScanResultItem> = emptyList(),
+    val mirrorUiResults: List<MemScanResultItem> = emptyList(),
+    val savedRecipes: List<MemCheatRecipe> = emptyList(),
+    val canUndoTx: Boolean = false,
+    val lastTxLabel: String = "",
     val statusText: String = "Enter a number and tap First Scan",
     val activeEngineLabel: String = "Auto"
 )
@@ -231,6 +277,10 @@ object MemoryCheatTableCodec {
                 put("orig", e.originalValue)
                 put("rule", e.freezeRule.jsCode)
                 put("fval", e.frozenValue)
+                if (e.savedSig.isNotBlank()) { put("sig", e.savedSig); put("sigOff", e.savedSigOff) }
+                if (e.groupTag.isNotBlank()) put("grp", e.groupTag)
+                if (e.favorite) put("fav", true)
+                if (e.colorTag != 0) put("col", e.colorTag)
                 if (e.xorMode != 0) {
                     put("xm", e.xorMode)
                     put("xk", e.xorKey)
@@ -288,6 +338,11 @@ object MemoryCheatTableCodec {
                     frozen = false, // Never auto-freeze imported entries before verifying attachment!
                     frozenValue = eo.optString("fval", valStr).take(64),
                     freezeRule = rule,
+                    savedSig = eo.optString("sig", ""),
+                    savedSigOff = eo.optInt("sigOff", 12),
+                    groupTag = eo.optString("grp", ""),
+                    favorite = eo.optBoolean("fav", false),
+                    colorTag = eo.optInt("col", 0),
                     xorMode = eo.optInt("xm", 0),
                     xorKey = eo.optLong("xk", 0L),
                     xorKeyAddr = eo.optString("xka", ""),
@@ -303,6 +358,55 @@ object MemoryCheatTableCodec {
             savedAtMs = o.optLong("savedAtMs", System.currentTimeMillis()),
             entries = entries
         )
+    }
+}
+
+object MemCheatRecipeCodec {
+    fun encode(recipes: List<MemCheatRecipe>): String {
+        val arr = JSONArray()
+        for (r in recipes.take(25)) {
+            arr.put(JSONObject().apply {
+                put("id", r.id)
+                put("name", r.name.take(40))
+                put("origin", r.origin.take(120))
+                put("addr", r.targetAddr)
+                put("dt", r.targetType.jsCode)
+                put("sig", r.savedSig)
+                put("sigOff", r.savedSigOff)
+                put("rule", r.rule.jsCode)
+                put("val", r.targetValue)
+                put("mir", r.linkMirrors)
+                put("inf", r.useInfinity)
+            })
+        }
+        return arr.toString()
+    }
+
+    fun decode(raw: String): List<MemCheatRecipe> {
+        if (raw.isBlank()) return emptyList()
+        val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+        val out = ArrayList<MemCheatRecipe>()
+        for (i in 0 until minOf(arr.length(), 25)) {
+            val o = arr.optJSONObject(i) ?: continue
+            val addr = o.optString("addr").trim()
+            if (addr.isEmpty()) continue
+            out.add(
+                MemCheatRecipe(
+                    id = o.optString("id").ifBlank { "rec_$i" },
+                    name = o.optString("name").ifBlank { "Saved Recipe" },
+                    origin = o.optString("origin"),
+                    targetAddr = addr,
+                    targetType = MemDataType.entries.firstOrNull { it.jsCode == o.optString("dt") } ?: MemDataType.INT32,
+                    savedSig = o.optString("sig"),
+                    savedSigOff = o.optInt("sigOff", 12),
+                    rule = MemFreezeRule.fromCode(o.optString("rule")),
+                    targetValue = o.optString("val"),
+                    linkMirrors = o.optBoolean("mir", true),
+                    useInfinity = o.optBoolean("inf", false)
+                )
+            )
+        }
+        return out
     }
 }
 
@@ -325,6 +429,7 @@ class MemoryEngineManager @Inject constructor(
     private var lastObservedLoading: Boolean = false
     private var lastKnownDocGen: String = ""
     private var pageHookPingJob: Job? = null
+    private val txHistory = ArrayDeque<MemGroupTx>()
 
     fun setEngineActive(enabled: Boolean) {
         engineActive = enabled
@@ -345,9 +450,10 @@ class MemoryEngineManager @Inject constructor(
         if (savedTablesLoaded) return
         savedTablesLoaded = true
         scope.launch {
-            val raw = runCatching { settingsStore.settings.first().memoryEngineSavedTablesJson }.getOrDefault("[]")
-            val parsed = MemoryCheatTableCodec.decodeTables(raw)
-            _state.update { it.copy(savedTables = parsed) }
+            val curS = runCatching { settingsStore.settings.first() }.getOrNull()
+            val parsed = MemoryCheatTableCodec.decodeTables(curS?.memoryEngineSavedTablesJson ?: "[]")
+            val decRecipes = MemCheatRecipeCodec.decode(curS?.memoryEngineRecipesJson ?: "[]")
+            _state.update { it.copy(savedTables = parsed, savedRecipes = decRecipes) }
         }
     }
 
@@ -484,26 +590,43 @@ class MemoryEngineManager @Inject constructor(
         var reattachedCnt = 0
         for (e in pageWatches) {
             val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(e.addr)
-            val raw = runPageCommand(JSONObject().apply {
-                put("op", "reattach")
-                put("id", e.addr)
+            val identJson = JSONObject().apply {
+                put("addr", e.addr)
                 put("dt", e.dataType.jsCode)
+                put("lastVal", e.currentValue)
+                if (e.savedSig.isNotBlank()) {
+                    put("sig", e.savedSig)
+                    put("sigOff", e.savedSigOff)
+                }
+            }
+            val raw = runPageCommand(JSONObject().apply {
+                put("op", "reattachIdentity")
+                put("id", e.addr)
+                put("identity", identJson)
                 if (tFrame != null) put("targetFrame", tFrame)
             })
             val obj = runCatching { JSONObject(raw) }.getOrNull()
             if (obj != null && obj.optBoolean("ok", false)) {
                 reattachedCnt++
                 val liveVal = obj.optString("val", e.currentValue)
+                val newAddr = obj.optString("addr").ifBlank { e.addr }
+                val moved = obj.optBoolean("moved", false)
+                val method = obj.optString("method", "live")
                 val upd = e.copy(
+                    addr = newAddr,
                     currentValue = liveVal,
                     attached = true,
+                    reattachStatus = if (moved) "Moved ($method)" else "Reattached ✓",
                     freezeStatus = if (e.frozen) "arming" else ""
                 )
                 updatedById[e.id] = upd
                 if (e.frozen) toRearm.add(upd)
             } else {
+                val stCode = obj?.optString("status", "lost").orEmpty()
+                val candCnt = obj?.optInt("candidateCount", 0) ?: 0
                 updatedById[e.id] = e.copy(
                     attached = false,
+                    reattachStatus = if (stCode == "ambiguous") "Ambiguous ($candCnt)" else "Waiting / Lost",
                     freezeStatus = if (e.frozen) "detached" else ""
                 )
             }
@@ -556,13 +679,31 @@ class MemoryEngineManager @Inject constructor(
                         )
                     )
                 }
+                val uiArr = obj.optJSONArray("uiItems") ?: JSONArray()
+                val uiList = ArrayList<MemScanResultItem>(uiArr.length())
+                for (i in 0 until uiArr.length()) {
+                    val o = uiArr.optJSONObject(i) ?: continue
+                    uiList.add(
+                        MemScanResultItem(
+                            addr = o.optString("addr"),
+                            value = o.optString("val"),
+                            prevValue = o.optString("val"),
+                            type = o.optString("type", "str"),
+                            kind = o.optString("kind", "js"),
+                            role = "ui",
+                            score = o.optInt("score", 12),
+                            engine = o.optString("engine", "")
+                        )
+                    )
+                }
                 _state.update {
                     it.copy(
                         busy = false,
                         mirrorOriginAddr = entry.addr,
                         mirrorScope = entry.scope,
                         mirrorResults = items,
-                        statusText = "Found ${items.size} mirror copy${if (items.size == 1) "" else "ies"} of ${entry.label}"
+                        mirrorUiResults = uiList,
+                        statusText = "Found ${items.size} gameplay + ${uiList.size} UI copies of ${entry.label}"
                     )
                 }
             } else {
@@ -658,6 +799,351 @@ class MemoryEngineManager @Inject constructor(
         return ""
     }
 
+    fun setPerfProfile(profile: MemPerfProfile) {
+        _state.update { it.copy(perfProfile = profile, statusText = "Profile: ${profile.label}") }
+        setFreezeStrength(profile.defaultFreezeStrength)
+    }
+
+    fun setPreferInfinity(enabled: Boolean) {
+        _state.update { it.copy(preferInfinity = enabled) }
+    }
+
+    fun toggleMinAuthorityFilter() {
+        _state.update {
+            val next = if (it.minAuthorityFilter == 0) 70 else 0
+            it.copy(
+                minAuthorityFilter = next,
+                statusText = if (next > 0) "Showing high-authority hits (score >= $next)" else "Showing all authority scores"
+            )
+        }
+    }
+
+    fun takeScanSnapshot() {
+        val st = _state.value
+        if (st.busy || !st.hasActiveScan || st.scope != MemScope.PAGE_WASM) return
+        scope.launch {
+            val raw = runPageCommand(JSONObject().apply { put("op", "takeSnapshot") })
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val sc = obj.optInt("snapshotCount", st.snapshotCount + 1)
+                _state.update { it.copy(snapshotCount = sc, statusText = "Recorded snapshot #$sc (${obj.optInt("count", 0)} values tracked)") }
+            }
+        }
+    }
+
+    fun captureWatchIdentityAsync(watchId: String) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        scope.launch {
+            val raw = when (entry.scope) {
+                MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) { NativeMemoryScanner.makeSignature(entry.addr) }
+                MemScope.PAGE_WASM -> {
+                    val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
+                    runPageCommand(JSONObject().apply {
+                        put("op", "captureIdentity")
+                        put("id", entry.addr)
+                        if (tFrame != null) put("targetFrame", tFrame)
+                    })
+                }
+            }
+            val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return@launch
+            if (!obj.optBoolean("ok", false)) return@launch
+            val idObj = obj.optJSONObject("identity") ?: obj
+            val sig = idObj.optString("sig")
+            val sigOff = idObj.optInt("sigOff", idObj.optInt("valueOffset", 12))
+            if (sig.isNotBlank()) {
+                _state.update { st ->
+                    st.copy(watchList = st.watchList.map { if (it.id == watchId) it.copy(savedSig = sig, savedSigOff = sigOff) else it })
+                }
+            }
+        }
+    }
+
+    fun testWatchAuthority(watchId: String) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        _state.update { it.copy(statusText = "Testing authority of ${entry.label} (non-destructive)...") }
+        scope.launch {
+            val raw = when (entry.scope) {
+                MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) { NativeMemoryScanner.testAuthority(entry.addr, entry.dataType) }
+                MemScope.PAGE_WASM -> {
+                    val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
+                    runPageCommand(JSONObject().apply {
+                        put("op", "testAuthority")
+                        put("id", entry.addr)
+                        if (tFrame != null) put("targetFrame", tFrame)
+                    })
+                }
+            }
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val sc = obj.optInt("score", 50)
+                val vd = obj.optString("verdict", "tested")
+                val isUi = vd.contains("ui", ignoreCase = true) || sc <= 20
+                _state.update { st ->
+                    st.copy(
+                        watchList = st.watchList.map { e ->
+                            if (e.id == watchId) e.copy(
+                                authorityScore = sc,
+                                authorityVerdict = vd,
+                                uiWarningReason = if (isUi) "Authority ${sc}% ($vd) · tap Find Real" else e.uiWarningReason
+                            ) else e
+                        },
+                        statusText = "Authority ${entry.label}: ${sc}% ($vd)"
+                    )
+                }
+            } else {
+                _state.update { it.copy(statusText = obj?.optString("error") ?: "Authority test failed") }
+            }
+        }
+    }
+
+    fun setWatchSafeMax(watchId: String, useInfinity: Boolean = _state.value.preferInfinity) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        recordTransaction("MAX SAFE ${entry.label}", mapOf(entry.id to entry.currentValue))
+        scope.launch {
+            if (entry.scope == MemScope.FABLE_NATIVE) {
+                val safeStr = when (entry.dataType) {
+                    MemDataType.INT8 -> "127"
+                    MemDataType.INT16 -> "32767"
+                    MemDataType.INT32 -> "2147483647"
+                    MemDataType.UINT32 -> "4294967295"
+                    MemDataType.INT64 -> "9007199254740991"
+                    MemDataType.FLOAT -> "1000000000000"
+                    else -> "9007199254740991"
+                }
+                val ok = withContext(Dispatchers.IO) {
+                    NativeMemoryScanner.writeValue(entry.addr, entry.dataType, safeStr, entry.xorMode, entry.xorKey, entry.xorKeyAddr)
+                }
+                if (ok) {
+                    _state.update { st ->
+                        st.copy(
+                            watchList = st.watchList.map { if (it.id == watchId) it.copy(currentValue = safeStr, lastChangedAtMs = System.currentTimeMillis()) else it },
+                            statusText = "Set ${entry.label} = $safeStr (MAX SAFE)"
+                        )
+                    }
+                }
+                return@launch
+            }
+            val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
+            val raw = runPageCommand(JSONObject().apply {
+                put("op", "setSafeMax")
+                put("id", entry.addr)
+                put("useInfinity", useInfinity)
+                if (tFrame != null) put("targetFrame", tFrame)
+            })
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val nv = obj.optString("val", entry.currentValue)
+                val fellBack = obj.optBoolean("fellBackToSafeMax", false)
+                _state.update { st ->
+                    st.copy(
+                        watchList = st.watchList.map { if (it.id == watchId) it.copy(currentValue = nv, lastChangedAtMs = System.currentTimeMillis()) else it },
+                        statusText = if (fellBack) "Infinity unsafe on game -> auto-fallback MAX SAFE ($nv)" else "Set ${entry.label} = $nv"
+                    )
+                }
+            } else {
+                _state.update { it.copy(statusText = obj?.optString("error") ?: "MAX SAFE write failed") }
+            }
+        }
+    }
+
+    fun setAllMirrorsValue(newValue: String, linkAsGroup: Boolean = true) {
+        val clean = newValue.trim()
+        val st = _state.value
+        val mirrors = st.mirrorResults.take(30)
+        if (clean.isEmpty() || mirrors.isEmpty()) return
+        val origin = st.watchList.firstOrNull { it.addr == st.mirrorOriginAddr }
+        val groupLabel = if (linkAsGroup) (origin?.label?.take(16) ?: "Linked") else ""
+        val prevMap = HashMap<String, String>()
+        val existingIds = st.watchList.map { it.id }.toHashSet()
+        val added = ArrayList<MemWatchEntry>()
+        val allTargets = ArrayList<MemWatchEntry>()
+        if (origin != null) {
+            prevMap[origin.id] = origin.currentValue
+            allTargets.add(origin)
+        }
+        for (m in mirrors) {
+            val dt = resolveDataType(m.type, origin?.dataType ?: MemDataType.INT32)
+            val wid = "${st.mirrorScope.name}|${m.addr}"
+            val ex = st.watchList.firstOrNull { it.id == wid }
+            if (ex == null && wid !in existingIds) {
+                existingIds.add(wid)
+                val ne = MemWatchEntry(
+                    id = wid, scope = st.mirrorScope, addr = m.addr,
+                    label = if (groupLabel.isNotBlank()) "$groupLabel · ${m.addr.removePrefix("js:").takeLast(18)}" else m.addr.removePrefix("js:").takeLast(28),
+                    dataType = dt, currentValue = m.value, originalValue = m.value,
+                    role = m.role, groupTag = groupLabel, attached = true
+                )
+                added.add(ne)
+                prevMap[ne.id] = ne.currentValue
+                allTargets.add(ne)
+            } else if (ex != null) {
+                prevMap[ex.id] = ex.currentValue
+                allTargets.add(ex)
+            }
+        }
+        recordTransaction("Set All Mirrors ($clean)", prevMap)
+        _state.update { cur ->
+            cur.copy(
+                watchList = cur.watchList.map { if (origin != null && it.id == origin.id && groupLabel.isNotBlank()) it.copy(groupTag = groupLabel) else it } + added,
+                statusText = "Writing '$clean' to ${allTargets.size} linked copies..."
+            )
+        }
+        scope.launch {
+            var verified = 0
+            for (t in allTargets) {
+                val targetV = if (clean.equals("MAX", ignoreCase = true)) {
+                    if (t.scope == MemScope.PAGE_WASM && t.addr.startsWith("js:")) "9007199254740991" else "2147483647"
+                } else WebsiteMemoryEngine.evaluateRelativeMath(t.currentValue, clean, t.dataType)
+                if (writeEntry(t, targetV)) verified++
+            }
+            _state.update { it.copy(statusText = "Linked Group updated: $verified/${allTargets.size} verified ($clean)") }
+        }
+        ensureWatchLoop()
+    }
+
+    private fun recordTransaction(label: String, prevValues: Map<String, String>) {
+        if (prevValues.isEmpty()) return
+        if (txHistory.size >= 10) txHistory.removeFirst()
+        txHistory.addLast(MemGroupTx(label, prevValues))
+        _state.update { it.copy(canUndoTx = txHistory.isNotEmpty(), lastTxLabel = label) }
+    }
+
+    fun undoLastTransaction() {
+        val tx = txHistory.removeLastOrNull() ?: return
+        _state.update { it.copy(canUndoTx = txHistory.isNotEmpty(), lastTxLabel = txHistory.lastOrNull()?.label.orEmpty(), statusText = "Rolling back '${tx.label}'...") }
+        val watches = _state.value.watchList
+        scope.launch {
+            var restored = 0
+            for ((wid, oldVal) in tx.prevValues) {
+                val entry = watches.firstOrNull { it.id == wid } ?: continue
+                if (writeEntry(entry, oldVal)) restored++
+            }
+            _state.update { it.copy(statusText = "Rolled back '${tx.label}' ($restored restored)") }
+        }
+    }
+
+    fun toggleWatchFavorite(watchId: String) {
+        _state.update { st -> st.copy(watchList = st.watchList.map { if (it.id == watchId) it.copy(favorite = !it.favorite) else it }) }
+    }
+
+    fun cycleWatchColorTag(watchId: String) {
+        _state.update { st -> st.copy(watchList = st.watchList.map { if (it.id == watchId) it.copy(colorTag = (it.colorTag + 1) % 6) else it }) }
+    }
+
+    fun saveStructAsCheatTable() {
+        val st = _state.value
+        if (st.structFields.isEmpty()) return
+        val entries = st.structFields.take(40).map { sf ->
+            val dt = resolveDataType(sf.type, MemDataType.INT32)
+            MemWatchEntry(
+                id = "${st.structScope.name}|${sf.addr}",
+                scope = st.structScope,
+                addr = sf.addr,
+                label = "Struct ${sf.delta}",
+                dataType = dt,
+                currentValue = sf.value,
+                originalValue = sf.value,
+                groupTag = "Struct",
+                attached = true
+            )
+        }
+        val tbl = MemSavedTable(
+            id = "struct_${System.currentTimeMillis()}",
+            name = "Struct ${st.structOriginAddr.takeLast(14)}",
+            origin = runCatching { java.net.URI(tabManager.activeTab?.url?.value.orEmpty()).host.orEmpty() }.getOrDefault(""),
+            savedAtMs = System.currentTimeMillis(),
+            entries = entries
+        )
+        val updated = (listOf(tbl) + st.savedTables).take(20)
+        _state.update { it.copy(savedTables = updated, statusText = "Saved Struct (${entries.size} fields) as Cheat Table") }
+        scope.launch { settingsStore.setMemoryEngineSavedTablesJson(MemoryCheatTableCodec.encodeTables(updated)) }
+    }
+
+    fun saveCheatRecipeFromWatch(watchId: String, customName: String = "") {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        val origin = runCatching { java.net.URI(tabManager.activeTab?.url?.value.orEmpty()).host.orEmpty() }.getOrDefault("")
+        val recipe = MemCheatRecipe(
+            id = "rec_${System.currentTimeMillis()}",
+            name = customName.trim().ifBlank { "${entry.label.take(22)} (${entry.freezeRule.symbol})" },
+            origin = origin,
+            targetAddr = entry.addr,
+            targetType = entry.dataType,
+            savedSig = entry.savedSig,
+            savedSigOff = entry.savedSigOff,
+            rule = entry.freezeRule,
+            targetValue = entry.frozenValue.ifBlank { entry.currentValue },
+            linkMirrors = true,
+            useInfinity = _state.value.preferInfinity
+        )
+        val updated = (listOf(recipe) + _state.value.savedRecipes.filterNot { it.name == recipe.name && it.origin == recipe.origin }).take(25)
+        _state.update { it.copy(savedRecipes = updated, statusText = "Saved Recipe '${recipe.name}'") }
+        scope.launch { settingsStore.setMemoryEngineRecipesJson(MemCheatRecipeCodec.encode(updated)) }
+    }
+
+    fun deleteCheatRecipe(recipeId: String) {
+        val updated = _state.value.savedRecipes.filterNot { it.id == recipeId }
+        _state.update { it.copy(savedRecipes = updated, statusText = "Deleted Recipe") }
+        scope.launch { settingsStore.setMemoryEngineRecipesJson(MemCheatRecipeCodec.encode(updated)) }
+    }
+
+    fun runCheatRecipe(recipeId: String) {
+        val r = _state.value.savedRecipes.firstOrNull { it.id == recipeId } ?: return
+        _state.update { it.copy(statusText = "Running Recipe '${r.name}'...") }
+        scope.launch {
+            val isNative = !r.targetAddr.contains(":") && r.targetAddr.startsWith("0x")
+            if (isNative) {
+                var target = r.targetAddr
+                if (r.savedSig.isNotBlank()) {
+                    val res = withContext(Dispatchers.IO) { NativeMemoryScanner.resolveSignature(r.savedSig, r.savedSigOff, 6000) }
+                    val addrs = runCatching { JSONObject(res).optJSONArray("addrs") }.getOrNull()
+                    if (addrs != null && addrs.length() == 1) target = addrs.optString(0, target)
+                }
+                val wid = "${MemScope.FABLE_NATIVE.name}|$target"
+                val entry = MemWatchEntry(
+                    id = wid, scope = MemScope.FABLE_NATIVE, addr = target, label = r.name,
+                    dataType = r.targetType, currentValue = r.targetValue, originalValue = r.targetValue,
+                    frozen = true, frozenValue = r.targetValue, freezeRule = r.rule, freezeStatus = "arming",
+                    savedSig = r.savedSig, savedSigOff = r.savedSigOff, attached = true
+                )
+                _state.update { st -> st.copy(watchList = st.watchList.filterNot { it.id == wid } + entry) }
+                applyFreezeSingle(entry, freeze = true)
+                ensureWatchLoop()
+                return@launch
+            }
+            val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(r.targetAddr)
+            val raw = runPageCommand(JSONObject().apply {
+                put("op", "reattachIdentity")
+                put("id", r.targetAddr)
+                if (tFrame != null) put("targetFrame", tFrame)
+                put("identity", JSONObject().apply {
+                    put("addr", r.targetAddr)
+                    put("dt", r.targetType.jsCode)
+                    put("lastVal", r.targetValue)
+                    put("sig", r.savedSig)
+                    put("sigOff", r.savedSigOff)
+                })
+            })
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val resolvedAddr = obj.optString("addr").ifBlank { r.targetAddr }
+                val liveVal = obj.optString("val", r.targetValue)
+                val wid = "${MemScope.PAGE_WASM.name}|$resolvedAddr"
+                val entry = MemWatchEntry(
+                    id = wid, scope = MemScope.PAGE_WASM, addr = resolvedAddr, label = r.name,
+                    dataType = r.targetType, currentValue = liveVal, originalValue = liveVal,
+                    frozen = true, frozenValue = r.targetValue, freezeRule = r.rule, freezeStatus = "arming",
+                    savedSig = r.savedSig, savedSigOff = r.savedSigOff,
+                    reattachStatus = "Recipe ✓ (${obj.optString("method", "live")})", attached = true
+                )
+                _state.update { st -> st.copy(watchList = st.watchList.filterNot { it.id == wid } + entry) }
+                applyFreezeSingle(entry, freeze = true)
+                ensureWatchLoop()
+            } else {
+                _state.update { it.copy(statusText = "Recipe '${r.name}': ${obj?.optString("error") ?: "target not active on this page yet"}") }
+            }
+        }
+    }
+
     fun toggleLiveScanRefresh() {
         _state.update {
             val next = !it.liveScanRefresh
@@ -716,6 +1202,7 @@ class MemoryEngineManager @Inject constructor(
                 scanElapsedMs = 0L,
                 lastScanTimedOut = false,
                 fallbackUsed = false,
+                snapshotCount = 1,
                 selectedScanAddrs = emptySet(),
                 statusText = "Scanning ${st.scope.label} (${st.scanType.label} · ${st.scanTimeoutSec}s)..."
             )
@@ -1117,6 +1604,7 @@ class MemoryEngineManager @Inject constructor(
                 statusText = "Added ${entry.label} to Watch"
             )
         }
+        captureWatchIdentityAsync(watchId)
         ensureWatchLoop()
     }
 
@@ -1146,6 +1634,7 @@ class MemoryEngineManager @Inject constructor(
             st.watchList
         }
         if (targets.isEmpty()) return
+        recordTransaction("Edit ${targets.size} watches ($clean)", targets.associate { it.id to it.currentValue })
         scope.launch {
             val okValues = HashMap<String, String>()
             val pageTargets = targets.filter { it.scope == MemScope.PAGE_WASM }
@@ -1248,7 +1737,9 @@ class MemoryEngineManager @Inject constructor(
     private fun defaultFreezeParam(e: MemWatchEntry): String {
         if (e.frozenValue.isNotBlank()) return e.frozenValue
         return when (e.freezeRule) {
-            MemFreezeRule.STEP -> "10"
+            MemFreezeRule.STEP, MemFreezeRule.ON_CHANGE_ADD -> "10"
+            MemFreezeRule.ON_CHANGE_MUL -> "2"
+            MemFreezeRule.UNLIMITED_MAX -> if (_state.value.preferInfinity) "Infinity" else "MAX"
             MemFreezeRule.RANGE -> {
                 val cur = WebsiteMemoryEngine.normalizeNumericInput(e.currentValue, e.dataType).toDoubleOrNull()
                 if (cur != null) "${formatMathNum(cur, e.dataType)}..${formatMathNum(cur + 100.0, e.dataType)}"
@@ -2279,8 +2770,10 @@ class MemoryEngineManager @Inject constructor(
                 if (tickCount % 2 == 0 && stCur.hexLiveRefresh && stCur.hex.targetAddr.isNotBlank()) {
                     inspectHex(stCur.hex.targetAddr, stCur.hex.scope, 0L)
                 }
-                val hasActive = _state.value.watchList.any { it.frozen || it.tracing }
-                delay(if (hasActive) 320L else 550L)
+                val stNow = _state.value
+                val hasActive = stNow.watchList.any { it.frozen || it.tracing }
+                val prof = stNow.perfProfile
+                delay(if (hasActive) prof.watchDelayActiveMs else prof.watchDelayIdleMs)
             }
         }
     }

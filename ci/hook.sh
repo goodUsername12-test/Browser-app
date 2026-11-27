@@ -383,7 +383,7 @@ CE_ULTRA_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable
   dv.setUint32(0x304, (123456 ^ 0x5A3C91E7) >>> 0, true);
   dv.setUint32(0x400, 0x200, true);
   window.ultraHero = { hp: 100, mana: 50 };
-  window.__keepUltra = function() { return dv.getInt32(0x40, true) + dv.getInt32(0x208, true); };
+  window.__keepUltra = function() { return wMem.buffer.byteLength + dv.getInt32(0x40, true) + dv.getInt32(0x208, true); };
 
   function checkStealth() {
     try {

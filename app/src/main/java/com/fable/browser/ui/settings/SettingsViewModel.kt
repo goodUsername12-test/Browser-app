@@ -220,6 +220,8 @@ class SettingsViewModel @Inject constructor(
     fun resetMemoryEnginePanelLayout() = edit { store.resetMemoryEnginePanelLayout() }
     fun setMemoryEngineFreezeStrength(v: Int) = edit { store.setMemoryEngineFreezeStrength(v) }
     fun setMemoryEngineAutoReattach(v: Boolean) = edit { store.setMemoryEngineAutoReattach(v) }
+    fun setMemoryEnginePerfProfile(v: Int) = edit { store.setMemoryEnginePerfProfile(v) }
+    fun setMemoryEnginePreferInfinity(v: Boolean) = edit { store.setMemoryEnginePreferInfinity(v) }
 
     fun applyPreset(preset: PrivacyPreset) = edit {
         val stealth = preset == PrivacyPreset.STEALTH

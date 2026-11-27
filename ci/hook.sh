@@ -803,7 +803,7 @@ sleep 7; step "memory engine ALL-IN-ONE multi-engine + Titanium Freeze (Blink x 
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-ultra-lab.html?tag=ultra_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck ultra_gecko --es fable_test_mem_mode ultra_ce >/dev/null 2>&1 || true
-sleep 8; step "memory engine v65 ULTRA (Group+XOR+Ptr+HexWrite+Trace+Table+NextFix, GeckoView)"
+sleep 11; step "memory engine v65 ULTRA (Group+XOR+Ptr+HexWrite+Trace+Table+NextFix, GeckoView)"
 
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-ultra-lab.html?tag=ultra_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2

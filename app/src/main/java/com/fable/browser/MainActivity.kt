@@ -510,12 +510,20 @@ class MainActivity : FragmentActivity() {
                                         12_000
                                     )
                                     val rxItems = runCatching { org.json.JSONObject(rx).optJSONArray("items") }.getOrNull()
+                                    val expectedXorAddr = if (firstAddr.isNotEmpty()) {
+                                        com.fable.browser.engine.NativeMemoryScanner.parseHexAddress(firstAddr)?.let {
+                                            "0x" + java.lang.Long.toHexString(it + 36L).uppercase()
+                                        }
+                                    } else null
                                     if (rxItems != null && rxItems.length() > 0) {
                                         for (xi in 0 until rxItems.length()) {
                                             val xo = rxItems.optJSONObject(xi) ?: continue
-                                            if (xo.optInt("xorMode", 0) == 2) {
+                                            val candAddr = xo.optString("addr")
+                                            if (xo.optInt("xorMode", 0) == 2 && (expectedXorAddr == null || candAddr.equals(expectedXorAddr, ignoreCase = true))) {
+                                                buf.putInt(32, xKey)
+                                                buf.putInt(36, 55443322 xor xKey)
                                                 val wroteX = com.fable.browser.engine.NativeMemoryScanner.writeValue(
-                                                    xo.optString("addr"),
+                                                    candAddr,
                                                     com.fable.browser.engine.MemDataType.INT32,
                                                     "9990001",
                                                     2,

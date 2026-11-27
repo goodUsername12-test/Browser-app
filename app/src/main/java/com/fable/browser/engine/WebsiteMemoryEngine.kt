@@ -738,32 +738,7 @@ return res;
 }, origJsonParse, "parse");
 }
 try {
-if (typeof Map === "function" && Map.prototype && typeof Map.prototype.set === "function") {
-var origMapProtoSet = Map.prototype.set;
-Map.prototype.set = mask(function set(k, v) {
-if (closureMapRefs.length < MAX_TRACKED_CLOSURE) trackClosureMap(this);
-if (v && typeof v === "object" && closureObjRefs.length < MAX_TRACKED_CLOSURE) trackClosureObj(v);
-return origMapProtoSet.apply(this, arguments);
-}, origMapProtoSet, "set");
-}
-if (typeof Set === "function" && Set.prototype && typeof Set.prototype.add === "function") {
-var origSetProtoAdd = Set.prototype.add;
-Set.prototype.add = mask(function add(v) {
-if (closureSetRefs.length < MAX_TRACKED_CLOSURE) trackClosureSet(this);
-if (v && typeof v === "object" && closureObjRefs.length < MAX_TRACKED_CLOSURE) trackClosureObj(v);
-return origSetProtoAdd.apply(this, arguments);
-}, origSetProtoAdd, "add");
-}
-if (typeof WeakMap === "function" && WeakMap.prototype && typeof WeakMap.prototype.set === "function") {
-var origWmProtoSet = WeakMap.prototype.set;
-WeakMap.prototype.set = mask(function set(k, v) {
-if (closureObjRefs.length < MAX_TRACKED_CLOSURE) {
-if (v && typeof v === "object") trackClosureObj(v);
-else if (k && typeof k === "object") trackClosureObj(k);
-}
-return origWmProtoSet.apply(this, arguments);
-}, origWmProtoSet, "set");
-}
+
 if (typeof ArrayBuffer === "function" && ArrayBuffer.prototype && typeof ArrayBuffer.prototype.slice === "function") {
 var origAbSlice = ArrayBuffer.prototype.slice;
 ArrayBuffer.prototype.slice = mask(function slice() {
@@ -1018,9 +993,6 @@ if (dt === "i16") return dv.getInt16(off, true);
 if (dt === "i32") return dv.getInt32(off, true);
 if (dt === "u32") return dv.getUint32(off, true);
 if (dt === "i64") return Number(dv.getBigInt64(off, true));
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_2 = """
 if (dt === "f32") return dv.getFloat32(off, true);
 if (dt === "f64") return dv.getFloat64(off, true);
 } catch (_) {}
@@ -1050,6 +1022,9 @@ try {
 if (dt === "i8") { Atomics.store(new Int8Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
 if (dt === "i16" && (absOff & 1) === 0) { Atomics.store(new Int16Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
 if (dt === "i32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_2 = """
 if (dt === "u32" && (absOff & 3) === 0) { Atomics.store(new Uint32Array(dv.buffer, absOff, 1), 0, (num < 0 ? 0 : num) >>> 0); return true; }
 if (dt === "f32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, f32ToI32Bits(num)); return true; }
 } catch (_) {}
@@ -1627,9 +1602,6 @@ if (storageProtoHook.lsKeys.size > 0 || storageProtoHook.ssKeys.size > 0) return
 var restoreFn = function(name, origFn) {
 if (!origFn) return;
 try {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_3 = """
 Object.defineProperty(storageProtoHook.targetObj, name, { value: origFn, writable: true, configurable: true, enumerable: true });
 } catch (_) {
 try { storageProtoHook.targetObj[name] = origFn; } catch (_2) {}
@@ -1671,6 +1643,9 @@ return;
 }
 var isStorage = (h.kind === "ls" || h.kind === "ss" || h.kind === "lsjson" || h.kind === "ssjson");
 if (fe.trapInstalled && !isStorage) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_3 = """
 if (fe.origGet && fe.origSet && fe.origObj) {
 try {
 var liveAcc = fe.origGet.call(fe.origObj);
@@ -2349,9 +2324,6 @@ var scanLen = Math.min(byteLen, MAX_SCAN_BYTES);
 var memRef = kind === "wasm" ? extraRef : null;
 var abRef = kind === "ab" ? extraRef : null;
 function pushHit(off, typeStr, len, prevVal, extraTag, scaleVal) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_4 = """
 var idStr = labelPrefix + "+0x" + off.toString(16).toUpperCase() + (typeStr === "str" || typeStr === "aob" ? "" : (":" + typeStr)) + (extraTag || "");
 out.push({
 id: idStr,
@@ -2386,6 +2358,9 @@ if (!aob.bytes.length || scanLen < aob.bytes.length) return;
 var u8b = new Uint8Array(buf, byteOff, scanLen);
 var lim2 = scanLen - aob.bytes.length;
 for (var o2 = 0; o2 <= lim2 && out.length < cap; o2++) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_4 = """
 if ((o2 & 262143) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
 var ok2 = true;
 for (var k2 = 0; k2 < aob.bytes.length; k2++) {
@@ -2882,16 +2857,16 @@ continue;
 }
 var keys;
 try {
-keys = cur.depth <= 3 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
+keys = cur.depth <= 2 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
 } catch (_) {
 try { keys = Object.keys(obj); } catch (_2) { skippedXOriginCount++; continue; }
 }
-if (cur.depth > 0 && cur.depth <= 6) {
+if (cur.depth > 0 && cur.depth <= 4) {
 try {
 var proto = Object.getPrototypeOf(obj);
 var kSet = null;
 var hop = 0;
-while (proto && proto !== Object.prototype && proto !== Array.prototype && proto !== Function.prototype && hop < 4) {
+while (proto && proto !== Object.prototype && proto !== Array.prototype && proto !== Function.prototype && hop < 2) {
 hop++;
 var pKeys = Object.getOwnPropertyNames(proto);
 if (pKeys.length > 0 && pKeys.length <= 96) {
@@ -2933,9 +2908,6 @@ var desc = null;
 try {
 desc = Object.getOwnPropertyDescriptor(obj, k);
 if (!desc && cur.depth > 0) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_5 = """
 var pCh = findPropertyDescriptorChain(obj, k);
 if (pCh && pCh.desc && typeof pCh.desc.get === "function" && typeof pCh.desc.set === "function") desc = pCh.desc;
 }
@@ -2965,6 +2937,9 @@ out.push({ id: "js:" + nextPath, kind: "js", objRef: mkRef(obj), key: k, dt: Num
 } else if (typeof val === "bigint") {
 if (!isWritable) continue;
 var bNum = Number(val);
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_5 = """
 if (dt !== "str" && dt !== "aob" && Number.isFinite(bNum) && matchNum(bNum, 0, false, "i64", sc, v1, v2)) {
 out.push({ id: "js:" + nextPath, kind: "js", objRef: mkRef(obj), key: k, dt: "i64", prev: bNum });
 }
@@ -2973,7 +2948,7 @@ if (!isWritable) continue;
 if ((dt === "str" || dt === "auto") && s1 && val.indexOf(s1) !== -1 && val.length <= 256) {
 out.push({ id: "js:" + nextPath, kind: "js", objRef: mkRef(obj), key: k, dt: "str", prev: val });
 }
-} else if (val && (typeof val === "object" || typeof val === "function") && cur.depth < 18) {
+} else if (val && (typeof val === "object" || typeof val === "function") && cur.depth < 12) {
 if (SKIP_SUBTREE_KEYS.has(k)) continue;
 if (typeof val === "function" && cur.depth > 1) continue;
 try {
@@ -3458,9 +3433,6 @@ return { role: "store", score: GAME_KEY_RE.test(h.id) ? 88 : 76 };
 }
 var idStr = String(h.id || "");
 var keyStr = String(h.key || "");
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_6 = """
 var isStrDuringNum = (h.dt === "str" && lastType !== "str");
 if (isStrDuringNum || UI_PATH_RE.test(idStr) || UI_PATH_RE.test(keyStr)) {
 return { role: "ui", score: isStrDuringNum ? 8 : 16 };
@@ -3489,6 +3461,9 @@ var items = [];
 for (var i = 0; i < lim; i++) {
 var sh = scored[i];
 var h = sh.h;
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_6 = """
 watchRefs.set(h.id, h);
 var rd = readHitCurrent(h);
 items.push({
@@ -4011,9 +3986,6 @@ var rdW = readHitCurrent(recW);
 return { ok: okW, frameId: FRAME_ID, val: formatVal(rdW.val, recW.dt) };
 }
 if (cmd.op === "hexDump") {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_7 = """
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
 var localH = stripOwnFramePrefix(cmd.id);
 var recH = watchRefs.get(localH);
@@ -4033,6 +4005,9 @@ if (cmd.op === "writeHex") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
 var localWH = stripOwnFramePrefix(cmd.id);
 var recWH = watchRefs.get(localWH);
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_7 = """
 if (!recWH || (recWH.kind !== "wasm" && recWH.kind !== "ta" && recWH.kind !== "ab")) {
 return { ok: false, error: "Hex write supports WASM / ArrayBuffer / TypedArray" };
 }

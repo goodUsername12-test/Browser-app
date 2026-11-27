@@ -506,8 +506,8 @@ class MainActivity : FragmentActivity() {
                                         com.fable.browser.engine.MemScanType.XOR_ENCRYPTED,
                                         "55443322",
                                         "",
-                                        100,
-                                        10_000
+                                        400,
+                                        12_000
                                     )
                                     val rxItems = runCatching { org.json.JSONObject(rx).optJSONArray("items") }.getOrNull()
                                     if (rxItems != null && rxItems.length() > 0) {

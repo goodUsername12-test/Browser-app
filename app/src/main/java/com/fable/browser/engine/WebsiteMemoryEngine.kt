@@ -417,6 +417,7 @@ var DOC_GEN = "d_" + Math.random().toString(36).slice(2, 10);
 var HOOKED_EARLY = false;
 try { HOOKED_EARLY = (typeof document !== "undefined" && document && document.readyState === "loading"); } catch (_) {}
 var freezeStrength = 1; // 0=Normal, 1=Strong, 2=Max (Titan)
+var internalOpDepth = 0;
 var burstChannel = null;
 var burstPending = false;
 var burstFrameStart = 0;
@@ -519,7 +520,7 @@ workerRefs.push(mkRef(w));
 }
 function trackClosureObj(o) {
 try {
-if (!o || typeof o !== "object" || closureObjSeen.has(o)) return;
+if (internalOpDepth > 0 || !o || typeof o !== "object" || closureObjSeen.has(o)) return;
 closureObjSeen.add(o);
 if (closureObjRefs.length >= MAX_TRACKED_CLOSURE) {
 closureObjRefs = closureObjRefs.filter(function(r) { return !!r.deref(); }).slice(-Math.floor(MAX_TRACKED_CLOSURE * 0.75));
@@ -529,7 +530,7 @@ closureObjRefs.push(mkRef(o));
 }
 function trackClosureMap(m) {
 try {
-if (!m || closureMapSeen.has(m)) return;
+if (internalOpDepth > 0 || !m || closureMapSeen.has(m)) return;
 closureMapSeen.add(m);
 if (closureMapRefs.length >= MAX_TRACKED_CLOSURE) {
 closureMapRefs = closureMapRefs.filter(function(r) { return !!r.deref(); }).slice(-Math.floor(MAX_TRACKED_CLOSURE * 0.75));
@@ -539,7 +540,7 @@ closureMapRefs.push(mkRef(m));
 }
 function trackClosureSet(s) {
 try {
-if (!s || closureSetSeen.has(s)) return;
+if (internalOpDepth > 0 || !s || closureSetSeen.has(s)) return;
 closureSetSeen.add(s);
 if (closureSetRefs.length >= 400) {
 closureSetRefs = closureSetRefs.filter(function(r) { return !!r.deref(); }).slice(-300);
@@ -1017,11 +1018,11 @@ if (dt === "i16") return dv.getInt16(off, true);
 if (dt === "i32") return dv.getInt32(off, true);
 if (dt === "u32") return dv.getUint32(off, true);
 if (dt === "i64") return Number(dv.getBigInt64(off, true));
-if (dt === "f32") return dv.getFloat32(off, true);
-if (dt === "f64") return dv.getFloat64(off, true);
     """.trimStart('\n').trimEnd('\n')
 
     private val JS_PART_2 = """
+if (dt === "f32") return dv.getFloat32(off, true);
+if (dt === "f64") return dv.getFloat64(off, true);
 } catch (_) {}
 return NaN;
 }
@@ -2759,7 +2760,7 @@ function collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap, scannedBufs,
 var visited = new WeakSet();
 var queue = [{ obj: window, path: "window", depth: 0 }];
 seedEngineAndFrameworkRoots(window, queue, visited);
-var maxNodes = 110000;
+var maxNodes = 65000;
 var nodesVisited = 0;
 var qHead = 0;
 var taSeen = new WeakSet();
@@ -2868,7 +2869,7 @@ if (typeof aval === "number") {
 if (dt !== "str" && dt !== "aob" && matchNum(aval, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
 out.push({ id: "js:" + cur.path + "[" + ai + "]", kind: "js", objRef: mkRef(obj), key: ai, dt: Number.isInteger(aval) ? "i32" : "f64", prev: aval });
 }
-} else if (aval && typeof aval === "object" && cur.depth < 18 && objEnqueued < 350) {
+} else if (aval && typeof aval === "object" && cur.depth < 14 && objEnqueued < 220) {
 try {
 if (!visited.has(aval)) {
 objEnqueued++;
@@ -2881,11 +2882,11 @@ continue;
 }
 var keys;
 try {
-keys = cur.depth <= 8 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
+keys = cur.depth <= 3 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
 } catch (_) {
 try { keys = Object.keys(obj); } catch (_2) { skippedXOriginCount++; continue; }
 }
-if (cur.depth > 0 && cur.depth <= 14) {
+if (cur.depth > 0 && cur.depth <= 6) {
 try {
 var proto = Object.getPrototypeOf(obj);
 var kSet = null;
@@ -3552,6 +3553,7 @@ if (!(key in obj)) return null;
 return { obj: obj, key: key };
 }
 function handleCmd(cmd) {
+internalOpDepth++;
 try {
 if (cmd.targetFrame && cmd.targetFrame !== FRAME_ID) {
 return { ok: false, skippedFrame: true };
@@ -4239,6 +4241,8 @@ return { ok: true, frameId: FRAME_ID, count: regs.length, totalKb: totalKb, work
 return { ok: false, error: "Unknown op" };
 } catch (e) {
 return { ok: false, error: String(e && e.message ? e.message : e) };
+} finally {
+internalOpDepth--;
 }
 }
 function relayToChildFrames(packet) {

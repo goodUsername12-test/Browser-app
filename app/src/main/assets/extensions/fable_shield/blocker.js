@@ -292,16 +292,7 @@ async function ensureMemHookOnTab(tabId) {
   } catch (_) {}
 }
 
-try {
-  if (typeof browser !== "undefined" && browser.tabs && browser.tabs.onUpdated) {
-    browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-      if (!config.memoryEngineEnabled) return;
-      if (changeInfo && (changeInfo.status === "loading" || changeInfo.status === "complete")) {
-        ensureMemHookOnTab(tabId).catch(() => {});
-      }
-    });
-  }
-} catch (_) {}
+
 
 function mergeFrameMemPayloads(rawList, op, maxReturn) {
   const parsed = [];

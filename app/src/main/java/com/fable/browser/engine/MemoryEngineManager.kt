@@ -432,10 +432,11 @@ class MemoryEngineManager @Inject constructor(
     }
 
     fun refreshAutoHookStatus(autoReattach: Boolean = false) {
-        if (!engineActive) return
+        if (!engineActive || _state.value.busy) return
         pageHookPingJob?.cancel()
         pageHookPingJob = scope.launch {
             if (autoReattach) delay(220L)
+            if (_state.value.busy) return@launch
             val raw = runPageCommand(JSONObject().apply { put("op", "ping") })
             val obj = runCatching { JSONObject(raw) }.getOrNull()
             if (obj != null && obj.optBoolean("ok", false)) {
@@ -2355,6 +2356,8 @@ class MemoryEngineManager @Inject constructor(
         val timedOut = obj.optBoolean("timedOut", false)
         val fallbackUsed = obj.optBoolean("fallbackUsed", false)
         val snapActive = obj.optBoolean("snapshotActive", false)
+        val scanDocGen = obj.optString("docGen")
+        if (scanDocGen.isNotBlank()) lastKnownDocGen = scanDocGen
         val engines = parseEngines(obj.optJSONArray("engines"))
         val arr = obj.optJSONArray("items") ?: JSONArray()
         val list = ArrayList<MemScanResultItem>(arr.length())

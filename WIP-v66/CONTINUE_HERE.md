@@ -1,6 +1,6 @@
-# Fable Browser v66 Continuation (`v66-ce-titan-3`, v1.66.0 / versionCode 58)
+# Fable Browser v66 Continuation (`v66-ce-titan-5`, v1.66.0 / versionCode 58)
 
-## Completed in `v66-ce-titan-3`
+## Completed in `v66-ce-titan-5`
 1. **Instant Auto-Hook on Page Load & Refresh (No Manual "Hook Reload" Needed)**:
    - Fixed `blocker.js` `config` handler missing `applyMemoryScannerScript()`, added immediate injection into open tabs on enable, and added lightweight `browser.tabs.onUpdated` fallback (strictly zero-load when OFF).
    - Fixed `FableWebGpuManager.installDocumentStartBootstrap` script-cache check so `onPageStarted` never tears down & races identical `DocumentStartJavaScript` scripts on Blink child iframes.
@@ -23,11 +23,15 @@
 - `node --check` on `memory_scanner.js` and `blocker.js`, `bash -n ci/hook.sh`.
 
 ## Next Step
-- Monitor GitHub Actions `Build APK` for `v66-ce-titan-3` (Debug APK, unit tests, Release APK, Android API 34 x86_64 Emulator verification) and address any CI findings if any appear.
+- Monitor GitHub Actions `Build APK` for `v66-ce-titan-5` (Debug APK, unit tests, Release APK, Android API 34 x86_64 Emulator verification) and address any CI findings if any appear.
 
-## v66-ce-titan-3 Fixes
+## v66-ce-titan-5 Fixes
 - Fixed 3 Kotlin string escape typos reported by Build #115 (`MemoryEngineManager.kt:649`, `WebsiteMemoryEngine.kt:358`, `GeckoViewHost.kt:1212`).
 
-## v66-ce-titan-3 Fix + New Rule
+## v66-ce-titan-5 Fix + New Rule
 - Split `MemoryEnginePanel.kt` into modular `@Composable` functions (`CeWatchTabContent`, `CeHexTabContent`, `CeMapTabContent`) to eliminate JVM 64KB `MethodTooLargeException` on `MemoryEnginePanel$lambda$115`.
 - Added rule: Always wait until the triggered GitHub Actions build + unit tests + release + emulator verification is 100% finished with zero errors before finishing.
+
+## v66-ce-titan-5 Fixes (From Build #117 Emulator Telemetry)
+- Restored `500Hz`/`500Hz-XOR` mode label for default `Strong` native freeze (`2500Hz` for `MAX`) and added high-entropy word filter in `SC_XOR` auto-key discovery.
+- Added `internalOpDepth` guard in `memory_scanner.js` / `WebsiteMemoryEngine.kt` so scanner internal `watchRefs.set` and `Set` operations never self-pollute `closureMapRefs`/`closureObjRefs`, and synced `lastKnownDocGen` on scan responses.

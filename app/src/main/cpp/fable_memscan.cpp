@@ -1542,10 +1542,10 @@ bool encode_value_bytes(int dtype, const std::string& val_str, std::uint8_t out_
     }
     out_is_num = true;
     switch (dtype) {
-        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(iv); std::memcpy(out_buf, &v, 1); out_sz = 1; out_num = static_cast<double>(v); return true; }
-        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(iv); std::memcpy(out_buf, &v, 2); out_sz = 2; out_num = static_cast<double>(v); return true; }
-        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(iv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
-        case DT_UINT32: { std::uint32_t v = static_cast<std::uint32_t>(iv < 0 ? 0 : iv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
+        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(std::clamp<std::int64_t>(iv, -128LL, 127LL)); std::memcpy(out_buf, &v, 1); out_sz = 1; out_num = static_cast<double>(v); return true; }
+        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(std::clamp<std::int64_t>(iv, -32768LL, 32767LL)); std::memcpy(out_buf, &v, 2); out_sz = 2; out_num = static_cast<double>(v); return true; }
+        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(std::clamp<std::int64_t>(iv, -2147483648LL, 2147483647LL)); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
+        case DT_UINT32: { std::uint32_t v = static_cast<std::uint32_t>(std::clamp<std::int64_t>(iv, 0LL, 4294967295LL)); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
         case DT_INT64:  { std::memcpy(out_buf, &iv, 8); out_sz = 8; out_num = static_cast<double>(iv); return true; }
         case DT_FLOAT:  { float v = static_cast<float>(dv); std::memcpy(out_buf, &v, 4); out_sz = 4; out_num = static_cast<double>(v); return true; }
         case DT_DOUBLE: { std::memcpy(out_buf, &dv, 8); out_sz = 8; out_num = dv; return true; }
@@ -1556,11 +1556,11 @@ bool encode_value_bytes(int dtype, const std::string& val_str, std::uint8_t out_
 bool encode_numeric_val_bytes(int dtype, double val, std::uint8_t out_buf[64], std::size_t& out_sz) {
     std::memset(out_buf, 0, 64);
     switch (dtype) {
-        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(std::llround(val)); std::memcpy(out_buf, &v, 1); out_sz = 1; return true; }
-        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(std::llround(val)); std::memcpy(out_buf, &v, 2); out_sz = 2; return true; }
-        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(std::llround(val)); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
-        case DT_UINT32: { std::uint32_t v = static_cast<std::uint32_t>(val < 0.0 ? 0.0 : std::llround(val)); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
-        case DT_INT64:  { std::int64_t v = static_cast<std::int64_t>(std::llround(val)); std::memcpy(out_buf, &v, 8); out_sz = 8; return true; }
+        case DT_INT8:   { std::int8_t v = static_cast<std::int8_t>(std::clamp<double>(std::round(val), -128.0, 127.0)); std::memcpy(out_buf, &v, 1); out_sz = 1; return true; }
+        case DT_INT16:  { std::int16_t v = static_cast<std::int16_t>(std::clamp<double>(std::round(val), -32768.0, 32767.0)); std::memcpy(out_buf, &v, 2); out_sz = 2; return true; }
+        case DT_INT32:  { std::int32_t v = static_cast<std::int32_t>(std::clamp<double>(std::round(val), -2147483648.0, 2147483647.0)); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
+        case DT_UINT32: { std::uint32_t v = static_cast<std::uint32_t>(std::clamp<double>(std::round(val), 0.0, 4294967295.0)); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
+        case DT_INT64:  { std::int64_t v = static_cast<std::int64_t>(std::clamp<double>(std::round(val), -9007199254740991.0, 9007199254740991.0)); std::memcpy(out_buf, &v, 8); out_sz = 8; return true; }
         case DT_FLOAT:  { float v = static_cast<float>(val); std::memcpy(out_buf, &v, 4); out_sz = 4; return true; }
         case DT_DOUBLE: { std::memcpy(out_buf, &val, 8); out_sz = 8; return true; }
         default: return false;
@@ -2475,6 +2475,67 @@ std::string jstr_to_std(JNIEnv* env, jstring js) {
 
 } // namespace
 
+
+std::string mem_inspect_types_impl(std::uint64_t addr, int cur_dtype) {
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self process memory\"}";
+    std::uint8_t b[8] = {0};
+    const ssize_t got = io.read_at(addr, b, 8);
+    if (got < 1) return "{\"ok\":false,\"error\":\"Address unreadable\"}";
+    char hex_buf[32] = {0};
+    std::string hex_str;
+    for (ssize_t i = 0; i < got; ++i) {
+        if (i > 0) hex_str.push_back(' ');
+        std::snprintf(hex_buf, sizeof(hex_buf), "%02X", static_cast<unsigned>(b[i]));
+        hex_str += hex_buf;
+    }
+    std::int8_t v_i8 = static_cast<std::int8_t>(b[0]);
+    std::uint8_t v_u8 = b[0];
+    std::int16_t v_i16 = 0; std::uint16_t v_u16 = 0;
+    std::int32_t v_i32 = 0; std::uint32_t v_u32 = 0;
+    std::int64_t v_i64 = 0; std::uint64_t v_u64 = 0;
+    float v_f32 = 0.0f; double v_f64 = 0.0;
+    if (got >= 2) { std::memcpy(&v_i16, b, 2); std::memcpy(&v_u16, b, 2); }
+    if (got >= 4) { std::memcpy(&v_i32, b, 4); std::memcpy(&v_u32, b, 4); std::memcpy(&v_f32, b, 4); }
+    if (got >= 8) { std::memcpy(&v_i64, b, 8); std::memcpy(&v_u64, b, 8); std::memcpy(&v_f64, b, 8); }
+    char f32s[48] = {0}, f64s[48] = {0}, x10s[48] = {0}, x100s[48] = {0}, x1000s[48] = {0};
+    if (got >= 4) {
+        if (std::isfinite(v_f32)) std::snprintf(f32s, sizeof(f32s), "%.6g", static_cast<double>(v_f32));
+        else std::snprintf(f32s, sizeof(f32s), "NaN");
+        std::snprintf(x10s, sizeof(x10s), "%.6g", static_cast<double>(v_i32) / 10.0);
+        std::snprintf(x100s, sizeof(x100s), "%.6g", static_cast<double>(v_i32) / 100.0);
+        std::snprintf(x1000s, sizeof(x1000s), "%.6g", static_cast<double>(v_i32) / 1000.0);
+    }
+    if (got >= 8) {
+        if (std::isfinite(v_f64)) std::snprintf(f64s, sizeof(f64s), "%.6g", v_f64);
+        else std::snprintf(f64s, sizeof(f64s), "NaN");
+    }
+    std::string diag, sug;
+    if (cur_dtype == DT_INT32 && got >= 4 && v_i32 < -1000000) {
+        diag = "Signed i32 overflow! Unsigned u32 = " + std::to_string(v_u32);
+        sug = "u32";
+    } else if (cur_dtype == DT_INT32 && got >= 4 && std::abs(v_i32) > 100000000 && std::isfinite(v_f32) && std::fabs(v_f32) >= 0.001f && std::fabs(v_f32) <= 1e7f) {
+        diag = std::string("Looks like Float (f32 = ") + f32s + ") read as i32";
+        sug = "f32";
+    }
+    std::string out = "{\"ok\":true,\"hex\":\"" + hex_str + "\"";
+    out += ",\"i8\":\"" + std::to_string(static_cast<int>(v_i8)) + "\"";
+    out += ",\"u8\":\"" + std::to_string(static_cast<unsigned>(v_u8)) + "\"";
+    out += ",\"i16\":\"" + (got >= 2 ? std::to_string(v_i16) : std::string()) + "\"";
+    out += ",\"u16\":\"" + (got >= 2 ? std::to_string(v_u16) : std::string()) + "\"";
+    out += ",\"i32\":\"" + (got >= 4 ? std::to_string(v_i32) : std::string()) + "\"";
+    out += ",\"u32\":\"" + (got >= 4 ? std::to_string(v_u32) : std::string()) + "\"";
+    out += ",\"i64\":\"" + (got >= 8 ? std::to_string(v_i64) : std::string()) + "\"";
+    out += ",\"u64\":\"" + (got >= 8 ? std::to_string(v_u64) : std::string()) + "\"";
+    out += ",\"f32\":\"" + std::string(f32s) + "\"";
+    out += ",\"f64\":\"" + std::string(f64s) + "\"";
+    out += ",\"x10\":\"" + std::string(x10s) + "\"";
+    out += ",\"x100\":\"" + std::string(x100s) + "\"";
+    out += ",\"x1000\":\"" + std::string(x1000s) + "\"";
+    out += ",\"diagnosis\":\"" + diag + "\",\"suggestedType\":\"" + sug + "\"}";
+    return out;
+}
+
 extern "C" {
 
 JNIEXPORT jstring JNICALL
@@ -2712,6 +2773,12 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeResolveSignature(
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeTestAuthority(JNIEnv* env, jclass, jlong addr, jint dtype) {
     const std::string res = mem_test_authority_impl(static_cast<std::uint64_t>(addr), dtype);
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeInspectTypes(JNIEnv* env, jclass, jlong addr, jint dtype) {
+    const std::string res = mem_inspect_types_impl(static_cast<std::uint64_t>(addr), dtype);
     return env->NewStringUTF(res.c_str());
 }
 

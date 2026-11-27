@@ -158,7 +158,31 @@ data class MemWatchEntry(
     val tracing: Boolean = false,
     val traceCount: Int = 0,
     val traceEvents: List<MemTraceEvent> = emptyList(),
+    val typeHint: String = "",
+    val suggestedType: String = "",
     val attached: Boolean = true
+)
+
+data class MemTypeInspect(
+    val watchId: String = "",
+    val addr: String = "",
+    val currentType: String = "i32",
+    val hex: String = "",
+    val i8: String = "",
+    val u8: String = "",
+    val i16: String = "",
+    val u16: String = "",
+    val i32: String = "",
+    val u32: String = "",
+    val i64: String = "",
+    val u64: String = "",
+    val f32: String = "",
+    val f64: String = "",
+    val x10: String = "",
+    val x100: String = "",
+    val x1000: String = "",
+    val diagnosis: String = "",
+    val suggestedType: String = ""
 )
 
 data class MemSavedTable(
@@ -239,6 +263,7 @@ data class MemoryEngineUiState(
     val mirrorResults: List<MemScanResultItem> = emptyList(),
     val mirrorUiResults: List<MemScanResultItem> = emptyList(),
     val savedRecipes: List<MemCheatRecipe> = emptyList(),
+    val typeInspect: MemTypeInspect? = null,
     val canUndoTx: Boolean = false,
     val lastTxLabel: String = "",
     val statusText: String = "Enter a number and tap First Scan",
@@ -719,9 +744,10 @@ class MemoryEngineManager @Inject constructor(
         }
     }
 
-    fun lockAllMirrors() {
+    fun lockAllMirrors(includeUi: Boolean = false) {
         val st = _state.value
-        val mirrors = st.mirrorResults.take(30)
+        val combined = if (includeUi) (st.mirrorResults + st.mirrorUiResults) else st.mirrorResults
+        val mirrors = combined.take(30)
         if (mirrors.isEmpty()) return
         val origin = st.watchList.firstOrNull { it.addr == st.mirrorOriginAddr }
         val freezeVal = origin?.frozenValue?.ifBlank { origin.currentValue } ?: mirrors.first().value
@@ -804,6 +830,111 @@ class MemoryEngineManager @Inject constructor(
         setFreezeStrength(profile.defaultFreezeStrength)
     }
 
+    fun clearTypeInspect() {
+        _state.update { it.copy(typeInspect = null) }
+    }
+
+    fun inspectWatchTypes(watchId: String) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        scope.launch {
+            val raw = when (entry.scope) {
+                MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) {
+                    NativeMemoryScanner.inspectTypes(entry.addr, entry.dataType)
+                }
+                MemScope.PAGE_WASM -> {
+                    val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
+                    runPageCommand(JSONObject().apply {
+                        put("op", "inspectTypes")
+                        put("id", entry.addr)
+                        if (tFrame != null) put("targetFrame", tFrame)
+                    })
+                }
+            }
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val info = MemTypeInspect(
+                    watchId = watchId,
+                    addr = entry.addr,
+                    currentType = obj.optString("currentType", entry.dataType.jsCode),
+                    hex = obj.optString("hex"),
+                    i8 = obj.optString("i8"),
+                    u8 = obj.optString("u8"),
+                    i16 = obj.optString("i16"),
+                    u16 = obj.optString("u16"),
+                    i32 = obj.optString("i32"),
+                    u32 = obj.optString("u32"),
+                    i64 = obj.optString("i64"),
+                    u64 = obj.optString("u64"),
+                    f32 = obj.optString("f32"),
+                    f64 = obj.optString("f64"),
+                    x10 = obj.optString("x10"),
+                    x100 = obj.optString("x100"),
+                    x1000 = obj.optString("x1000"),
+                    diagnosis = obj.optString("diagnosis"),
+                    suggestedType = obj.optString("suggestedType")
+                )
+                _state.update {
+                    it.copy(
+                        typeInspect = info,
+                        statusText = info.diagnosis.ifBlank { "Raw byte interpretations for ${entry.label}" }
+                    )
+                }
+            } else {
+                _state.update { it.copy(statusText = obj?.optString("error") ?: "Type inspection failed") }
+            }
+        }
+    }
+
+    fun retypeWatch(watchId: String, newJsType: String, scale: Int = 0) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        val mappedDt = resolveDataType(newJsType, entry.dataType)
+        scope.launch {
+            var liveVal = entry.currentValue
+            var ok = false
+            when (entry.scope) {
+                MemScope.FABLE_NATIVE -> {
+                    val rd = withContext(Dispatchers.IO) {
+                        NativeMemoryScanner.readValue(entry.addr, mappedDt, 16, entry.xorMode, entry.xorKey, entry.xorKeyAddr)
+                    }
+                    if (!rd.startsWith("<")) { liveVal = rd; ok = true }
+                }
+                MemScope.PAGE_WASM -> {
+                    val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
+                    val raw = runPageCommand(JSONObject().apply {
+                        put("op", "retype")
+                        put("id", entry.addr)
+                        put("dtype", newJsType)
+                        put("scale", scale)
+                        if (tFrame != null) put("targetFrame", tFrame)
+                    })
+                    val obj = runCatching { JSONObject(raw) }.getOrNull()
+                    if (obj != null && obj.optBoolean("ok", false)) {
+                        liveVal = obj.optString("val", liveVal)
+                        ok = true
+                    }
+                }
+            }
+            if (ok) {
+                _state.update { st ->
+                    st.copy(
+                        watchList = st.watchList.map { e ->
+                            if (e.id == watchId) e.copy(
+                                dataType = mappedDt,
+                                currentValue = liveVal,
+                                typeHint = "",
+                                suggestedType = ""
+                            ) else e
+                        },
+                        typeInspect = st.typeInspect?.let { if (it.watchId == watchId) it.copy(currentType = newJsType, diagnosis = "", suggestedType = "") else it },
+                        statusText = "Switched ${entry.label} -> $newJsType${if (scale > 0) " (/$scale)" else ""} = $liveVal"
+                    )
+                }
+            } else {
+                _state.update { it.copy(statusText = "Could not switch type to $newJsType") }
+            }
+        }
+    }
+
     fun setPreferInfinity(enabled: Boolean) {
         _state.update { it.copy(preferInfinity = enabled) }
     }
@@ -877,14 +1008,21 @@ class MemoryEngineManager @Inject constructor(
             if (obj != null && obj.optBoolean("ok", false)) {
                 val sc = obj.optInt("score", 50)
                 val vd = obj.optString("verdict", "tested")
-                val isUi = vd.contains("ui", ignoreCase = true) || sc <= 20
+                val newRole = obj.optString("role", entry.role).ifBlank { entry.role }
+                val isAuthUi = vd.contains("authoritative", ignoreCase = true) || vd.contains("ui-state-writable", ignoreCase = true)
+                val isDisplayOnlyUi = !isAuthUi && (vd.contains("display-only", ignoreCase = true) || sc <= 20)
                 _state.update { st ->
                     st.copy(
                         watchList = st.watchList.map { e ->
                             if (e.id == watchId) e.copy(
+                                role = newRole,
                                 authorityScore = sc,
                                 authorityVerdict = vd,
-                                uiWarningReason = if (isUi) "Authority ${sc}% ($vd) · tap Find Real" else e.uiWarningReason
+                                uiWarningReason = when {
+                                    isAuthUi -> ""
+                                    isDisplayOnlyUi -> "Authority ${sc}% ($vd) · tap Find Real"
+                                    else -> e.uiWarningReason
+                                }
                             ) else e
                         },
                         statusText = "Authority ${entry.label}: ${sc}% ($vd)"
@@ -946,10 +1084,11 @@ class MemoryEngineManager @Inject constructor(
         }
     }
 
-    fun setAllMirrorsValue(newValue: String, linkAsGroup: Boolean = true) {
+    fun setAllMirrorsValue(newValue: String, linkAsGroup: Boolean = true, includeUi: Boolean = false) {
         val clean = newValue.trim()
         val st = _state.value
-        val mirrors = st.mirrorResults.take(30)
+        val combined = if (includeUi) (st.mirrorResults + st.mirrorUiResults) else st.mirrorResults
+        val mirrors = combined.take(30)
         if (clean.isEmpty() || mirrors.isEmpty()) return
         val origin = st.watchList.firstOrNull { it.addr == st.mirrorOriginAddr }
         val groupLabel = if (linkAsGroup) (origin?.label?.take(16) ?: "Linked") else ""
@@ -2664,6 +2803,7 @@ class MemoryEngineManager @Inject constructor(
                 val pageWatches = watches.filter { it.scope == MemScope.PAGE_WASM }
                 val nativeWatches = watches.filter { it.scope == MemScope.FABLE_NATIVE }
                 val updatedMap = HashMap<String, String>()
+                val hintMap = HashMap<String, Pair<String, String>>()
 
                 if (pageWatches.isNotEmpty()) {
                     val ids = JSONArray().apply { pageWatches.forEach { put(it.addr) } }
@@ -2697,6 +2837,15 @@ class MemoryEngineManager @Inject constructor(
                         val missingFrozen = pageWatches.filter { it.frozen && it.freezeStatus != "arming" && !fStats.has(it.addr) }
                         if (missingFrozen.isNotEmpty()) {
                             applyFreezeBatch(missingFrozen, freeze = true)
+                        }
+                    }
+                    val thObj = obj?.optJSONObject("typeHints")
+                    if (thObj != null) {
+                        for (w in pageWatches) {
+                            val ho = thObj.optJSONObject(w.addr)
+                            if (ho != null) {
+                                hintMap[w.id] = ho.optString("diagnosis") to ho.optString("suggestedType")
+                            }
                         }
                     }
                     val trObj = obj?.optJSONObject("traces")
@@ -2733,11 +2882,14 @@ class MemoryEngineManager @Inject constructor(
                                     (e.traceEvents + MemTraceEvent(nowMs, e.currentValue, nv, dStr, "native-mem")).takeLast(20)
                                 } else e.traceEvents
                                 val nextHist = if (changed) (e.valueHistory + nv).takeLast(8) else if (e.valueHistory.isEmpty()) listOf(nv) else e.valueHistory
+                                val hintPair = hintMap[e.id]
                                 e.copy(
                                     currentValue = nv,
                                     lastChangedAtMs = if (changed) nowMs else e.lastChangedAtMs,
                                     valueHistory = nextHist,
                                     traceEvents = nextEvents,
+                                    typeHint = hintPair?.first ?: (if (e.scope == MemScope.PAGE_WASM) "" else e.typeHint),
+                                    suggestedType = hintPair?.second ?: (if (e.scope == MemScope.PAGE_WASM) "" else e.suggestedType),
                                     traceCount = if (changed && e.tracing && e.scope == MemScope.FABLE_NATIVE) e.traceCount + 1 else e.traceCount
                                 )
                             } else e

@@ -68,14 +68,16 @@ internal fun CeFindSamePanel(
     fsTiny: TextUnit,
     previewMode: Boolean,
     onAddWatch: (MemScanResultItem) -> Unit,
-    onSetAllMirrorsValue: (String, Boolean) -> Unit,
-    onLockAllMirrors: () -> Unit,
+    onSetAllMirrorsValue: (String, Boolean, Boolean) -> Unit,
+    onLockAllMirrors: (Boolean) -> Unit,
     onUndoLastTransaction: () -> Unit,
     onSwitchTab: (Int) -> Unit
 ) {
     if (state.mirrorResults.isEmpty() && state.mirrorUiResults.isEmpty()) return
     var mirrorValDraft by remember { mutableStateOf("") }
     var showUiCopies by remember { mutableStateOf(false) }
+    var includeUiCopies by remember { mutableStateOf(false) }
+    val activeTargetCount = (state.mirrorResults.size + if (includeUiCopies) state.mirrorUiResults.size else 0).coerceAtMost(30)
     val focusManager = LocalFocusManager.current
 
     Spacer(Modifier.height((5f * s).dp))
@@ -106,16 +108,31 @@ internal fun CeFindSamePanel(
                     Text(text = "Undo Tx", color = Color.White, fontSize = fsTiny, modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2.5f * s).dp))
                 }
             }
+            if (state.mirrorUiResults.isNotEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape((5f * s).dp),
+                    color = if (includeUiCopies) Color(0xFFD97706) else Color(0xFF1E293B),
+                    modifier = Modifier.clickable(enabled = !previewMode) { includeUiCopies = !includeUiCopies }
+                ) {
+                    Text(
+                        text = if (includeUiCopies) "Incl. UI ✓" else "+UI",
+                        color = Color.White,
+                        fontSize = fsTiny,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2.5f * s).dp)
+                    )
+                }
+            }
             Surface(
                 shape = RoundedCornerShape((5f * s).dp),
                 color = Color(0xFF0284C7),
-                modifier = Modifier.clickable(enabled = !previewMode && state.mirrorResults.isNotEmpty()) {
-                    onLockAllMirrors()
+                modifier = Modifier.clickable(enabled = !previewMode && activeTargetCount > 0) {
+                    onLockAllMirrors(includeUiCopies)
                     onSwitchTab(1)
                 }
             ) {
                 Text(
-                    text = "Lock All (${state.mirrorResults.size.coerceAtMost(30)})",
+                    text = "Lock All ($activeTargetCount)",
                     color = Color.White,
                     fontSize = fsTiny,
                     fontWeight = FontWeight.Bold,
@@ -123,16 +140,16 @@ internal fun CeFindSamePanel(
                 )
             }
         }
-        if (state.mirrorResults.isNotEmpty()) {
+        if (state.mirrorResults.isNotEmpty() || (includeUiCopies && state.mirrorUiResults.isNotEmpty())) {
             Row(horizontalArrangement = Arrangement.spacedBy((4f * s).dp), verticalAlignment = Alignment.CenterVertically) {
                 CeInputField(
                     value = mirrorValDraft,
                     onValueChange = { mirrorValDraft = it },
-                    placeholder = "Set all gameplay copies (e.g. 999999 or MAX)",
+                    placeholder = if (includeUiCopies) "Set game + UI copies (e.g. 999999 or MAX)" else "Set all gameplay copies (e.g. 999999 or MAX)",
                     fontSize = fsSmall,
                     enabled = !previewMode,
                     onDone = {
-                        onSetAllMirrorsValue(mirrorValDraft, true)
+                        onSetAllMirrorsValue(mirrorValDraft, true, includeUiCopies)
                         mirrorValDraft = ""
                         focusManager.clearFocus()
                         onSwitchTab(1)
@@ -147,7 +164,7 @@ internal fun CeFindSamePanel(
                     minHeight = (28f * s).coerceIn(22f, 36f).dp,
                     enabled = !previewMode && mirrorValDraft.isNotBlank(),
                     onClick = {
-                        onSetAllMirrorsValue(mirrorValDraft, true)
+                        onSetAllMirrorsValue(mirrorValDraft, true, includeUiCopies)
                         mirrorValDraft = ""
                         focusManager.clearFocus()
                         onSwitchTab(1)
@@ -160,7 +177,7 @@ internal fun CeFindSamePanel(
                     fontSize = fsTiny,
                     minHeight = (28f * s).coerceIn(22f, 36f).dp,
                     enabled = !previewMode,
-                    onClick = { onSetAllMirrorsValue("MAX", true); onSwitchTab(1) }
+                    onClick = { onSetAllMirrorsValue("MAX", true, includeUiCopies); onSwitchTab(1) }
                 )
             }
             Column(
@@ -206,15 +223,28 @@ internal fun CeFindSamePanel(
                 modifier = Modifier.clickable { showUiCopies = !showUiCopies }
             )
             if (showUiCopies) {
-                state.mirrorUiResults.take(6).forEach { ur ->
-                    Text(
-                        text = "[UI?] ${ur.addr} = ${ur.value}",
-                        color = Color(0xFFFDE68A),
-                        fontSize = fsTiny,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                state.mirrorUiResults.take(10).forEach { ur ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = (1.5f * s).dp)
+                    ) {
+                        Text(
+                            text = "[UI?] ${ur.addr} = ${ur.value}",
+                            color = Color(0xFFFDE68A),
+                            fontSize = fsTiny,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Surface(
+                            shape = RoundedCornerShape((5f * s).dp),
+                            color = Color(0xFFD97706),
+                            modifier = Modifier.clickable(enabled = !previewMode) { onAddWatch(ur) }
+                        ) {
+                            Text(text = "+W", color = Color.White, fontSize = fsTiny, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (1.5f * s).dp))
+                        }
+                    }
                 }
             }
         }
@@ -265,6 +295,9 @@ internal fun CeWatchTabContent(
     onFindRealValueFromUiWatch: (String) -> Unit,
     onTestWatchAuthority: (String) -> Unit,
     onSetWatchSafeMax: (String, Boolean) -> Unit,
+    onInspectWatchTypes: (String) -> Unit,
+    onRetypeWatch: (String, String, Int) -> Unit,
+    onClearTypeInspect: () -> Unit,
     onToggleWatchFavorite: (String) -> Unit,
     onCycleWatchColorTag: (String) -> Unit,
     onSaveCheatRecipe: (String) -> Unit,
@@ -674,6 +707,70 @@ internal fun CeWatchTabContent(
                 .heightIn(max = listMaxHeight)
                 .verticalScroll(rememberScrollState())
         ) {
+            state.typeInspect?.let { ti ->
+                Column(
+                    verticalArrangement = Arrangement.spacedBy((4f * s).dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF0B1F2E), RoundedCornerShape((8f * s).dp))
+                        .border(1.dp, Color(0xFF38BDF8), RoundedCornerShape((8f * s).dp))
+                        .padding((6f * s).dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Raw Byte Types (${ti.currentType}) · ${ti.hex.ifBlank { "JS/DOM" }}",
+                            color = Color(0xFF7DD3FC),
+                            fontSize = fsTiny,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = "✕",
+                            color = Color(0xFFF87171),
+                            fontSize = fsSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable(onClick = onClearTypeInspect).padding(horizontal = (4f * s).dp)
+                        )
+                    }
+                    if (ti.diagnosis.isNotBlank()) {
+                        Text(text = "⚠ ${ti.diagnosis}", color = Color(0xFFFBBF24), fontSize = fsTiny, fontWeight = FontWeight.SemiBold)
+                    }
+                    val opts = listOf(
+                        Triple("i32", ti.i32, 0), Triple("u32", ti.u32, 0),
+                        Triple("f32", ti.f32, 0), Triple("f64", ti.f64, 0),
+                        Triple("i64", ti.i64, 0), Triple("u64", ti.u64, 0),
+                        Triple("i16", ti.i16, 0), Triple("u16", ti.u16, 0),
+                        Triple("i8", ti.i8, 0), Triple("u8", ti.u8, 0),
+                        Triple("i32", ti.x10, 10), Triple("i32", ti.x100, 100), Triple("i32", ti.x1000, 1000)
+                    ).filter { it.second.isNotBlank() }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    ) {
+                        opts.forEach { (dtName, valTxt, scVal) ->
+                            val lbl = if (scVal > 0) "/$scVal" else dtName
+                            val isSug = ti.suggestedType == dtName && scVal == 0
+                            Surface(
+                                shape = RoundedCornerShape((6f * s).dp),
+                                color = if (isSug) Color(0xFF065F46) else Color(0xFF1E293B),
+                                modifier = Modifier.clickable(enabled = !previewMode) { onRetypeWatch(ti.watchId, dtName, scVal) }
+                            ) {
+                                Text(
+                                    text = "$lbl: $valTxt",
+                                    color = if (isSug) Color(0xFFA7F3D0) else Color(0xFFE2E8F0),
+                                    fontSize = fsTiny,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (3f * s).dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height((4f * s).dp))
+            }
             displayedWatches.forEach { w ->
                 CeWatchEntryCard(
                     w = w,
@@ -701,6 +798,8 @@ internal fun CeWatchTabContent(
                     onFindSame = { onFindMirrorsForWatch(w.id); onSwitchTab(0) },
                     onTestAuthority = { onTestWatchAuthority(w.id) },
                     onSetSafeMax = { useInf -> onSetWatchSafeMax(w.id, useInf) },
+                    onInspectTypes = { onInspectWatchTypes(w.id) },
+                    onQuickRetype = { sug -> onRetypeWatch(w.id, sug, 0) },
                     onSaveRecipe = { onSaveCheatRecipe(w.id) },
                     onToggleFavorite = { onToggleWatchFavorite(w.id) },
                     onCycleColor = { onCycleWatchColorTag(w.id) },
@@ -741,6 +840,8 @@ private fun CeWatchEntryCard(
     onFindSame: () -> Unit,
     onTestAuthority: () -> Unit,
     onSetSafeMax: (Boolean) -> Unit,
+    onInspectTypes: () -> Unit,
+    onQuickRetype: (String) -> Unit,
     onSaveRecipe: () -> Unit,
     onToggleFavorite: () -> Unit,
     onCycleColor: () -> Unit,
@@ -853,6 +954,36 @@ private fun CeWatchEntryCard(
                 if (w.reattachStatus.isNotBlank()) {
                     Text(text = w.reattachStatus, color = Color(0xFF6EE7B7), fontSize = fsTiny, maxLines = 1)
                 }
+                if (w.authorityVerdict.isNotBlank()) {
+                    val isGoodAuth = w.authorityVerdict.contains("authoritative", ignoreCase = true) || w.authorityVerdict.contains("verified", ignoreCase = true) || w.authorityVerdict.contains("ui-state", ignoreCase = true)
+                    Text(
+                        text = "Verdict: ${w.authorityVerdict}",
+                        color = if (isGoodAuth) Color(0xFF34D399) else Color(0xFFFBBF24),
+                        fontSize = fsTiny,
+                        maxLines = 1
+                    )
+                }
+                if (w.typeHint.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy((4f * s).dp)) {
+                        Text(
+                            text = "⚠ ${w.typeHint}",
+                            color = Color(0xFFFBBF24),
+                            fontSize = fsTiny,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (w.suggestedType.isNotBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape((4f * s).dp),
+                                color = Color(0xFF065F46),
+                                modifier = Modifier.clickable(enabled = !previewMode) { onQuickRetype(w.suggestedType) }
+                            ) {
+                                Text(text = "Fix→${w.suggestedType}", color = Color(0xFFA7F3D0), fontSize = fsTiny, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = (4f * s).dp, vertical = (1f * s).dp))
+                            }
+                        }
+                    }
+                }
                 if (w.frozen || w.freezeStatus == "failed" || w.freezeStatus == "detached") {
                     val modeTxt = w.freezeMode.ifBlank { "Lock" }
                     val ruleTxt = w.freezeRule.symbol
@@ -912,6 +1043,7 @@ private fun CeWatchEntryCard(
             listOf(
                 Triple("Find Same", Color(0xFF0369A1), onFindSame),
                 Triple("Test Real", Color(0xFF4C1D95), onTestAuthority),
+                Triple("Types", Color(0xFF0F766E), onInspectTypes),
                 Triple("MAX SAFE", Color(0xFF065F46), { onSetSafeMax(false) }),
                 Triple("∞ Inf", Color(0xFF7C2D12), { onSetSafeMax(true) }),
                 Triple("Recipe+", Color(0xFF1E293B), onSaveRecipe)

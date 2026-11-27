@@ -118,6 +118,9 @@ object NativeMemoryScanner {
     @JvmStatic
     private external fun nativeTestAuthority(addr: Long, dtype: Int): String
 
+    @JvmStatic
+    private external fun nativeInspectTypes(addr: Long, dtype: Int): String
+
     fun firstScan(
         dtype: MemDataType,
         scanType: MemScanType,
@@ -284,6 +287,13 @@ object NativeMemoryScanner {
         val addr = parseHexAddress(addrHex) ?: return "{\"ok\":false,\"error\":\"Invalid address\"}"
         val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
         return runCatching { nativeTestAuthority(addr, nativeType) }.getOrElse { "{\"ok\":false,\"error\":\"Authority test error\"}" }
+    }
+
+    fun inspectTypes(addrHex: String, dtype: MemDataType): String {
+        if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
+        val addr = parseHexAddress(addrHex) ?: return "{\"ok\":false,\"error\":\"Invalid address\"}"
+        val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
+        return runCatching { nativeInspectTypes(addr, nativeType) }.getOrElse { "{\"ok\":false,\"error\":\"Type inspect error\"}" }
     }
 
     fun hexDump(addrHex: String, len: Int = 128): String {

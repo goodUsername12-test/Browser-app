@@ -1,23 +1,30 @@
-# Fable Browser v68 APEX (`v68-ce-apex-1`) Checkpoint
+# Fable Browser v68 APEX (`v68-ce-apex-2`, v1.68.0 / versionCode 60)
 
-## Completed in Slice 1 (`v68-ce-apex-1`)
+## Completed in `v68-ce-apex-2`
 1. **JS/WASM/DOM/Worker Core Discovery Engine (`WebsiteMemoryEngine.kt` + synced `memory_scanner.js`)**:
-   - Added full `u8`, `u16`, `u64` support alongside `i8`/`i16`/`i32`/`u32`/`i64`/`f32`/`f64`.
-   - Fixed `auto` exact scan to discover unsigned 32-bit (`u32`: `2,147,483,648..4,294,967,295`) and unsigned 16-bit (`u16`: `32,768..65,535`) values instead of missing or reading them as negative numbers.
-   - Added **Overflow Write-Guard** (`clampIntRange` / `parseBigIntExact`): writing an out-of-range number no longer silently wraps around into negative numbers; returns `overflowWarn` explaining the safe clamp and wider types.
-   - Added **`diagnoseBinaryBytes` + `inspectTypes` + `retype`** commands and live **`typeHints`** in `readBatch` to diagnose signed `i32`/`i16`/`i8` overflow or float-bits-as-int and switch types in place without losing the address.
-   - Expanded `scanBufferFallback` with **`~x1000`** fixed-point scaling and **`~f64rnd`** (truncated 64-bit double) discovery.
-   - Added **`scanDomUiState`** (`kind: "dom"`) for `<input>`, `<textarea>`, `[contenteditable]`, `data-*` game attributes, and HUD counters, with full read, native-event write, and freeze support.
-   - Upgraded **`testAuthority`** to perform **causal mirror-propagation testing**, cleanly distinguishing **`ui-authoritative`** and **`bidirectional-authoritative`** values from **`display-only-ui`** and **`externally-restored`** values, always restoring the original value.
-   - Expanded **`findMirrors`** to search storage, DOM/UI state, and fallback scaled/truncated WASM copies.
-   - Expanded **Worker/SharedArrayBuffer/Engine hooks** (`MessageChannel`, `BroadcastChannel`, `TypedArray.prototype.subarray`, Unity `Module.wasmMemory`, Godot `engine`, TurboWarp `vm`, CrazyGames/Poki SDK, Redux/store roots).
-   - Verified byte-for-byte parity between `WebsiteMemoryEngine.kt` and `memory_scanner.js` and passed all 8 local Node VM stress suites (`JS_V68_APEX_ALL_8_SUITES_PASSED=1`).
+   - Full `u8`, `u16`, `u64` + `i8`/`i16`/`i32`/`u32`/`i64`/`f32`/`f64` read/write support.
+   - `auto` exact scan now discovers unsigned `u32` (`2,147,483,648..4,294,967,295`) and `u16` (`32,768..65,535`).
+   - Safe Overflow Write-Guard (`clampIntRange` / `parseBigIntExact`): prevents silent negative wraparound when writing out-of-range numbers.
+   - `diagnoseBinaryBytes` + `inspectTypes` + `retype` + live `typeHints` in `readBatch` to auto-diagnose signed `i32`/`i16`/`i8` overflow or float-bits-as-int and switch types in place without losing the address.
+   - Expanded `scanBufferFallback` with `~x1000` fixed-point scaling and `~f64rnd` truncated double discovery.
+   - Interactive DOM/UI State Scanner (`scanDomUiState`, `kind: "dom"`) for `<input>`, `<textarea>`, `[contenteditable]`, `data-*` game attributes, and HUD counters, with read, native-event write, and freeze support.
+   - Causal `testAuthority`: snapshots matching mirrors before probing `+1` and checks propagation, accurately classifying `ui-authoritative`, `bidirectional-authoritative`, `ui-state-writable`, `verified-writable-game`, `display-only-ui`, `externally-restored`, and `read-only` while always restoring the original value.
+   - Expanded `findMirrors` (`Find Same`) across WASM, JS, storage, DOM/UI state, and fallback scaled/truncated WASM copies.
+   - Expanded Worker/SharedArrayBuffer/Engine hooks (`MessageChannel`, `BroadcastChannel`, `TypedArray.prototype.subarray`, Unity `Module.wasmMemory`, Godot, TurboWarp, CrazyGames/Poki SDK, Redux/store).
+2. **Native C++20 Engine (`fable_memscan.cpp` + `NativeMemoryScanner.kt`)**:
+   - Safe overflow clamping in `encode_value_bytes` & `encode_numeric_val_bytes`.
+   - New `mem_inspect_types_impl` + JNI `nativeInspectTypes` returning `hex`, `i8..u64`, `f32`, `f64`, `/10`, `/100`, `/1000`, `diagnosis`, and `suggestedType`.
+3. **Kotlin Manager & Mobile UI (`MemoryEngineManager.kt`, `MemoryEngineTabs.kt`, `MemoryEnginePanel.kt`, `BrowserScreen.kt`)**:
+   - Added 1-tap `Types` button on every Watch card + inline `CeTypeInspectCard` showing all live raw-byte interpretations with 1-tap type switching.
+   - Added inline overflow/type-mismatch warning pill with 1-tap `Fix->u32/f32/...` on Watch cards.
+   - Added `Incl. UI` toggle and `+W` on UI copies inside `CeFindSamePanel` for UI-authoritative games.
+   - Updated authority verdict display so `ui-authoritative` & `bidirectional-authoritative` render positively instead of flagging as display-only warnings.
+4. **Expanded Emulator Verification & CrazyGames Suite (`ci/hook.sh`, `MainActivity.kt`, `MemoryEngineTest.kt`)**:
+   - Added `ce-apex-lab.html` verified on BOTH GeckoView and Blink x Gecko (`u32`, overflow guard, `inspectTypes`/`retype`, `~x1000`, `~f64rnd`, UI-authoritative `<input>` vs display-only HUD, zero-leak stealth).
+   - Expanded live CrazyGames emulator battery to 7 titles (`turbo-trail-txl`, `ragdoll-archers`, `space-waves`, `smash-karts`, `crazy-flips-3d`, `capybara-clicker`, `shellshockersio`) plus `veck.io`.
 
-## Next in Slice 2 (`v68-ce-apex-2`)
-1. Upgrade `fable_memscan.cpp` + `NativeMemoryScanner.kt` with native overflow write-guard, `u32` in `auto` scan, and `nativeInspectTypes`.
-2. Wire `MemoryEngineManager.kt`, `MemoryEnginePanel.kt`, `MemoryEngineTabs.kt`, and `BrowserScreen.kt` for:
-   - Inline overflow/type-mismatch warning pill + 1-tap **Fix Type** & **Types** raw-byte multi-type inspector on Watch cards.
-   - `Incl. UI` toggle and `+W` on UI copies in `CeFindSamePanel`.
-   - Green/cyan styling for `ui-authoritative` & `bidirectional-authoritative` verdicts.
-3. Add `ce-apex-lab.html` (testing u32 overflow, overflow guard, `inspectTypes`/`retype`, `~x1000`, `~f64rnd`, UI-authoritative `<input>` & `data-*`, display-only UI vs bidirectional, Worker SAB, zero-leak stealth on GeckoView & Blink) AND expand live CrazyGames testing to 7 real titles + `veck.io` in `ci/hook.sh` + `MainActivity.kt` + `MemoryEngineTest.kt`.
-4. Run full local C++20/Node/Kotlin checks + GitHub Actions Build APK & Emulator verification until 100% green.
+## Verification Status
+- Local Node VM 8-suite stress test: `JS_V68_APEX_ALL_8_SUITES_PASSED=1`
+- Local C++20 `g++ -std=c++20 -O3 -Wall -Wextra -Werror`: `NATIVE_V68_APEX_TEST_PASS=1`
+- Local parity/syntax (`node --check`, `bash -n`, embedded Python compile, Kotlin brace/paren audit): PASSED
+- Next: Monitor GitHub Actions Build APK & Android API 34 Emulator `HOOK-RESULT` / `CI-RESULT` for `v68-ce-apex-2` and fix any issue until 100% green.

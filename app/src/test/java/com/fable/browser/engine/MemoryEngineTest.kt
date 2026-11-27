@@ -223,4 +223,19 @@ class MemoryEngineTest {
         assertEquals("Infinite Coins", recDec[0].name)
         assertEquals(MemFreezeRule.UNLIMITED_MAX, recDec[0].rule)
     }
+
+    @Test
+    fun mergeMultiFrameReadBatchPreservesTypeHintsAndInspectOps() {
+        val f1 = """{"ok":true,"values":{"wasm#0+0xC0:i32":"-1094967296"},"typeHints":{"wasm#0+0xC0:i32":{"diagnosis":"Signed i32 overflow! Unsigned u32 = 3200000000","suggestedType":"u32"}},"freezeStats":{},"traces":{}}"""
+        val f2 = """{"ok":true,"values":{"@f2|js:a":"42"},"typeHints":{},"freezeStats":{},"traces":{}}"""
+        val merged = org.json.JSONObject(WebsiteMemoryEngine.mergeMultiFrameResults(listOf(f1, f2), "readBatch"))
+        assertTrue(merged.optBoolean("ok"))
+        assertEquals("u32", merged.optJSONObject("typeHints")?.optJSONObject("wasm#0+0xC0:i32")?.optString("suggestedType"))
+
+        val inspSkip = """{"ok":false,"skippedFrame":true}"""
+        val inspHit = """{"ok":true,"u32":"3200000000","suggestedType":"u32"}"""
+        val mergedInsp = org.json.JSONObject(WebsiteMemoryEngine.mergeMultiFrameResults(listOf(inspSkip, inspHit), "inspectTypes"))
+        assertTrue(mergedInsp.optBoolean("ok"))
+        assertEquals("3200000000", mergedInsp.optString("u32"))
+    }
 }

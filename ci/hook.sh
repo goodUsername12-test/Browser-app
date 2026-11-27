@@ -427,6 +427,60 @@ CE_ULTRA_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable
 })();
 </script></body></html>"""
 
+
+CE_APEX_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable CE v68 APEX Lab</title></head>
+<body>
+<input id="ui-coins" type="text" value="6543" />
+<div id="gem-box" data-gems="7788"></div>
+<span id="fake-coin-label">6543</span>
+<pre id="out">ce-apex-lab</pre>
+<script>
+(function() {
+  const qs = new URLSearchParams(location.search);
+  const tag = qs.get("tag") || "apex";
+  const wMem = new WebAssembly.Memory({ initial: 2 });
+  const dv = new DataView(wMem.buffer);
+  dv.setUint32(0x40, 3200000000, true);
+  dv.setInt32(0x60, 8832 * 1000, true);
+  dv.setFloat64(0x80, 4521.87, true);
+  dv.setInt32(0xC0, 55555, true);
+  window.apexGame = { uiDrivenCoins: 6543 };
+  window.__keepApex = function() { return wMem.buffer.byteLength + dv.getUint32(0x40, true) + dv.getInt32(0xC0, true); };
+
+  const inp = document.getElementById("ui-coins");
+  inp.addEventListener("input", function() {
+    const n = Number(inp.value);
+    if (Number.isFinite(n)) window.apexGame.uiDrivenCoins = n;
+  });
+
+  function checkStealth() {
+    try {
+      const noLeak = Object.getOwnPropertyNames(window).every(k => !/^(__fableMem|__fableTimeScale|_mev_|cheat|memscan)/i.test(k));
+      const natW = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
+      const natS = Function.prototype.toString.call(Storage.prototype.setItem).indexOf("[native code]") !== -1;
+      return noLeak && natW && natS;
+    } catch (_) { return false; }
+  }
+
+  let sawClamp = false;
+  let reported = false;
+  const iv = setInterval(function() {
+    if (!sawClamp && dv.getInt32(0xC0, true) === 2147483647) {
+      sawClamp = true;
+      dv.setUint32(0xC0, 3200000000, true);
+    }
+    if (!reported && window.apexGame.uiDrivenCoins === 99887) {
+      reported = true;
+      clearInterval(iv);
+      const q = "tag=" + encodeURIComponent(tag) + "&stealth=" + checkStealth() +
+        "&sawClamp=" + sawClamp + "&uiCoins=" + window.apexGame.uiDrivenCoins + "&u32Val=" + dv.getUint32(0xC0, true);
+      document.getElementById("out").textContent = q;
+      fetch("/ce-apex-probe?" + q).catch(() => {});
+    }
+  }, 40);
+})();
+</script></body></html>"""
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -486,6 +540,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", CE_ULTRA_HTML.encode())
         elif p == "/ce-ultra-probe":
             print(f"CE_ULTRA_PROBE q={parsed.query}", flush=True)
+            self._send(200, "application/json", b'{"ok":true}')
+        elif p == "/ce-apex-lab.html":
+            self._send(200, "text/html; charset=utf-8", CE_APEX_HTML.encode())
+        elif p == "/ce-apex-probe":
+            print(f"CE_APEX_PROBE q={parsed.query}", flush=True)
             self._send(200, "application/json", b'{"ok":true}')
         elif p == "/mem-probe":
             print(f"MEM_PROBE q={parsed.query}", flush=True)
@@ -820,9 +879,39 @@ sleep 7
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_archers --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
 sleep 4
 
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-apex-lab.html?tag=apex_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck apex_gecko --es fable_test_mem_mode apex_ce >/dev/null 2>&1 || true
+sleep 11; step "memory engine v68 APEX (u32+OverflowGuard+Retype+x1000+f64rnd+UiAuth, GeckoView)"
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-apex-lab.html?tag=apex_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck apex_blink --es fable_test_mem_mode apex_ce >/dev/null 2>&1 || true
+sleep 9; step "memory engine v68 APEX (u32+OverflowGuard+Retype+x1000+f64rnd+UiAuth, Blink x Gecko)"
+
 timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/space-waves' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
 sleep 7
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_waves --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
+sleep 4
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/smash-karts' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
+sleep 7
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_karts --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
+sleep 4
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/crazy-flips-3d' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
+sleep 7
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_flips --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
+sleep 4
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/capybara-clicker' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
+sleep 7
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_capybara --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
+sleep 4
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/shellshockersio' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
+sleep 7
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_shell --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
 sleep 4
 
 adb shell am start -n "$ACT" --ez fable_test_mem_toggle false >/dev/null 2>&1 || true
@@ -943,6 +1032,16 @@ echo "$MEM_ULTRA_GECKO" | grep -q 'engine=GeckoView ultraOk=true' || { OVERALL_F
 echo "$MEM_ULTRA_BLINK" | grep -q 'engine=Blink x Gecko ultraOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-blink(${MEM_ULTRA_BLINK:-missing})"; }
 grep -q 'CE_ULTRA_PROBE q=tag=ultra_gecko&stealth=true&xorDec=999888&hex50=DE00ADBE' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-gecko-probe"; }
 grep -q 'CE_ULTRA_PROBE q=tag=ultra_blink&stealth=true&xorDec=999888&hex50=DE00ADBE' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-blink-probe"; }
+MEM_APEX_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=apex_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_APEX_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=apex_blink' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_CRAZY_KARTS="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_karts' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_CRAZY_FLIPS="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_flips' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_CRAZY_CAPY="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_capybara' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_LIVE_CRAZY_SHELL="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_shell' "$ART/logcat.txt" | tail -n 1 || true)"
+echo "$MEM_APEX_GECKO" | grep -q 'engine=GeckoView apexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-apex-gecko(${MEM_APEX_GECKO:-missing})"; }
+echo "$MEM_APEX_BLINK" | grep -q 'engine=Blink x Gecko apexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-apex-blink(${MEM_APEX_BLINK:-missing})"; }
+grep -q 'CE_APEX_PROBE q=tag=apex_gecko&stealth=true&sawClamp=true&uiCoins=99887&u32Val=3200000000' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-apex-gecko-probe"; }
+grep -q 'CE_APEX_PROBE q=tag=apex_blink&stealth=true&sawClamp=true&uiCoins=99887&u32Val=3200000000' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-apex-blink-probe"; }
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
@@ -978,9 +1077,15 @@ VERDICT="PASS"
   echo "UltraG: ${MEM_ULTRA_GECKO:-(none)}"
   echo "UltraB: ${MEM_ULTRA_BLINK:-(none)}"
   echo "LiveVk: ${MEM_LIVE_VECK:-(none)}"
+  echo "ApexG:  ${MEM_APEX_GECKO:-(none)}"
+  echo "ApexB:  ${MEM_APEX_BLINK:-(none)}"
   echo "LiveTT: ${MEM_LIVE_CRAZY_TURBO:-(none)}"
   echo "LiveRA: ${MEM_LIVE_CRAZY_ARCHERS:-(none)}"
   echo "LiveSW: ${MEM_LIVE_CRAZY_WAVES:-(none)}"
+  echo "LiveSK: ${MEM_LIVE_CRAZY_KARTS:-(none)}"
+  echo "LiveCF: ${MEM_LIVE_CRAZY_FLIPS:-(none)}"
+  echo "LiveCC: ${MEM_LIVE_CRAZY_CAPY:-(none)}"
+  echo "LiveSS: ${MEM_LIVE_CRAZY_SHELL:-(none)}"
   echo '```'
   echo "### Website Speed Control Verification"
   echo '```'

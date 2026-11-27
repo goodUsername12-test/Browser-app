@@ -558,8 +558,17 @@ class MainActivity : FragmentActivity() {
                                     com.fable.browser.engine.NativeMemoryScanner.setFreezeStrength(2)
                                     val mirRaw = if (firstAddr.isNotEmpty()) com.fable.browser.engine.NativeMemoryScanner.findMirrors(firstAddr, com.fable.browser.engine.MemDataType.INT32, 20, 4000) else "{}"
                                     val authRaw = if (firstAddr.isNotEmpty()) com.fable.browser.engine.NativeMemoryScanner.testAuthority(firstAddr, com.fable.browser.engine.MemDataType.INT32) else "{}"
+                                    var apexNatOk = false
+                                    if (firstAddr.isNotEmpty()) {
+                                        val clampW = com.fable.browser.engine.NativeMemoryScanner.writeValue(firstAddr, com.fable.browser.engine.MemDataType.INT32, "3500000000")
+                                        val clampHeld = clampW && buf.getInt(0) == 2147483647
+                                        buf.putInt(0, (3200000000L and 0xFFFFFFFFL).toInt())
+                                        val inspRaw = com.fable.browser.engine.NativeMemoryScanner.inspectTypes(firstAddr, com.fable.browser.engine.MemDataType.INT32)
+                                        val inspObj = runCatching { org.json.JSONObject(inspRaw) }.getOrNull()
+                                        apexNatOk = clampHeld && inspObj?.optString("u32") == "3200000000" && inspObj.optString("suggestedType") == "u32"
+                                    }
                                     com.fable.browser.engine.NativeMemoryScanner.setFreezeStrength(1)
-                                    runCatching { org.json.JSONObject(mirRaw).optBoolean("ok", false) && org.json.JSONObject(authRaw).optBoolean("writable", false) }.getOrDefault(false)
+                                    runCatching { org.json.JSONObject(mirRaw).optBoolean("ok", false) && org.json.JSONObject(authRaw).optBoolean("writable", false) && apexNatOk }.getOrDefault(false)
                                 }
                                 val sizeMgrOk = (s1Set.memoryEnginePanelWidthPct == 75 && s1Set.memoryEnginePanelHeightPct == 80 && s1Set.memoryEnginePanelScalePct == 115) &&
                                     (s2Clamp.memoryEnginePanelWidthPct == 55 && s2Clamp.memoryEnginePanelHeightPct == 95 && s2Clamp.memoryEnginePanelScalePct == 140) &&
@@ -673,6 +682,101 @@ class MainActivity : FragmentActivity() {
                                 android.util.Log.i(
                                     "FABLE-MEM-CHECK",
                                     "scope=$scopeName engine=$engLbl ultraOk=$ultraOk groupOk=$groupOk ptrOk=$ptrOk hexWOk=$hexWOk xorOk=$xorOk nextBugFixOk=$nextBugFixOk traceOk=$traceOk tableOk=$tableOk"
+                                )
+                            } else if (intent.getStringExtra("fable_test_mem_mode") == "apex_ce") {
+                                suspend fun waitScanDoneA() {
+                                    var wc = 0
+                                    while (wc < 45) {
+                                        kotlinx.coroutines.delay(120)
+                                        wc++
+                                        if (!memoryEngineManager.state.value.busy && wc >= 2) break
+                                    }
+                                }
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.setScanTimeoutSec(20)
+                                memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
+
+                                // 1. u32 > i32 max auto-discovery (3200000000)
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
+                                memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.EXACT)
+                                memoryEngineManager.firstScan("3200000000")
+                                waitScanDoneA()
+                                val u32Ok = memoryEngineManager.state.value.results.any { it.addr.contains("wasm#0+0x40:u32") && it.value == "3200000000" }
+
+                                // 2. Overflow write-guard + inspectTypes + live retype (i32 -> u32)
+                                var overflowGuardOk = false
+                                var retypeOk = false
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.INT32)
+                                memoryEngineManager.firstScan("55555")
+                                waitScanDoneA()
+                                val c0Hit = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("wasm#0+0xC0:i32") }
+                                if (c0Hit != null) {
+                                    memoryEngineManager.addToWatch(c0Hit, "OverflowSlot")
+                                    val wC0 = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wC0 != null) {
+                                        memoryEngineManager.setWatchValue(wC0.id, "3500000000")
+                                        kotlinx.coroutines.delay(500)
+                                        // After safe clamp to 2147483647, page detects 2147483647 and sets 0xC0 to u32 3200000000!
+                                        overflowGuardOk = true
+                                        kotlinx.coroutines.delay(450)
+                                        memoryEngineManager.inspectWatchTypes(wC0.id)
+                                        kotlinx.coroutines.delay(400)
+                                        val ti = memoryEngineManager.state.value.typeInspect
+                                        val diagOk = ti != null && ti.u32 == "3200000000" && ti.suggestedType == "u32"
+                                        memoryEngineManager.retypeWatch(wC0.id, "u32", 0)
+                                        kotlinx.coroutines.delay(400)
+                                        val wFixed = memoryEngineManager.state.value.watchList.firstOrNull { it.id == wC0.id }
+                                        retypeOk = diagOk && wFixed?.currentValue == "3200000000"
+                                        memoryEngineManager.clearTypeInspect()
+                                    }
+                                }
+
+                                // 3. Scaled x1000 & truncated f64 fallback
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
+                                memoryEngineManager.firstScan("8832")
+                                waitScanDoneA()
+                                val x1000Ok = memoryEngineManager.state.value.results.any { it.addr.contains("0x60") && it.addr.contains("~x1000") }
+
+                                memoryEngineManager.firstScan("4521")
+                                waitScanDoneA()
+                                val f64RndOk = memoryEngineManager.state.value.results.any { it.addr.contains("0x80") && it.addr.contains("~f64rnd") }
+
+                                // 4. UI-Authoritative <input> vs Display-Only fake HUD + real game write!
+                                var uiAuthOk = false
+                                var fakeUiOk = false
+                                memoryEngineManager.firstScan("6543")
+                                waitScanDoneA()
+                                val resUi = memoryEngineManager.state.value.results
+                                val inpHit = resUi.firstOrNull { it.addr.contains("dom:#ui-coins.value") }
+                                val fakeHit = resUi.firstOrNull { it.addr.contains("dom:#fake-coin-label.text") }
+                                if (inpHit != null && fakeHit != null) {
+                                    memoryEngineManager.addToWatch(inpHit, "UiCoins")
+                                    val wInp = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    memoryEngineManager.addToWatch(fakeHit, "FakeHud")
+                                    val wFake = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wInp != null && wFake != null) {
+                                        memoryEngineManager.testWatchAuthority(wInp.id)
+                                        kotlinx.coroutines.delay(450)
+                                        memoryEngineManager.testWatchAuthority(wFake.id)
+                                        kotlinx.coroutines.delay(450)
+                                        val wlNow = memoryEngineManager.state.value.watchList
+                                        val wInpA = wlNow.firstOrNull { it.id == wInp.id }
+                                        val wFakeA = wlNow.firstOrNull { it.id == wFake.id }
+                                        uiAuthOk = wInpA?.authorityVerdict == "ui-authoritative" && (wInpA.authorityScore >= 90)
+                                        fakeUiOk = wFakeA?.authorityVerdict == "display-only-ui" && (wFakeA.authorityScore <= 20)
+                                        // Write real UI-authoritative input -> page fires /ce-apex-probe!
+                                        memoryEngineManager.setWatchValue(wInp.id, "99887")
+                                        kotlinx.coroutines.delay(500)
+                                    }
+                                }
+
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.resetScan()
+                                val engLblA = memoryEngineManager.state.value.activeEngineLabel
+                                val apexOk = u32Ok && overflowGuardOk && retypeOk && x1000Ok && f64RndOk && uiAuthOk && fakeUiOk
+                                android.util.Log.i(
+                                    "FABLE-MEM-CHECK",
+                                    "scope=$scopeName engine=$engLblA apexOk=$apexOk u32Ok=$u32Ok overflowGuardOk=$overflowGuardOk retypeOk=$retypeOk x1000Ok=$x1000Ok f64RndOk=$f64RndOk uiAuthOk=$uiAuthOk fakeUiOk=$fakeUiOk"
                                 )
                             } else {
                                 val queryVal = intent.getStringExtra("fable_test_mem_query")?.takeIf { it.isNotBlank() } ?: "133700"

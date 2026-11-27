@@ -231,22 +231,10 @@ fun MemoryEnginePanel(
     var sourceFilter by remember { mutableStateOf("all") }
     var showBulkScanEdit by remember { mutableStateOf(false) }
     var bulkScanDraft by remember { mutableStateOf("") }
-    var showBulkWatchEdit by remember { mutableStateOf(false) }
-    var bulkWatchDraft by remember { mutableStateOf("") }
     var editingScanAddr by remember { mutableStateOf<String?>(null) }
     var scanEditDraft by remember { mutableStateOf("") }
-    var editingWatchId by remember { mutableStateOf<String?>(null) }
-    var editDraft by remember { mutableStateOf("") }
-    var ruleParamDraft by remember { mutableStateOf("") }
-    var renameDraft by remember { mutableStateOf("") }
-    var showTablesDrawer by remember { mutableStateOf(false) }
-    var tableNameDraft by remember { mutableStateOf("") }
-    var tableImportDraft by remember { mutableStateOf("") }
     var hexCursorByte by remember { mutableIntStateOf(0) }
-    var hexPatchDraft by remember { mutableStateOf("") }
-    var hexJumpDraft by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
-    val clipboard = LocalClipboardManager.current
 
     val minSafeW = 190.dp.coerceAtMost(maxWidthDp)
     val panelWidth = (maxWidthDp * wFrac).coerceIn(minSafeW, maxWidthDp)
@@ -1228,6 +1216,143 @@ fun MemoryEnginePanel(
 
                     // ==================== WATCH (EDIT, FREEZE, TRACE, CHEAT TABLES) TAB ====================
                     1 -> {
+                        CeWatchTabContent(
+                            state = state,
+                            s = s,
+                            accent = accent,
+                            cardBg = cardBg,
+                            minBtnH = minBtnH,
+                            listMaxHeight = listMaxHeight,
+                            fsBody = fsBody,
+                            fsSmall = fsSmall,
+                            fsTiny = fsTiny,
+                            previewMode = previewMode,
+                            onSwitchTab = { activeTab = it },
+                            onSetWatchValue = onSetWatchValue,
+                            onRestoreWatchOriginal = onRestoreWatchOriginal,
+                            onToggleWatchFreeze = onToggleWatchFreeze,
+                            onRemoveWatch = onRemoveWatch,
+                            onUnfreezeAll = onUnfreezeAll,
+                            onToggleSelectWatchId = onToggleSelectWatchId,
+                            onSelectAllWatchEntries = onSelectAllWatchEntries,
+                            onClearWatchSelection = onClearWatchSelection,
+                            onEditSelectedWatchEntries = onEditSelectedWatchEntries,
+                            onFreezeSelectedWatchEntries = onFreezeSelectedWatchEntries,
+                            onRestoreSelectedWatchEntries = onRestoreSelectedWatchEntries,
+                            onRemoveSelectedWatchEntries = onRemoveSelectedWatchEntries,
+                            onCycleWatchFreezeRule = onCycleWatchFreezeRule,
+                            onSetWatchFreezeParam = onSetWatchFreezeParam,
+                            onRenameWatch = onRenameWatch,
+                            onWatchQuickMath = onWatchQuickMath,
+                            onPeekNearbyStruct = onPeekNearbyStruct,
+                            onPointerScan = onPointerScan,
+                            onToggleWatchTrace = onToggleWatchTrace,
+                            onClearWatchTrace = onClearWatchTrace,
+                            onSaveCheatTable = onSaveCheatTable,
+                            onLoadCheatTable = onLoadCheatTable,
+                            onDeleteCheatTable = onDeleteCheatTable,
+                            onExportCheatTableJson = onExportCheatTableJson,
+                            onImportCheatTableJson = onImportCheatTableJson,
+                            onSetFreezeStrength = onSetFreezeStrength,
+                            onFindMirrorsForWatch = onFindMirrorsForWatch,
+                            onFindRealValueFromUiWatch = onFindRealValueFromUiWatch
+                        )
+                    }
+
+                    // ==================== LIVE HEX EDITOR & STRUCT DISSECTOR TAB ====================
+                    2 -> {
+                        CeHexTabContent(
+                            state = state,
+                            s = s,
+                            cardBg = cardBg,
+                            listMaxHeight = listMaxHeight,
+                            fsSmall = fsSmall,
+                            fsTiny = fsTiny,
+                            previewMode = previewMode,
+                            hexCursorByte = hexCursorByte,
+                            onSetHexCursor = { hexCursorByte = it },
+                            onInspectHex = onInspectHex,
+                            onToggleHexLiveRefresh = onToggleHexLiveRefresh,
+                            onPeekNearbyStruct = onPeekNearbyStruct,
+                            onWriteHexBytes = onWriteHexBytes,
+                            onJumpHexOffset = onJumpHexOffset,
+                            onAddStructFieldToWatch = onAddStructFieldToWatch
+                        )
+                    }
+
+                    // ==================== MAP / DIAGNOSTICS TAB ====================
+                    3 -> {
+                        CeMapTabContent(
+                            state = state,
+                            s = s,
+                            cardBg = cardBg,
+                            minBtnH = minBtnH,
+                            listMaxHeight = listMaxHeight,
+                            fsSmall = fsSmall,
+                            fsTiny = fsTiny,
+                            previewMode = previewMode,
+                            onRefreshRegions = onRefreshRegions
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CeWatchTabContent(
+    state: MemoryEngineUiState,
+    s: Float,
+    accent: Color,
+    cardBg: Color,
+    minBtnH: Dp,
+    listMaxHeight: Dp,
+    fsBody: androidx.compose.ui.unit.TextUnit,
+    fsSmall: androidx.compose.ui.unit.TextUnit,
+    fsTiny: androidx.compose.ui.unit.TextUnit,
+    previewMode: Boolean,
+    onSwitchTab: (Int) -> Unit,
+    onSetWatchValue: (String, String) -> Unit,
+    onRestoreWatchOriginal: (String) -> Unit,
+    onToggleWatchFreeze: (String) -> Unit,
+    onRemoveWatch: (String) -> Unit,
+    onUnfreezeAll: () -> Unit,
+    onToggleSelectWatchId: (String) -> Unit,
+    onSelectAllWatchEntries: () -> Unit,
+    onClearWatchSelection: () -> Unit,
+    onEditSelectedWatchEntries: (String) -> Unit,
+    onFreezeSelectedWatchEntries: (Boolean) -> Unit,
+    onRestoreSelectedWatchEntries: () -> Unit,
+    onRemoveSelectedWatchEntries: () -> Unit,
+    onCycleWatchFreezeRule: (String) -> Unit,
+    onSetWatchFreezeParam: (String, String) -> Unit,
+    onRenameWatch: (String, String) -> Unit,
+    onWatchQuickMath: (String, String) -> Unit,
+    onPeekNearbyStruct: (String, MemScope) -> Unit,
+    onPointerScan: (String, MemScope) -> Unit,
+    onToggleWatchTrace: (String) -> Unit,
+    onClearWatchTrace: (String) -> Unit,
+    onSaveCheatTable: (String) -> Unit,
+    onLoadCheatTable: (String) -> Unit,
+    onDeleteCheatTable: (String) -> Unit,
+    onExportCheatTableJson: () -> String,
+    onImportCheatTableJson: (String) -> Boolean,
+    onSetFreezeStrength: (MemFreezeStrength) -> Unit,
+    onFindMirrorsForWatch: (String) -> Unit,
+    onFindRealValueFromUiWatch: (String) -> Unit
+) {
+    var showBulkWatchEdit by remember { mutableStateOf(false) }
+    var bulkWatchDraft by remember { mutableStateOf("") }
+    var editingWatchId by remember { mutableStateOf<String?>(null) }
+    var editDraft by remember { mutableStateOf("") }
+    var ruleParamDraft by remember { mutableStateOf("") }
+    var renameDraft by remember { mutableStateOf("") }
+    var showTablesDrawer by remember { mutableStateOf(false) }
+    var tableNameDraft by remember { mutableStateOf("") }
+    var tableImportDraft by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    val clipboard = LocalClipboardManager.current
                         val allWatchSelected = state.watchList.isNotEmpty() && state.watchList.all { it.id in state.selectedWatchIds }
                         val wSelCount = state.selectedWatchIds.size
                         val wEffCount = if (wSelCount > 0) wSelCount else state.watchList.size
@@ -1771,7 +1896,7 @@ fun MemoryEnginePanel(
                                                     fontSize = fsTiny,
                                                     minHeight = (26f * s).coerceIn(22f, 34f).dp,
                                                     enabled = !previewMode,
-                                                    onClick = { onPeekNearbyStruct(w.addr, w.scope); activeTab = 2 }
+                                                    onClick = { onPeekNearbyStruct(w.addr, w.scope); onSwitchTab(2) }
                                                 )
                                                 CeButton(
                                                     text = "Ptr",
@@ -1780,7 +1905,7 @@ fun MemoryEnginePanel(
                                                     fontSize = fsTiny,
                                                     minHeight = (26f * s).coerceIn(22f, 34f).dp,
                                                     enabled = !previewMode,
-                                                    onClick = { onPointerScan(w.addr, w.scope); activeTab = 0 }
+                                                    onClick = { onPointerScan(w.addr, w.scope); onSwitchTab(0) }
                                                 )
                                                 CeButton(
                                                     text = "Mirrors",
@@ -1789,7 +1914,7 @@ fun MemoryEnginePanel(
                                                     fontSize = fsTiny,
                                                     minHeight = (26f * s).coerceIn(22f, 34f).dp,
                                                     enabled = !previewMode,
-                                                    onClick = { onFindMirrorsForWatch(w.id); activeTab = 0 }
+                                                    onClick = { onFindMirrorsForWatch(w.id); onSwitchTab(0) }
                                                 )
                                             }
                                         }
@@ -1830,7 +1955,7 @@ fun MemoryEnginePanel(
                                                     color = Color(0xFFF59E0B),
                                                     modifier = Modifier.clickable(enabled = !previewMode) {
                                                         onFindRealValueFromUiWatch(w.id)
-                                                        activeTab = 0
+                                                        onSwitchTab(0)
                                                     }
                                                 ) {
                                                     Text(
@@ -1887,10 +2012,29 @@ fun MemoryEnginePanel(
                                 }
                             }
                         }
-                    }
+}
 
-                    // ==================== LIVE HEX EDITOR & STRUCT DISSECTOR TAB ====================
-                    2 -> {
+@Composable
+private fun CeHexTabContent(
+    state: MemoryEngineUiState,
+    s: Float,
+    cardBg: Color,
+    listMaxHeight: Dp,
+    fsSmall: androidx.compose.ui.unit.TextUnit,
+    fsTiny: androidx.compose.ui.unit.TextUnit,
+    previewMode: Boolean,
+    hexCursorByte: Int,
+    onSetHexCursor: (Int) -> Unit,
+    onInspectHex: (String, MemScope, Long) -> Unit,
+    onToggleHexLiveRefresh: () -> Unit,
+    onPeekNearbyStruct: (String, MemScope) -> Unit,
+    onWriteHexBytes: (String, Long) -> Unit,
+    onJumpHexOffset: (String) -> Unit,
+    onAddStructFieldToWatch: (MemStructField) -> Unit
+) {
+    var hexPatchDraft by remember { mutableStateOf("") }
+    var hexJumpDraft by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
                         val hx = state.hex
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -1908,10 +2052,10 @@ fun MemoryEnginePanel(
                             )
                             if (hx.targetAddr.isNotBlank()) {
                                 CeButton(text = "-64", bg = cardBg, fg = Color.White, fontSize = fsTiny, minHeight = (26f * s).dp, enabled = !previewMode, onClick = {
-                                    hexCursorByte = 0; onInspectHex(hx.targetAddr, hx.scope, -64L)
+                                    onSetHexCursor(0); onInspectHex(hx.targetAddr, hx.scope, -64L)
                                 })
                                 CeButton(text = "+64", bg = cardBg, fg = Color.White, fontSize = fsTiny, minHeight = (26f * s).dp, enabled = !previewMode, onClick = {
-                                    hexCursorByte = 0; onInspectHex(hx.targetAddr, hx.scope, +64L)
+                                    onSetHexCursor(0); onInspectHex(hx.targetAddr, hx.scope, +64L)
                                 })
                                 CeButton(
                                     text = if (state.hexLiveRefresh) "●Live" else "Live",
@@ -1959,7 +2103,7 @@ fun MemoryEnginePanel(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .background(if (isCurLine) Color(0xFF1E293B) else Color.Transparent)
-                                            .clickable(enabled = !previewMode) { hexCursorByte = lineStartByte }
+                                            .clickable(enabled = !previewMode) { onSetHexCursor(lineStartByte) }
                                             .padding(vertical = 1.dp)
                                     )
                                 }
@@ -1998,7 +2142,7 @@ fun MemoryEnginePanel(
                                     placeholder = "Jump to 0xOFFSET / address",
                                     fontSize = fsSmall,
                                     enabled = !previewMode,
-                                    onDone = { hexCursorByte = 0; onJumpHexOffset(hexJumpDraft); focusManager.clearFocus() },
+                                    onDone = { onSetHexCursor(0); onJumpHexOffset(hexJumpDraft); focusManager.clearFocus() },
                                     modifier = Modifier.weight(1f)
                                 )
                                 CeButton(
@@ -2008,7 +2152,7 @@ fun MemoryEnginePanel(
                                     fontSize = fsTiny,
                                     minHeight = (28f * s).coerceIn(24f, 36f).dp,
                                     enabled = !previewMode && hexJumpDraft.isNotBlank(),
-                                    onClick = { hexCursorByte = 0; onJumpHexOffset(hexJumpDraft); focusManager.clearFocus() }
+                                    onClick = { onSetHexCursor(0); onJumpHexOffset(hexJumpDraft); focusManager.clearFocus() }
                                 )
                             }
                         }
@@ -2065,10 +2209,20 @@ fun MemoryEnginePanel(
                                 }
                             }
                         }
-                    }
+}
 
-                    // ==================== MAP / DIAGNOSTICS TAB ====================
-                    3 -> {
+@Composable
+private fun CeMapTabContent(
+    state: MemoryEngineUiState,
+    s: Float,
+    cardBg: Color,
+    minBtnH: Dp,
+    listMaxHeight: Dp,
+    fsSmall: androidx.compose.ui.unit.TextUnit,
+    fsTiny: androidx.compose.ui.unit.TextUnit,
+    previewMode: Boolean,
+    onRefreshRegions: () -> Unit
+) {
                         val engText = if (state.detectedEngines.isNotEmpty()) state.detectedEngines.joinToString(", ") else "Auto"
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.weight(1f)) {
@@ -2110,11 +2264,6 @@ fun MemoryEnginePanel(
                                 }
                             }
                         }
-                    }
-                }
-            }
-        }
-    }
 }
 
 @Composable

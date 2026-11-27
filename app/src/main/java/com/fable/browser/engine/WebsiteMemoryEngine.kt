@@ -105,6 +105,7 @@ object WebsiteMemoryEngine {
             val mergedVals = JSONObject()
             val mergedStats = JSONObject()
             val mergedTraces = JSONObject()
+            val mergedHints = JSONObject()
             for (o in parsed) {
                 val vals = o.optJSONObject("values")
                 if (vals != null) vals.keys().forEach { k -> mergedVals.put(k, vals.optString(k)) }
@@ -112,6 +113,8 @@ object WebsiteMemoryEngine {
                 if (fs != null) fs.keys().forEach { k -> mergedStats.put(k, fs.opt(k)) }
                 val tr = o.optJSONObject("traces")
                 if (tr != null) tr.keys().forEach { k -> mergedTraces.put(k, tr.opt(k)) }
+                val th = o.optJSONObject("typeHints")
+                if (th != null) th.keys().forEach { k -> mergedHints.put(k, th.opt(k)) }
             }
             var docGen = ""
             var hookedEarly = false
@@ -124,6 +127,7 @@ object WebsiteMemoryEngine {
                 .put("docGen", docGen)
                 .put("hookedEarly", hookedEarly)
                 .put("values", mergedVals)
+                .put("typeHints", mergedHints)
                 .put("freezeStats", mergedStats)
                 .put("traces", mergedTraces)
                 .toString()
@@ -209,7 +213,7 @@ object WebsiteMemoryEngine {
             return JSONObject().put("ok", true).toString()
         }
         if (op == "write" || op == "hexDump" || op == "writeHex" || op == "setFreeze" ||
-            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach" || op == "findMirrors" || op == "captureIdentity" || op == "reattachIdentity" || op == "testAuthority" || op == "setSafeMax" || op == "takeSnapshot") {
+            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach" || op == "findMirrors" || op == "captureIdentity" || op == "reattachIdentity" || op == "testAuthority" || op == "setSafeMax" || op == "takeSnapshot" || op == "inspectTypes" || op == "retype") {
             val hit = parsed.firstOrNull { it.optBoolean("ok", false) } ?: parsed[0]
             return hit.toString()
         }
@@ -353,7 +357,7 @@ object WebsiteMemoryEngine {
 
     fun buildBootstrapScriptInternal(channelId: String = CHANNEL_ID): String {
         val chJson = JSONObject.quote(channelId)
-        val sb = StringBuilder(190_000)
+                val sb = StringBuilder(220_000)
         sb.append(JS_PART_1.replace("__CH_ARG__", chJson))
         sb.append("\n").append(JS_PART_2)
         sb.append("\n").append(JS_PART_3)
@@ -362,6 +366,7 @@ object WebsiteMemoryEngine {
         sb.append("\n").append(JS_PART_6)
         sb.append("\n").append(JS_PART_7)
         sb.append("\n").append(JS_PART_8)
+        sb.append("\n").append(JS_PART_9)
         return sb.toString()
     }
 
@@ -743,7 +748,6 @@ return res;
 }, origJsonParse, "parse");
 }
 try {
-
 if (typeof ArrayBuffer === "function" && ArrayBuffer.prototype && typeof ArrayBuffer.prototype.slice === "function") {
 var origAbSlice = ArrayBuffer.prototype.slice;
 ArrayBuffer.prototype.slice = mask(function slice() {
@@ -808,6 +812,43 @@ if (Array.isArray(transfer)) inspectMessagePayload(transfer, 0);
 return origMpPost.apply(this, arguments);
 }, origMpPost, "postMessage");
 }
+if (typeof MessageChannel === "function") {
+var OrigMC = MessageChannel;
+var ProxMC = new Proxy(OrigMC, {
+construct: function(target, args, newTarget) {
+var mc = Reflect.construct(target, args, newTarget);
+try {
+if (mc && mc.port1 && typeof mc.port1.addEventListener === "function") {
+mc.port1.addEventListener("message", function(ev) { if (ev && ev.data) inspectMessagePayload(ev.data, 0); }, true);
+}
+if (mc && mc.port2 && typeof mc.port2.addEventListener === "function") {
+mc.port2.addEventListener("message", function(ev) { if (ev && ev.data) inspectMessagePayload(ev.data, 0); }, true);
+}
+} catch (_) {}
+return mc;
+}
+});
+sigMap.set(ProxMC, origToStr.call(OrigMC));
+window.MessageChannel = ProxMC;
+}
+if (typeof BroadcastChannel === "function" && BroadcastChannel.prototype && typeof BroadcastChannel.prototype.postMessage === "function") {
+var origBcPost = BroadcastChannel.prototype.postMessage;
+BroadcastChannel.prototype.postMessage = mask(function postMessage(msg) {
+inspectMessagePayload(msg, 0);
+return origBcPost.apply(this, arguments);
+}, origBcPost, "postMessage");
+}
+try {
+var taProto = Object.getPrototypeOf(Int8Array.prototype);
+if (taProto && typeof taProto.subarray === "function") {
+var origTaSub = taProto.subarray;
+taProto.subarray = mask(function subarray() {
+var outSub = origTaSub.apply(this, arguments);
+if (outSub && outSub.buffer && outSub.buffer.byteLength >= 64) trackRawBuf(outSub.buffer);
+return outSub;
+}, origTaSub, "subarray");
+}
+} catch (_) {}
 } catch (_) {}
 function liveWasmEntries() {
 var live = [];
@@ -959,6 +1000,9 @@ case "bigger":       return cur > v1;
 case "smaller":      return cur < v1;
 case "between":      return cur >= v1 && cur <= v2;
 case "unknown":      return true;
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_2 = """
 case "increased":    return hasPrev && cur > prev + eps;
 case "decreased":    return hasPrev && cur < prev - eps;
 case "increased_by": return hasPrev && Math.abs((cur - prev) - v1) <= (eps > 0 ? eps : 1e-6);
@@ -991,19 +1035,53 @@ scratchI32[0] = lo;
 scratchI32[1] = hi;
 return Number(scratchDV.getBigInt64(0, true));
 }
+var lastWriteOverflowWarn = "";
 function readViewVal(dv, off, dt) {
 try {
 if (dt === "i8")  return dv.getInt8(off);
+if (dt === "u8")  return dv.getUint8(off);
 if (dt === "i16") return dv.getInt16(off, true);
+if (dt === "u16") return dv.getUint16(off, true);
 if (dt === "i32") return dv.getInt32(off, true);
 if (dt === "u32") return dv.getUint32(off, true);
-if (dt === "i64") return Number(dv.getBigInt64(off, true));
+if (dt === "i64") {
+var bi64 = dv.getBigInt64(off, true);
+var n64 = Number(bi64);
+return Number.isSafeInteger(n64) ? n64 : bi64.toString();
+}
+if (dt === "u64") {
+var bu64 = dv.getBigUint64(off, true);
+var nu64 = Number(bu64);
+return Number.isSafeInteger(nu64) ? nu64 : bu64.toString();
+}
 if (dt === "f32") return dv.getFloat32(off, true);
 if (dt === "f64") return dv.getFloat64(off, true);
 } catch (_) {}
 return NaN;
 }
+function clampIntRange(num, lo, hi, dtLabel) {
+if (num < lo) { lastWriteOverflowWarn = "Clamped " + num + " to " + dtLabel + " min (" + lo + ")"; return lo; }
+if (num > hi) { lastWriteOverflowWarn = "Clamped " + num + " to " + dtLabel + " max (" + hi + ") — tap Types for u32/i64/f64"; return hi; }
+return Math.trunc(num);
+}
+function parseBigIntExact(rawStr, unsignedOnly) {
+var cs = cleanNumStr(rawStr).trim();
+if (/^-?\d+${'$'}/.test(cs)) {
+var b = BigInt(cs);
+if (unsignedOnly && b < 0n) { lastWriteOverflowWarn = "Clamped negative to u64 min (0)"; return 0n; }
+var maxB = unsignedOnly ? 18446744073709551615n : 9223372036854775807n;
+var minB = unsignedOnly ? 0n : -9223372036854775808n;
+if (b > maxB) { lastWriteOverflowWarn = "Clamped to " + (unsignedOnly ? "u64" : "i64") + " max"; return maxB; }
+if (b < minB) { lastWriteOverflowWarn = "Clamped to i64 min"; return minB; }
+return b;
+}
+var n = Number(cs);
+if (!Number.isFinite(n)) return null;
+if (unsignedOnly && n < 0) return 0n;
+return BigInt(Math.trunc(n));
+}
 function writeViewVal(dv, off, dt, valStr, isShared) {
+lastWriteOverflowWarn = "";
 try {
 if (dt === "str") {
 var enc = new TextEncoder().encode(String(valStr));
@@ -1019,30 +1097,111 @@ if (pat.mask[j]) u8b[off + j] = pat.bytes[j];
 }
 return true;
 }
+if (dt === "i64" || dt === "u64") {
+var bv = parseBigIntExact(valStr, dt === "u64");
+if (bv === null) return false;
+var absOff64 = dv.byteOffset + off;
+if (isShared && typeof Atomics === "object" && (absOff64 & 7) === 0) {
+try {
+if (dt === "i64" && typeof BigInt64Array === "function") { Atomics.store(new BigInt64Array(dv.buffer, absOff64, 1), 0, bv); return true; }
+if (dt === "u64" && typeof BigUint64Array === "function") { Atomics.store(new BigUint64Array(dv.buffer, absOff64, 1), 0, bv); return true; }
+} catch (_) {}
+}
+if (dt === "i64") { dv.setBigInt64(off, bv, true); return true; }
+dv.setBigUint64(off, bv, true); return true;
+}
 var num = Number(cleanNumStr(valStr));
 if (!Number.isFinite(num)) return false;
 var absOff = dv.byteOffset + off;
+var safeV = num;
+if (dt === "i8") safeV = clampIntRange(num, -128, 127, "i8");
+else if (dt === "u8") safeV = clampIntRange(num, 0, 255, "u8");
+else if (dt === "i16") safeV = clampIntRange(num, -32768, 32767, "i16");
+else if (dt === "u16") safeV = clampIntRange(num, 0, 65535, "u16");
+else if (dt === "i32") safeV = clampIntRange(num, -2147483648, 2147483647, "i32");
+else if (dt === "u32") safeV = clampIntRange(num, 0, 4294967295, "u32");
 if (isShared && typeof Atomics === "object") {
 try {
-if (dt === "i8") { Atomics.store(new Int8Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
-if (dt === "i16" && (absOff & 1) === 0) { Atomics.store(new Int16Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_2 = """
-if (dt === "i32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, num | 0); return true; }
-if (dt === "u32" && (absOff & 3) === 0) { Atomics.store(new Uint32Array(dv.buffer, absOff, 1), 0, (num < 0 ? 0 : num) >>> 0); return true; }
+if (dt === "i8") { Atomics.store(new Int8Array(dv.buffer, absOff, 1), 0, safeV | 0); return true; }
+if (dt === "u8") { Atomics.store(new Uint8Array(dv.buffer, absOff, 1), 0, safeV & 0xFF); return true; }
+if (dt === "i16" && (absOff & 1) === 0) { Atomics.store(new Int16Array(dv.buffer, absOff, 1), 0, safeV | 0); return true; }
+if (dt === "u16" && (absOff & 1) === 0) { Atomics.store(new Uint16Array(dv.buffer, absOff, 1), 0, safeV & 0xFFFF); return true; }
+if (dt === "i32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, safeV | 0); return true; }
+if (dt === "u32" && (absOff & 3) === 0) { Atomics.store(new Uint32Array(dv.buffer, absOff, 1), 0, safeV >>> 0); return true; }
 if (dt === "f32" && (absOff & 3) === 0) { Atomics.store(new Int32Array(dv.buffer, absOff, 1), 0, f32ToI32Bits(num)); return true; }
 } catch (_) {}
 }
-if (dt === "i8")  { dv.setInt8(off, num | 0); return true; }
-if (dt === "i16") { dv.setInt16(off, num | 0, true); return true; }
-if (dt === "i32") { dv.setInt32(off, num | 0, true); return true; }
-if (dt === "u32") { dv.setUint32(off, (num < 0 ? 0 : num) >>> 0, true); return true; }
-if (dt === "i64") { dv.setBigInt64(off, BigInt(Math.round(num)), true); return true; }
+if (dt === "i8")  { dv.setInt8(off, safeV | 0); return true; }
+if (dt === "u8")  { dv.setUint8(off, safeV & 0xFF); return true; }
+if (dt === "i16") { dv.setInt16(off, safeV | 0, true); return true; }
+if (dt === "u16") { dv.setUint16(off, safeV & 0xFFFF, true); return true; }
+if (dt === "i32") { dv.setInt32(off, safeV | 0, true); return true; }
+if (dt === "u32") { dv.setUint32(off, safeV >>> 0, true); return true; }
 if (dt === "f32") { dv.setFloat32(off, num, true); return true; }
 if (dt === "f64") { dv.setFloat64(off, num, true); return true; }
 } catch (_) {}
 return false;
+}
+function diagnoseBinaryBytes(h) {
+if (!h || (h.kind !== "wasm" && h.kind !== "ab" && h.kind !== "ta")) return null;
+var bi = getBufferForHit(h);
+if (!bi || h.off < 0 || h.off >= bi.byteLen) return null;
+var rem = bi.byteLen - h.off;
+var dv = new DataView(bi.buf, bi.byteOff, bi.byteLen);
+var u8 = new Uint8Array(bi.buf, bi.byteOff + h.off, Math.min(8, rem));
+var hexParts = [];
+for (var i = 0; i < u8.length; i++) hexParts.push(u8[i].toString(16).toUpperCase().padStart(2, "0"));
+var out = {
+hex: hexParts.join(" "),
+i8: rem >= 1 ? String(dv.getInt8(h.off)) : "",
+u8: rem >= 1 ? String(dv.getUint8(h.off)) : "",
+i16: rem >= 2 ? String(dv.getInt16(h.off, true)) : "",
+u16: rem >= 2 ? String(dv.getUint16(h.off, true)) : "",
+i32: rem >= 4 ? String(dv.getInt32(h.off, true)) : "",
+u32: rem >= 4 ? String(dv.getUint32(h.off, true)) : "",
+i64: rem >= 8 ? dv.getBigInt64(h.off, true).toString() : "",
+u64: rem >= 8 ? dv.getBigUint64(h.off, true).toString() : "",
+f32: "", f64: "", x10: "", x100: "", x1000: "",
+diagnosis: "", suggestedType: "", suggestedScale: 0
+};
+if (rem >= 4) {
+var iv = dv.getInt32(h.off, true);
+var uv = dv.getUint32(h.off, true);
+var fv = dv.getFloat32(h.off, true);
+out.f32 = Number.isFinite(fv) ? formatVal(fv, "f32") : String(fv);
+out.x10 = formatVal(iv / 10, "f64");
+out.x100 = formatVal(iv / 100, "f64");
+out.x1000 = formatVal(iv / 1000, "f64");
+if (h.dt === "i32" && iv < -1000000) {
+var wasPos = typeof h.prev === "number" && h.prev >= 0;
+var cleanNegF32 = !wasPos && Number.isFinite(fv) && fv <= -0.1 && fv >= -1e7 && Math.abs(fv * 10 - Math.round(fv * 10)) < 1e-3;
+if (cleanNegF32) {
+out.diagnosis = "Raw bits look like Float (f32 = " + out.f32 + ")";
+out.suggestedType = "f32";
+} else {
+out.diagnosis = "Signed i32 overflow! Unsigned u32 = " + uv;
+out.suggestedType = "u32";
+}
+} else if (h.dt === "i32" && Math.abs(iv) > 100000000 && Number.isFinite(fv) && Math.abs(fv) >= 0.001 && Math.abs(fv) <= 1e7) {
+out.diagnosis = "Looks like Float (f32 = " + out.f32 + ") read as i32";
+out.suggestedType = "f32";
+} else if (h.dt === "i16" && rem >= 2 && dv.getInt16(h.off, true) < -1000) {
+out.diagnosis = "Signed i16 overflow! Unsigned u16 = " + dv.getUint16(h.off, true);
+out.suggestedType = "u16";
+} else if (h.dt === "i8" && dv.getInt8(h.off) < 0) {
+out.diagnosis = "Signed i8 negative! Unsigned u8 = " + dv.getUint8(h.off);
+out.suggestedType = "u8";
+}
+}
+if (rem >= 8) {
+var f64v = dv.getFloat64(h.off, true);
+out.f64 = Number.isFinite(f64v) ? formatVal(f64v, "f64") : String(f64v);
+if (!out.diagnosis && (h.dt === "i32" || h.dt === "u32") && Number.isFinite(f64v) && Math.abs(f64v) >= 0.01 && Math.abs(f64v) <= 1e12 && Math.abs(dv.getInt32(h.off, true)) > 100000000) {
+out.diagnosis = "Looks like 64-bit Double (f64 = " + out.f64 + ")";
+out.suggestedType = "f64";
+}
+}
+return out;
 }
 function formatVal(v, dt) {
 if (v === undefined || v === null) return String(v);
@@ -1182,6 +1341,17 @@ return { ok: true, val: ((rawJs | 0) ^ (lkJ.key | 0)) | 0 };
 }
 return { ok: true, val: rawJs };
 }
+if (h.kind === "dom") {
+var elD = h.elRef ? h.elRef.deref() : null;
+if (!elD || !elD.isConnected) return { ok: false, val: "<detached>" };
+var rawDom = "";
+if (h.domAttr) rawDom = elD.getAttribute(h.domAttr) || "";
+else if (h.domProp === "value") rawDom = String(elD.value !== undefined ? elD.value : "");
+else rawDom = String(elD.textContent || "");
+var cleanD = cleanNumStr(rawDom);
+var numD = Number(cleanD);
+return { ok: true, val: (h.dt !== "str" && cleanD.trim() !== "" && Number.isFinite(numD)) ? numD : rawDom.trim() };
+}
 if (h.kind === "map") {
 var mp = h.objRef.deref();
 if (!mp || typeof mp.get !== "function") return { ok: false, val: "<gc>" };
@@ -1310,12 +1480,14 @@ return { violated: true, nextVal: fe.parsedVal };
 return { violated: false, nextVal: curVal };
 }
 function safeMaxForType(dt, kind) {
-if (kind === "js" || kind === "map" || kind === "ls" || kind === "ss" || kind === "lsjson" || kind === "ssjson") return 9007199254740991;
+if (kind === "js" || kind === "dom" || kind === "map" || kind === "ls" || kind === "ss" || kind === "lsjson" || kind === "ssjson") return 9007199254740991;
 if (dt === "i8") return 127;
+if (dt === "u8") return 255;
 if (dt === "i16") return 32767;
+if (dt === "u16") return 65535;
 if (dt === "i32") return 2147483647;
 if (dt === "u32") return 4294967295;
-if (dt === "i64") return 9007199254740991;
+if (dt === "i64" || dt === "u64") return 9007199254740991;
 if (dt === "f32") return 1e30;
 if (dt === "f64" || dt === "auto") return 9007199254740991;
 return 2147483647;
@@ -1325,11 +1497,14 @@ if (h.kind !== "wasm" && h.kind !== "ta" && h.kind !== "ab") return null;
 if (h.xorMode) return null;
 var bi = getBufferForHit(h);
 if (!bi) return null;
-var sz = h.dt === "i8" ? 1 : (h.dt === "i16" ? 2 : ((h.dt === "i32" || h.dt === "u32" || h.dt === "f32") ? 4 : ((h.dt === "i64" || h.dt === "f64") ? 8 : Math.min(h.len || 16, bi.byteLen - h.off))));
+var sz = (h.dt === "i8" || h.dt === "u8") ? 1 : ((h.dt === "i16" || h.dt === "u16") ? 2 : ((h.dt === "i32" || h.dt === "u32" || h.dt === "f32") ? 4 : ((h.dt === "i64" || h.dt === "u64" || h.dt === "f64") ? 8 : Math.min(h.len || 16, bi.byteLen - h.off))));
 if (sz <= 0 || h.off + sz > bi.byteLen) return null;
 return new Uint8Array(bi.buf, bi.byteOff + h.off, sz).slice();
 }
 function binaryBytesDiffer(h, targetBytes) {
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_3 = """
 if (!targetBytes || !targetBytes.length) return false;
 var bi = getBufferForHit(h);
 if (!bi || h.off + targetBytes.length > bi.byteLen) return null;
@@ -1480,6 +1655,28 @@ return true;
 obj[h.key] = rawJsWrite;
 return true;
 }
+if (h.kind === "dom") {
+var elW = h.elRef ? h.elRef.deref() : null;
+if (!elW || !elW.isConnected) return false;
+var strW = String(valStr);
+if (h.domAttr) {
+elW.setAttribute(h.domAttr, strW);
+} else if (h.domProp === "value") {
+try {
+var protoEl = (typeof HTMLInputElement === "function" && safeInstanceOf(elW, HTMLInputElement)) ? HTMLInputElement.prototype :
+((typeof HTMLTextAreaElement === "function" && safeInstanceOf(elW, HTMLTextAreaElement)) ? HTMLTextAreaElement.prototype : null);
+var valDesc = protoEl ? Object.getOwnPropertyDescriptor(protoEl, "value") : null;
+if (valDesc && typeof valDesc.set === "function") valDesc.set.call(elW, strW);
+else elW.value = strW;
+} catch (_) { elW.value = strW; }
+try { elW.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
+try { elW.dispatchEvent(new Event("change", { bubbles: true })); } catch (_) {}
+} else {
+elW.textContent = strW;
+try { elW.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
+}
+return true;
+}
 if (h.kind === "map") {
 var mp = h.objRef.deref();
 if (!mp || typeof mp.set !== "function") return false;
@@ -1609,11 +1806,7 @@ if (jsonMod) return origSetItem.call(this, k, JSON.stringify(jsonMod));
 }
 return origSetItem.apply(this, arguments);
 }, origSetItem, "setItem");
-
 var wrappedRemoveItem = origRemoveItem ? mask(function removeItem(k) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_3 = """
 var ctx = resolveActive(this);
 var set = ctx ? ctx.keyMap.get(String(k)) : null;
 if (set && set.size > 0) {
@@ -1629,7 +1822,6 @@ if (blockedAny) return;
 }
 return origRemoveItem.apply(this, arguments);
 }, origRemoveItem, "removeItem") : null;
-
 var wrappedClear = origClear ? mask(function clear() {
 var ctx = resolveActive(this);
 if (ctx && ctx.keyMap.size > 0) {
@@ -1649,7 +1841,6 @@ return r;
 }
 return origClear.apply(this, arguments);
 }, origClear, "clear") : null;
-
 var installFn = function(name, fn) {
 if (!fn) return false;
 try {
@@ -1955,6 +2146,9 @@ if (rec.xorMode === 3 && typeof curInit === "number") {
 var lk0 = readLiveXorKey(rec, null);
 if (lk0.ok) curInit = ((curInit | 0) ^ (lk0.key | 0)) | 0;
 }
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_4 = """
 ownerEntry.backingVal = (ownerEntry.rule === "eq") ? ownerEntry.parsedVal : curInit;
 Object.defineProperty(obj, key, {
 configurable: true,
@@ -2341,9 +2535,6 @@ origObj: null,
 rule: "trace"
 };
 if (rec.kind === "js") {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_4 = """
 var obj = rec.objRef ? rec.objRef.deref() : null;
 if (obj) {
 var existingF = frozenMap.get(localId);
@@ -2497,9 +2688,12 @@ var len4 = scanLen >>> 2;
 var i32a = new Int32Array(buf, byteOff, len4);
 var isIntQuery = (sc !== "unknown") && Number.isInteger(v1);
 var fitsI32 = isIntQuery && v1 >= -2147483648 && v1 <= 2147483647;
+var fitsU32Only = isIntQuery && v1 > 2147483647 && v1 <= 4294967295;
 var fitsI16 = isIntQuery && v1 >= -32768 && v1 <= 32767 && v1 !== 0;
-var targetU16 = fitsI16 ? (v1 & 0xFFFF) : -1;
+var fitsU16Only = isIntQuery && v1 > 32767 && v1 <= 65535;
+var targetU16 = (fitsI16 || fitsU16Only) ? (v1 & 0xFFFF) : -1;
 var target32 = v1 | 0;
+var targetU32SignedBits = fitsU32Only ? (v1 | 0) : 0;
 if (sc === "exact") {
 var f32CrossZero = Math.abs(v1) <= 0.01;
 var f32bA = f32ToI32Bits(v1 - 0.01);
@@ -2529,6 +2723,10 @@ if (fitsI32 && w === target32) {
 pushHit(idx << 2, "i32", 4, target32);
 continue;
 }
+if (fitsU32Only && w === targetU32SignedBits) {
+pushHit(idx << 2, "u32", 4, v1);
+continue;
+}
 if (checkI64 && idx < lastIdx && w === i64Lo && wNext === i64Hi) {
 pushHit(idx << 2, "i64", 8, v1);
 continue;
@@ -2554,9 +2752,10 @@ pushHit(idx << 2, "f64", 8, dvE);
 continue;
 }
 }
-if (fitsI16) {
-if ((w & 0xFFFF) === targetU16) pushHit(idx << 2, "i16", 2, v1);
-if ((w >>> 16) === targetU16) pushHit((idx << 2) + 2, "i16", 2, v1);
+if (fitsI16 || fitsU16Only) {
+var dt16 = fitsU16Only ? "u16" : "i16";
+if ((w & 0xFFFF) === targetU16) pushHit(idx << 2, dt16, 2, v1);
+if ((w >>> 16) === targetU16) pushHit((idx << 2) + 2, dt16, 2, v1);
 }
 }
 return;
@@ -2587,10 +2786,13 @@ pushHit(off4, "f64", 8, dv2);
 }
 }
 }
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_5 = """
 return;
 }
 var dv = new DataView(buf, byteOff, scanLen);
-var sz = dt === "i8" ? 1 : (dt === "i16" ? 2 : ((dt === "i32" || dt === "u32" || dt === "f32") ? 4 : 8));
+var sz = (dt === "i8" || dt === "u8") ? 1 : ((dt === "i16" || dt === "u16") ? 2 : ((dt === "i32" || dt === "u32" || dt === "f32") ? 4 : 8));
 var endOff = scanLen - sz;
 for (var off2 = 0; off2 <= endOff && out.length < cap; off2 += sz) {
 if ((off2 & 262143) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
@@ -2625,8 +2827,12 @@ var i32a = new Int32Array(buf, byteOff, len4);
 var f32LoB = f32ToI32Bits(v1 > 0 ? v1 : (v1 - 0.9999));
 var f32HiB = f32ToI32Bits(v1 > 0 ? (v1 + 0.9999) : v1);
 var fMin = Math.min(f32LoB, f32HiB), fMax = Math.max(f32LoB, f32HiB);
+var scaled1000 = (Math.abs(v1) <= 2147483) ? (v1 * 1000) | 0 : null;
 var scaled100 = (Math.abs(v1) <= 21474836) ? (v1 * 100) | 0 : null;
 var scaled10 = (Math.abs(v1) <= 214748364) ? (v1 * 10) | 0 : null;
+var f64LoH = f64ToI32Pair(v1 > 0 ? v1 : (v1 - 0.999999))[1];
+var f64HiH = f64ToI32Pair(v1 > 0 ? (v1 + 0.999999) : v1)[1];
+var f64MinH = Math.min(f64LoH, f64HiH), f64MaxH = Math.max(f64LoH, f64HiH);
 for (var i = 0; i < len4 && out.length < cap; i++) {
 if ((i & 131071) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
 var w = i32a[i];
@@ -2634,10 +2840,19 @@ if (w >= fMin && w <= fMax) {
 scratchI32[0] = w;
 var fv = scratchF32[0];
 if (Math.trunc(fv) === v1) pushFb(i << 2, "f32", 4, fv, "~rnd", 0);
+} else if (scaled1000 !== null && w === scaled1000) {
+pushFb(i << 2, "i32", 4, v1, "~x1000", 1000);
 } else if (scaled100 !== null && w === scaled100) {
 pushFb(i << 2, "i32", 4, v1, "~x100", 100);
 } else if (scaled10 !== null && w === scaled10) {
 pushFb(i << 2, "i32", 4, v1, "~x10", 10);
+}
+if (i + 1 < len4) {
+var hwF = i32a[i + 1];
+if (hwF >= f64MinH && hwF <= f64MaxH) {
+var dvF = i32PairToF64(w, hwF);
+if (Number.isFinite(dvF) && Math.trunc(dvF) === v1) pushFb(i << 2, "f64", 8, dvF, "~f64rnd", 0);
+}
 }
 }
 if (out.length < cap && v1 >= -2147483648 && v1 <= 2147483647) {
@@ -2663,8 +2878,19 @@ queue.push({ obj: o, path: p, depth: 1 });
 }
 try {
 enqueue(win.unityInstance, "unityInstance");
+if (win.unityInstance && win.unityInstance.Module) enqueue(win.unityInstance.Module, "unity.Module");
 enqueue(win.gameInstance, "gameInstance");
+if (win.gameInstance && win.gameInstance.Module) enqueue(win.gameInstance.Module, "game.Module");
 enqueue(win.Module, "Module");
+if (win.Module && win.Module.wasmMemory) trackWasmMem(win.Module.wasmMemory);
+if (win.wasmMemory) trackWasmMem(win.wasmMemory);
+enqueue(win.engine, "engine");
+enqueue(win.vm, "vm");
+enqueue(win.CrazyGames, "CrazyGames");
+enqueue(win.PokiSDK, "PokiSDK");
+enqueue(win.__REDUX_STORE__, "__REDUX_STORE__");
+enqueue(win.store, "store");
+enqueue(win.state, "state");
 enqueue(win.UE4, "UE4");
 enqueue(win.Godot, "Godot");
 enqueue(win.godot, "godot");
@@ -2926,9 +3152,6 @@ var keys;
 try {
 keys = cur.depth <= 2 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
 } catch (_) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_5 = """
 try { keys = Object.keys(obj); } catch (_2) { skippedXOriginCount++; continue; }
 }
 if (cur.depth > 0 && cur.depth <= 4) {
@@ -3097,6 +3320,82 @@ out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "str", prev: raw });
 }
 } catch (_) {}
 }
+}
+function scanDomUiState(dt, sc, v1, v2, s1, out, cap) {
+try {
+var doc = window.document;
+if (!doc || typeof doc.querySelectorAll !== "function" || out.length >= cap) return;
+var seenEl = new WeakSet();
+var inputs = doc.querySelectorAll("input,textarea,select,[contenteditable='true'],[contenteditable='']");
+for (var ii = 0; ii < inputs.length && ii < 120 && out.length < cap; ii++) {
+var inp = inputs[ii];
+if (!inp || seenEl.has(inp)) continue;
+seenEl.add(inp);
+var tp = (inp.type || "").toLowerCase();
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_6 = """
+if (tp === "password" || tp === "hidden" && !/coin|gold|score|hp|gem|money|cash|lvl|level/i.test(inp.id + " " + inp.name)) continue;
+var isCE = inp.isContentEditable && inp.tagName !== "INPUT" && inp.tagName !== "TEXTAREA";
+var rawV = isCE ? String(inp.textContent || "") : String(inp.value !== undefined ? inp.value : "");
+var tagLbl = inp.id ? ("#" + inp.id) : (inp.name ? ("[name=" + inp.name + "]") : (inp.tagName.toLowerCase() + "#" + ii));
+if (dt === "str") {
+if (s1 && rawV.indexOf(s1) !== -1 && rawV.length <= 256) {
+out.push({ id: "dom:" + tagLbl + (isCE ? ".text" : ".value"), kind: "dom", elRef: mkRef(inp), domProp: isCE ? "textContent" : "value", domAttr: "", dt: "str", prev: rawV, uiInteractive: true });
+}
+} else if (dt !== "aob") {
+var cStr = cleanNumStr(rawV);
+var nV = Number(cStr);
+if (cStr.trim() !== "" && Number.isFinite(nV) && matchNum(nV, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: "dom:" + tagLbl + (isCE ? ".text" : ".value"), kind: "dom", elRef: mkRef(inp), domProp: isCE ? "textContent" : "value", domAttr: "", dt: Number.isInteger(nV) ? "i32" : "f64", prev: nV, uiInteractive: true });
+}
+}
+}
+var dataEls = doc.querySelectorAll("[data-coins],[data-gold],[data-score],[data-hp],[data-health],[data-gems],[data-money],[data-cash],[data-level],[data-ammo],[data-value],[data-count],[data-points],[data-xp]");
+for (var di = 0; di < dataEls.length && di < 120 && out.length < cap; di++) {
+var del = dataEls[di];
+if (!del || !del.attributes) continue;
+var dTag = del.id ? ("#" + del.id) : (del.tagName.toLowerCase() + "#d" + di);
+for (var ai = 0; ai < del.attributes.length && out.length < cap; ai++) {
+var attr = del.attributes[ai];
+if (!attr || attr.name.indexOf("data-") !== 0) continue;
+var av = String(attr.value || "");
+if (dt === "str") {
+if (s1 && av.indexOf(s1) !== -1 && av.length <= 256) {
+out.push({ id: "dom:" + dTag + "[" + attr.name + "]", kind: "dom", elRef: mkRef(del), domProp: "", domAttr: attr.name, dt: "str", prev: av, uiInteractive: true });
+}
+} else if (dt !== "aob") {
+var ac = cleanNumStr(av);
+var an = Number(ac);
+if (ac.trim() !== "" && Number.isFinite(an) && matchNum(an, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: "dom:" + dTag + "[" + attr.name + "]", kind: "dom", elRef: mkRef(del), domProp: "", domAttr: attr.name, dt: Number.isInteger(an) ? "i32" : "f64", prev: an, uiInteractive: true });
+}
+}
+}
+}
+if (dt !== "aob") {
+var hudEls = doc.querySelectorAll("[id*='coin'],[id*='gold'],[id*='score'],[id*='money'],[id*='cash'],[id*='gem'],[id*='hp'],[id*='health'],[id*='ammo'],[id*='level'],[id*='point'],[class*='coin'],[class*='score'],[class*='gold'],[class*='money'],[class*='counter']");
+for (var hi = 0; hi < hudEls.length && hi < 80 && out.length < cap; hi++) {
+var hel = hudEls[hi];
+if (!hel || seenEl.has(hel) || hel.children.length > 0) continue;
+seenEl.add(hel);
+var txtH = String(hel.textContent || "").trim();
+if (!txtH || txtH.length > 48) continue;
+var hTag = hel.id ? ("#" + hel.id) : ("hud#" + hi);
+if (dt === "str") {
+if (s1 && txtH.indexOf(s1) !== -1) {
+out.push({ id: "dom:" + hTag + ".text", kind: "dom", elRef: mkRef(hel), domProp: "textContent", domAttr: "", dt: "str", prev: txtH, uiInteractive: false });
+}
+} else {
+var hc = cleanNumStr(txtH);
+var hn = Number(hc);
+if (hc.trim() !== "" && Number.isFinite(hn) && matchNum(hn, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: "dom:" + hTag + ".text", kind: "dom", elRef: mkRef(hel), domProp: "textContent", domAttr: "", dt: Number.isInteger(hn) ? "i32" : "f64", prev: hn, uiInteractive: false });
+}
+}
+}
+}
+} catch (_) {}
 }
 function captureUnknownSnapshots(dt, deadlineMs, stateFlags) {
 var snaps = [];
@@ -3479,9 +3778,6 @@ return id;
 }
 function isForThisFrame(fullId) {
 if (typeof fullId !== "string") return false;
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_6 = """
 if (fullId.charAt(0) === "@") {
 return fullId.indexOf("@" + FRAME_ID + "|") === 0;
 }
@@ -3497,7 +3793,14 @@ var GAME_KEY_RE = /(?:^|[.\[\]_\-])(coin|coins|gold|gem|gems|hp|health|maxhp|lif
 function classifyHitAuthority(h) {
 if (!h) return { role: "game", score: 50 };
 if (h.kind === "wasm") return { role: "wasm", score: 100 };
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_7 = """
 if (h.kind === "ab" || h.kind === "ta") return { role: "buf", score: 92 };
+if (h.kind === "dom") {
+if (h.uiInteractive) return { role: "ui_state", score: GAME_KEY_RE.test(h.id) ? 82 : 72 };
+return { role: "ui", score: 26 };
+}
 if (h.kind === "ls" || h.kind === "ss" || h.kind === "lsjson" || h.kind === "ssjson") {
 return { role: "store", score: GAME_KEY_RE.test(h.id) ? 88 : 76 };
 }
@@ -3824,23 +4127,100 @@ var clA = classifyHitAuthority(recA);
 var origVal = rdA0.val;
 var isNumA = (typeof origVal === "number" && Number.isFinite(origVal));
 var probeVal = isNumA ? (origVal + 1) : (String(origVal) + "_t");
+var peers = [];
+if (isNumA) {
+watchRefs.forEach(function(pr, pid) {
+if (pid === locA || peers.length >= 24) return;
+var prd = readHitCurrent(pr);
+if (prd.ok && typeof prd.val === "number" && Math.abs(prd.val - origVal) <= 0.01) {
+peers.push({ rec: pr, before: prd.val, role: classifyHitAuthority(pr).role });
+}
+});
+}
 var writableA = writeHitValue(recA, String(probeVal), true);
 var rdA1 = readHitCurrent(recA);
 var acceptedA = writableA && rdA1.ok && (isNumA ? Math.abs(Number(rdA1.val) - probeVal) <= 0.01 : String(rdA1.val) === String(probeVal));
 var restoredExt = writableA && rdA1.ok && String(rdA1.val) === String(origVal);
-// Always restore original cleanly!
+var propGame = 0, propUi = 0;
+for (var ppi = 0; ppi < peers.length; ppi++) {
+var prd2 = readHitCurrent(peers[ppi].rec);
+if (prd2.ok && typeof prd2.val === "number" && Math.abs(prd2.val - probeVal) <= 0.01) {
+if (peers[ppi].role === "ui" || peers[ppi].role === "ui_state") propUi++;
+else propGame++;
+}
+}
 if (writableA) writeHitValue(recA, String(origVal), true);
 var authScore = clA.score;
+var outRole = clA.role;
 var verdict = "gameplay-candidate";
 if (!writableA) { authScore = 5; verdict = "read-only"; }
-else if (clA.role === "ui") { authScore = Math.min(authScore, 18); verdict = "display-only-ui"; }
-else if (restoredExt) { authScore = 45; verdict = "externally-restored"; }
-else if (acceptedA) { authScore = Math.max(authScore, 92); verdict = "verified-writable-game"; }
+else if (restoredExt) { authScore = 35; verdict = "externally-restored"; }
+else if ((clA.role === "ui" || clA.role === "ui_state") && propGame > 0) {
+authScore = 95; outRole = "ui_auth"; verdict = "ui-authoritative";
+} else if (propGame > 0 || propUi > 0) {
+authScore = 98; verdict = "bidirectional-authoritative";
+} else if (clA.role === "ui_state" && acceptedA) {
+authScore = 86; outRole = "ui_auth"; verdict = "ui-state-writable";
+} else if (clA.role === "ui") {
+authScore = Math.min(authScore, 18); verdict = "display-only-ui";
+} else if (acceptedA) {
+authScore = Math.max(authScore, 92); verdict = "verified-writable-game";
+}
 return {
 ok: true, frameId: FRAME_ID,
 writable: writableA, accepted: acceptedA, externallyRestored: restoredExt,
-role: clA.role, score: authScore, verdict: verdict
+propagatedGame: propGame, propagatedUi: propUi,
+role: outRole, score: authScore, verdict: verdict
 };
+}
+if (cmd.op === "inspectTypes") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var locIT = stripOwnFramePrefix(cmd.id);
+var recIT = watchRefs.get(locIT);
+if (!recIT) return { ok: false, error: "Entry not found in frame" };
+var rdIT = readHitCurrent(recIT);
+var diag = diagnoseBinaryBytes(recIT);
+if (diag) {
+return {
+ok: true, frameId: FRAME_ID, addr: cmd.id, kind: recIT.kind, currentType: recIT.dt,
+currentScale: recIT.scale || 0, currentVal: rdIT.ok ? formatVal(rdIT.val, recIT.dt) : String(rdIT.val),
+hex: diag.hex, i8: diag.i8, u8: diag.u8, i16: diag.i16, u16: diag.u16,
+i32: diag.i32, u32: diag.u32, i64: diag.i64, u64: diag.u64,
+f32: diag.f32, f64: diag.f64, x10: diag.x10, x100: diag.x100, x1000: diag.x1000,
+diagnosis: diag.diagnosis, suggestedType: diag.suggestedType, suggestedScale: diag.suggestedScale
+};
+}
+var curV = rdIT.ok ? rdIT.val : "";
+return {
+ok: true, frameId: FRAME_ID, addr: cmd.id, kind: recIT.kind, currentType: recIT.dt,
+currentScale: recIT.scale || 0, currentVal: formatVal(curV, recIT.dt),
+hex: "", i8: "", u8: "", i16: "", u16: "",
+i32: typeof curV === "number" ? String(curV | 0) : "",
+u32: typeof curV === "number" ? String(curV >>> 0) : "",
+i64: typeof curV === "number" ? String(Math.trunc(curV)) : String(curV),
+u64: "", f32: "", f64: typeof curV === "number" ? String(curV) : "",
+x10: "", x100: "", x1000: "",
+diagnosis: recIT.kind === "dom" ? "DOM / UI element state" : ("JS value (" + typeof curV + ")"),
+suggestedType: "", suggestedScale: 0
+};
+}
+if (cmd.op === "retype") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var locRT = stripOwnFramePrefix(cmd.id);
+var recRT = watchRefs.get(locRT);
+if (!recRT) return { ok: false, error: "Entry not found in frame" };
+var validDts = { i8:1, u8:1, i16:1, u16:1, i32:1, u32:1, i64:1, u64:1, f32:1, f64:1, str:1, aob:1 };
+var newDt = String(cmd.dtype || recRT.dt);
+if (!validDts[newDt]) return { ok: false, error: "Unsupported type: " + newDt };
+recRT.dt = newDt;
+if (typeof cmd.scale === "number" && Number.isFinite(cmd.scale)) recRT.scale = cmd.scale;
+var rdRT = readHitCurrent(recRT);
+var feRT = frozenMap.get(locRT);
+if (feRT && rdRT.ok && feRT.rule === "eq") {
+feRT.targetBytes = captureTargetBytes(recRT);
+feRT.parsedVal = rdRT.val;
+}
+return { ok: rdRT.ok, frameId: FRAME_ID, dtype: recRT.dt, scale: recRT.scale || 0, val: formatVal(rdRT.val, recRT.dt) };
 }
 if (cmd.op === "findMirrors") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
@@ -3863,6 +4243,13 @@ mSeen.add(mwb);
 scanBuffer(mwb, 0, mwb.byteLength, "wasm", mWasm[mwi].id, "wasm#" + mWasm[mwi].id, "auto", "exact", mVal, 0, "", { bytes: [], mask: [] }, mOut, mCap, mWasm[mwi].ref, mDead, mFlags);
 }
 collectJsAndTypedArrays("auto", "exact", mVal, 0, String(mVal), { bytes: [], mask: [] }, mOut, mCap, mSeen, mDead, mFlags);
+scanStorage("auto", "exact", mVal, 0, String(mVal), mOut, mCap);
+scanDomUiState("auto", "exact", mVal, 0, String(mVal), mOut, mCap);
+if (Number.isInteger(mVal) && mVal !== 0 && mOut.length < 40 && !mFlags.timedOut) {
+for (var fwi = 0; fwi < mWasm.length && mOut.length < 120; fwi++) {
+scanBufferFallback(mWasm[fwi].mem.buffer, 0, mWasm[fwi].mem.buffer.byteLength, "wasm", mWasm[fwi].id, "wasm#" + mWasm[fwi].id, mVal, mOut, 120, mWasm[fwi].ref, mDead, mFlags);
+}
+}
 var mItems = [];
 var uiItems = [];
 var mEng = detectEngines();
@@ -3914,6 +4301,9 @@ var resAll = formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0 });
 resAll.wrote = wrote;
 return resAll;
 }
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_8 = """
 if (cmd.op === "writeBatch") {
 var entriesW = Array.isArray(cmd.entries) ? cmd.entries : [];
 var wroteB = 0;
@@ -4011,9 +4401,6 @@ if (locR.indexOf("js:") === 0) {
 var resJ = resolveJsPathFromWindow(locR);
 if (!resJ) return { ok: false, frameId: FRAME_ID, error: "JS path not found" };
 var vJ = resJ.obj[resJ.key];
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_7 = """
 var recJ = { id: locR, kind: "js", objRef: mkRef(resJ.obj), key: resJ.key, dt: dtR, prev: vJ };
 watchRefs.set(locR, recJ);
 return { ok: true, frameId: FRAME_ID, val: formatVal(vJ, dtR) };
@@ -4167,6 +4554,7 @@ registerAndScanFullBuffer(rawBufs[bi], "", dt, sc, v1, v2, s1, aob, out, cap, sc
 }
 if (!stateFlags.timedOut) {
 scanStorage(dt, sc, v1, v2, s1, out, cap);
+scanDomUiState(dt, sc, v1, v2, s1, out, cap);
 }
 if (out.length === 0 && dt === "auto" && sc === "exact" && Number.isInteger(v1) && v1 !== 0 && !stateFlags.timedOut) {
 stateFlags.fallbackUsed = true;
@@ -4269,6 +4657,7 @@ hideUi: !!cmd.hideUi
 if (cmd.op === "readBatch") {
 var ids = Array.isArray(cmd.ids) ? cmd.ids : [];
 var vals = {};
+var typeHints = {};
 for (var ri = 0; ri < ids.length; ri++) {
 var fullId = ids[ri];
 if (!isForThisFrame(fullId)) continue;
@@ -4277,18 +4666,23 @@ var rec = watchRefs.get(localId);
 if (rec) {
 var r = readHitCurrent(rec);
 vals[fullId] = r.ok ? formatVal(r.val, rec.dt) : String(r.val);
+if (r.ok && (rec.kind === "wasm" || rec.kind === "ab" || rec.kind === "ta") && typeof r.val === "number" && (r.val < -1000000 || Math.abs(r.val) > 100000000)) {
+var dg = diagnoseBinaryBytes(rec);
+if (dg && dg.diagnosis) typeHints[fullId] = { diagnosis: dg.diagnosis, suggestedType: dg.suggestedType };
 }
 }
-return { ok: true, frameId: FRAME_ID, docGen: DOC_GEN, hookedEarly: HOOKED_EARLY, values: vals, freezeStats: collectFreezeStatsMap(), traces: collectTraceLogsMap() };
+}
+return { ok: true, frameId: FRAME_ID, docGen: DOC_GEN, hookedEarly: HOOKED_EARLY, values: vals, typeHints: typeHints, freezeStats: collectFreezeStatsMap(), traces: collectTraceLogsMap() };
 }
 if (cmd.op === "write") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
 var localW = stripOwnFramePrefix(cmd.id);
 var recW = watchRefs.get(localW);
 if (!recW) return { ok: false, error: "Entry not found in frame" };
+lastWriteOverflowWarn = "";
 var okW = writeHitValue(recW, cmd.val);
 var rdW = readHitCurrent(recW);
-return { ok: okW, frameId: FRAME_ID, val: formatVal(rdW.val, recW.dt) };
+return { ok: okW, frameId: FRAME_ID, val: formatVal(rdW.val, recW.dt), overflowWarn: lastWriteOverflowWarn };
 }
 if (cmd.op === "hexDump") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
@@ -4386,6 +4780,9 @@ visN++;
 if (cP.depth > 0 && isSkippedBuiltinObject(oP)) continue;
 var ksP;
 try { ksP = cP.depth <= 2 ? Object.getOwnPropertyNames(oP) : Object.keys(oP); } catch (_) { continue; }
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_9 = """
 for (var kpi = 0; kpi < Math.min(ksP.length, 250) && pItems.length < 60; kpi++) {
 var kk = ksP[kpi];
 if (SKIP_KEYS.has(kk) || INTERNAL_KEY_RE.test(kk)) continue;
@@ -4500,9 +4897,6 @@ totalKb += bkb;
 var shB = isSharedBuf(rawR[rbi]);
 regs.push({ start: qualifyId("buf#" + rbi), end: "0x" + rawR[rbi].byteLength.toString(16).toUpperCase(), kb: bkb, perms: shB ? "rw-sab" : "rw-buf", label: prefixLbl + (shB ? "SharedArrayBuffer #" : "ArrayBuffer #") + rbi });
 }
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_8 = """
 for (var tai = 0; tai < Math.min(taRegistry.length, 40); tai++) {
 var taObj = taRegistry[tai].deref();
 if (taObj) {
@@ -4606,5 +5000,5 @@ d.box.out = handleCmd(d);
 }, false);
 try { window.dispatchEvent(new Event(CH + "_ok")); } catch (_) {}
 })();
-    """.trimStart('\n').trimEnd('\n')
+""".trimStart('\n').trimEnd('\n')
 }

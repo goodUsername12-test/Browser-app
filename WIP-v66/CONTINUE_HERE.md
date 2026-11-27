@@ -1,6 +1,6 @@
-# Fable Browser v66 Continuation (`v66-ce-titan-1`, v1.66.0 / versionCode 58)
+# Fable Browser v66 Continuation (`v66-ce-titan-2`, v1.66.0 / versionCode 58)
 
-## Completed in `v66-ce-titan-1`
+## Completed in `v66-ce-titan-2`
 1. **Instant Auto-Hook on Page Load & Refresh (No Manual "Hook Reload" Needed)**:
    - Fixed `blocker.js` `config` handler missing `applyMemoryScannerScript()`, added immediate injection into open tabs on enable, and added lightweight `browser.tabs.onUpdated` fallback (strictly zero-load when OFF).
    - Fixed `FableWebGpuManager.installDocumentStartBootstrap` script-cache check so `onPageStarted` never tears down & races identical `DocumentStartJavaScript` scripts on Blink child iframes.
@@ -23,4 +23,7 @@
 - `node --check` on `memory_scanner.js` and `blocker.js`, `bash -n ci/hook.sh`.
 
 ## Next Step
-- Monitor GitHub Actions `Build APK` for `v66-ce-titan-1` (Debug APK, unit tests, Release APK, Android API 34 x86_64 Emulator verification) and address any CI findings if any appear.
+- Monitor GitHub Actions `Build APK` for `v66-ce-titan-2` (Debug APK, unit tests, Release APK, Android API 34 x86_64 Emulator verification) and address any CI findings if any appear.
+
+## v66-ce-titan-2 Fixes
+- Fixed 3 Kotlin string escape typos reported by Build #115 (`MemoryEngineManager.kt:649`, `WebsiteMemoryEngine.kt:358`, `GeckoViewHost.kt:1212`).

@@ -1209,7 +1209,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                                                     wv.evaluateJavascript(script) { raw2 ->
                                                         if (!cont.isActive) return@evaluateJavascript
                                                         val unq2 = if (raw2.isNullOrBlank() || raw2 == "null") {
-                                                            "{"ok":false,"error":"Empty page response"}"
+                                                            "{\"ok\":false,\"error\":\"Empty page response\"}"
                                                         } else {
                                                             runCatching { org.json.JSONTokener(raw2).nextValue()?.toString() }.getOrNull() ?: raw2
                                                         }

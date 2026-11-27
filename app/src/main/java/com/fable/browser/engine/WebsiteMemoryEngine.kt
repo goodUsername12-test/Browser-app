@@ -355,18 +355,12 @@ object WebsiteMemoryEngine {
         val chJson = JSONObject.quote(channelId)
         val sb = StringBuilder(170_000)
         sb.append(JS_PART_1.replace("__CH_ARG__", chJson))
-        sb.append("
-").append(JS_PART_2)
-        sb.append("
-").append(JS_PART_3)
-        sb.append("
-").append(JS_PART_4)
-        sb.append("
-").append(JS_PART_5)
-        sb.append("
-").append(JS_PART_6)
-        sb.append("
-").append(JS_PART_7)
+        sb.append("\n").append(JS_PART_2)
+        sb.append("\n").append(JS_PART_3)
+        sb.append("\n").append(JS_PART_4)
+        sb.append("\n").append(JS_PART_5)
+        sb.append("\n").append(JS_PART_6)
+        sb.append("\n").append(JS_PART_7)
         return sb.toString()
     }
 

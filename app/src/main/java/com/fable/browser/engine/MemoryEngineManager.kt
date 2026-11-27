@@ -646,7 +646,7 @@ class MemoryEngineManager @Inject constructor(
     }
 
     private fun detectUiWarningReason(role: String, addr: String, events: List<MemTraceEvent>): String {
-        val uiCallerRe = Regex("(_setString|setText|updateLabel|renderText|fillText|textContent|innerText|Label\.)", RegexOption.IGNORE_CASE)
+        val uiCallerRe = Regex("(_setString|setText|updateLabel|renderText|fillText|textContent|innerText|Label\\.)", RegexOption.IGNORE_CASE)
         val badEv = events.lastOrNull { uiCallerRe.containsMatchIn(it.caller) }
         if (badEv != null) {
             return "UI renderer detected (${badEv.caller.take(28)}) · tap Find Real"

@@ -614,7 +614,6 @@ fun MemoryEnginePanel(
                                         }
                                     }
                                 }
-                            }                                }
                             }
                             if (state.hasActiveScan && state.snapshotCount >= 2) {
                                 Spacer(Modifier.height((3.5f * s).dp))

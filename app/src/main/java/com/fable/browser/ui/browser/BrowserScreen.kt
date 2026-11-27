@@ -570,6 +570,17 @@ fun BrowserScreen(
         LaunchedEffect(settings.memoryEngineTimeoutSec) {
             viewModel.memoryEngineManager.setScanTimeoutSec(settings.memoryEngineTimeoutSec)
         }
+        LaunchedEffect(settings.memoryEngineFreezeStrength) {
+            viewModel.memoryEngineManager.setFreezeStrength(
+                com.fable.browser.engine.MemFreezeStrength.fromLevel(settings.memoryEngineFreezeStrength)
+            )
+        }
+        LaunchedEffect(settings.memoryEngineAutoReattach) {
+            viewModel.memoryEngineManager.setAutoReattachOnReload(settings.memoryEngineAutoReattach)
+        }
+        LaunchedEffect(url, loading, settings.memoryEngineEnabled) {
+            viewModel.memoryEngineManager.onActiveTabPageStateChanged(url, loading)
+        }
         if (settings.memoryEngineEnabled && settings.memoryEngineShowPanel) {
             com.fable.browser.ui.components.DraggableMemoryEnginePanel(
                 state = memState,
@@ -632,6 +643,11 @@ fun BrowserScreen(
                 onDeleteCheatTable = viewModel.memoryEngineManager::deleteCheatTable,
                 onExportCheatTableJson = viewModel.memoryEngineManager::exportWatchTableJson,
                 onImportCheatTableJson = viewModel.memoryEngineManager::importCheatTableJson,
+                onSetFreezeStrength = viewModel::setMemoryEngineFreezeStrength,
+                onToggleHideUiNoise = viewModel.memoryEngineManager::toggleHideUiNoise,
+                onFindMirrorsForWatch = viewModel.memoryEngineManager::findMirrorsForWatch,
+                onLockAllMirrors = viewModel.memoryEngineManager::lockAllMirrors,
+                onFindRealValueFromUiWatch = viewModel.memoryEngineManager::findRealValueFromUiWatch,
                 onPositionChangeFinished = viewModel::setMemoryEnginePanelPosition,
                 onToggleExpanded = { viewModel.setMemoryEnginePanelExpanded(!settings.memoryEnginePanelExpanded) },
                 onTurnOff = { viewModel.setMemoryEngineEnabled(false) },

@@ -235,6 +235,8 @@ data class Settings(
     val memoryEnginePanelPosY: Float = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_Y,
     val memoryEnginePanelExpanded: Boolean = true,
     val memoryEngineTimeoutSec: Int = com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_TIMEOUT_SEC,
+    val memoryEngineFreezeStrength: Int = 1,
+    val memoryEngineAutoReattach: Boolean = true,
 ) {
     val timeScaleRate: Float
         get() = com.fable.browser.engine.WebsiteSpeedEngine.rateFromTenths(timeScaleMultiplierTenths)
@@ -463,6 +465,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val MEM_ENGINE_Y = floatPreferencesKey("mem_engine_pos_y")
         val MEM_ENGINE_EXPANDED = booleanPreferencesKey("mem_engine_expanded")
         val MEM_ENGINE_TIMEOUT_SEC = intPreferencesKey("mem_engine_timeout_sec")
+        val MEM_ENGINE_FREEZE_STRENGTH = intPreferencesKey("mem_engine_freeze_strength")
+        val MEM_ENGINE_AUTO_REATTACH = booleanPreferencesKey("mem_engine_auto_reattach")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -663,6 +667,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             memoryEnginePanelPosY = (p[Keys.MEM_ENGINE_Y] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_PANEL_POS_Y).coerceIn(0f, 1f),
             memoryEnginePanelExpanded = p[Keys.MEM_ENGINE_EXPANDED] ?: true,
             memoryEngineTimeoutSec = com.fable.browser.engine.WebsiteMemoryEngine.clampTimeoutSec(p[Keys.MEM_ENGINE_TIMEOUT_SEC] ?: com.fable.browser.engine.WebsiteMemoryEngine.DEFAULT_TIMEOUT_SEC),
+            memoryEngineFreezeStrength = (p[Keys.MEM_ENGINE_FREEZE_STRENGTH] ?: 1).coerceIn(0, 2),
+            memoryEngineAutoReattach = p[Keys.MEM_ENGINE_AUTO_REATTACH] ?: true,
         )
     }.distinctUntilChanged()
 
@@ -953,6 +959,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     }
     suspend fun setMemoryEnginePanelExpanded(v: Boolean) = set(Keys.MEM_ENGINE_EXPANDED, v)
     suspend fun setMemoryEngineTimeoutSec(v: Int) = set(Keys.MEM_ENGINE_TIMEOUT_SEC, com.fable.browser.engine.WebsiteMemoryEngine.clampTimeoutSec(v))
+    suspend fun setMemoryEngineFreezeStrength(v: Int) = set(Keys.MEM_ENGINE_FREEZE_STRENGTH, v.coerceIn(0, 2))
+    suspend fun setMemoryEngineAutoReattach(v: Boolean) = set(Keys.MEM_ENGINE_AUTO_REATTACH, v)
     suspend fun setMemoryEnginePanelPosition(x: Float, y: Float) {
         context.dataStore.edit {
             it[Keys.MEM_ENGINE_X] = x.coerceIn(0f, 1f)

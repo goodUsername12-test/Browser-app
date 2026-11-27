@@ -19,6 +19,16 @@ import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
+enum class MemFreezeStrength(val level: Int, val label: String, val shortLabel: String) {
+    NORMAL(0, "Normal (Battery)", "Normal"),
+    STRONG(1, "Strong (667Hz)", "Strong"),
+    MAX(2, "MAX Titan (2500Hz)", "MAX");
+
+    companion object {
+        fun fromLevel(lvl: Int): MemFreezeStrength = entries.firstOrNull { it.level == lvl } ?: STRONG
+    }
+}
+
 enum class MemFreezeRule(val jsCode: String, val nativeCode: Int, val symbol: String, val label: String) {
     EXACT("eq", 0, "=", "Exact Lock"),
     MIN("min", 1, ">=", "Min Floor (>=)"),
@@ -76,6 +86,8 @@ data class MemScanResultItem(
     val prevValue: String = "",
     val type: String = "i32",
     val kind: String = "native",
+    val role: String = "game",
+    val score: Int = 78,
     val engine: String = "",
     val lastChangedAtMs: Long = 0L,
     val xorMode: Int = 0,
@@ -91,13 +103,17 @@ data class MemWatchEntry(
     val dataType: MemDataType,
     val currentValue: String,
     val originalValue: String,
+    val role: String = "game",
     val frozen: Boolean = false,
     val frozenValue: String = "",
     val freezeRule: MemFreezeRule = MemFreezeRule.EXACT,
     val freezeMode: String = "",
     val blockedWrites: Long = 0L,
+    val writesPerSec: Int = 0,
     val freezeStatus: String = "",
     val lastChangedAtMs: Long = 0L,
+    val valueHistory: List<String> = emptyList(),
+    val uiWarningReason: String = "",
     val xorMode: Int = 0,
     val xorKey: Long = 0L,
     val xorKeyAddr: String = "",
@@ -169,6 +185,16 @@ data class MemoryEngineUiState(
     val savedTables: List<MemSavedTable> = emptyList(),
     val regions: List<MemRegionItem> = emptyList(),
     val regionsTotalKb: Long = 0L,
+    val freezeStrength: MemFreezeStrength = MemFreezeStrength.STRONG,
+    val autoReattachOnReload: Boolean = true,
+    val hideUiNoise: Boolean = false,
+    val uiHiddenCount: Int = 0,
+    val pageHookLive: Boolean = false,
+    val hookedEarly: Boolean = false,
+    val docGen: String = "",
+    val mirrorOriginAddr: String = "",
+    val mirrorScope: MemScope = MemScope.PAGE_WASM,
+    val mirrorResults: List<MemScanResultItem> = emptyList(),
     val statusText: String = "Enter a number and tap First Scan",
     val activeEngineLabel: String = "Auto"
 )
@@ -295,6 +321,10 @@ class MemoryEngineManager @Inject constructor(
     private var scanTimerJob: Job? = null
     @Volatile private var engineActive: Boolean = false
     private var savedTablesLoaded = false
+    private var lastObservedUrl: String = ""
+    private var lastObservedLoading: Boolean = false
+    private var lastKnownDocGen: String = ""
+    private var pageHookPingJob: Job? = null
 
     fun setEngineActive(enabled: Boolean) {
         engineActive = enabled
@@ -307,6 +337,7 @@ class MemoryEngineManager @Inject constructor(
         } else {
             loadSavedTablesIfNeeded()
             ensureWatchLoop()
+            refreshAutoHookStatus(autoReattach = false)
         }
     }
 
@@ -349,6 +380,281 @@ class MemoryEngineManager @Inject constructor(
 
     fun setScanType(st: MemScanType) {
         _state.update { it.copy(scanType = st) }
+    }
+
+    fun setFreezeStrength(strength: MemFreezeStrength) {
+        _state.update {
+            it.copy(
+                freezeStrength = strength,
+                statusText = "Freeze strength: ${strength.label}"
+            )
+        }
+        scope.launch {
+            withContext(Dispatchers.IO) { NativeMemoryScanner.setFreezeStrength(strength.level) }
+            if (engineActive) {
+                runCatching {
+                    runPageCommand(JSONObject().apply {
+                        put("op", "setFreezeStrength")
+                        put("level", strength.level)
+                    })
+                }
+            }
+        }
+    }
+
+    fun setAutoReattachOnReload(enabled: Boolean) {
+        _state.update { it.copy(autoReattachOnReload = enabled) }
+    }
+
+    fun toggleHideUiNoise() {
+        _state.update {
+            val next = !it.hideUiNoise
+            it.copy(
+                hideUiNoise = next,
+                statusText = if (next) "Hide UI labels ON (prioritizing gameplay values)" else "Showing all hits (including UI labels)"
+            )
+        }
+    }
+
+    fun onActiveTabPageStateChanged(url: String, isLoading: Boolean) {
+        if (!engineActive) {
+            lastObservedUrl = url
+            lastObservedLoading = isLoading
+            return
+        }
+        val wasLoading = lastObservedLoading
+        val urlChanged = url.isNotBlank() && url != lastObservedUrl
+        lastObservedUrl = url
+        lastObservedLoading = isLoading
+        if (!isLoading && url.startsWith("http") && (wasLoading || urlChanged || !_state.value.pageHookLive)) {
+            refreshAutoHookStatus(autoReattach = wasLoading || urlChanged)
+        }
+    }
+
+    fun refreshAutoHookStatus(autoReattach: Boolean = false) {
+        if (!engineActive) return
+        pageHookPingJob?.cancel()
+        pageHookPingJob = scope.launch {
+            if (autoReattach) delay(220L)
+            val raw = runPageCommand(JSONObject().apply { put("op", "ping") })
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val newGen = obj.optString("docGen")
+                val early = obj.optBoolean("hookedEarly", false)
+                val engs = parseEngines(obj.optJSONArray("engines"))
+                val docChanged = newGen.isNotBlank() && lastKnownDocGen.isNotBlank() && newGen != lastKnownDocGen
+                if (newGen.isNotBlank()) lastKnownDocGen = newGen
+                // Sync current freeze strength into the freshly hooked page!
+                val curLvl = _state.value.freezeStrength.level
+                runCatching {
+                    runPageCommand(JSONObject().apply {
+                        put("op", "setFreezeStrength")
+                        put("level", curLvl)
+                    })
+                }
+                _state.update {
+                    it.copy(
+                        pageHookLive = true,
+                        hookedEarly = early,
+                        docGen = newGen.ifBlank { it.docGen },
+                        wasmCount = obj.optInt("wasmCount", it.wasmCount),
+                        bufCount = obj.optInt("bufCount", it.bufCount),
+                        workerCount = obj.optInt("workerCount", it.workerCount),
+                        frameCount = obj.optInt("frameCount", it.frameCount),
+                        detectedEngines = if (engs.isNotEmpty()) engs else it.detectedEngines,
+                        statusText = if (docChanged) {
+                            "Auto-hooked after reload (${if (early) "doc_start" else "live"})"
+                        } else it.statusText
+                    )
+                }
+                if ((docChanged || autoReattach) && _state.value.autoReattachOnReload &&
+                    _state.value.watchList.any { it.scope == MemScope.PAGE_WASM }) {
+                    autoReattachAndRearmAfterReload()
+                }
+            }
+        }
+    }
+
+    private suspend fun autoReattachAndRearmAfterReload() {
+        val pageWatches = _state.value.watchList.filter { it.scope == MemScope.PAGE_WASM }
+        if (pageWatches.isEmpty()) return
+        val updatedById = HashMap<String, MemWatchEntry>()
+        val toRearm = ArrayList<MemWatchEntry>()
+        var reattachedCnt = 0
+        for (e in pageWatches) {
+            val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(e.addr)
+            val raw = runPageCommand(JSONObject().apply {
+                put("op", "reattach")
+                put("id", e.addr)
+                put("dt", e.dataType.jsCode)
+                if (tFrame != null) put("targetFrame", tFrame)
+            })
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                reattachedCnt++
+                val liveVal = obj.optString("val", e.currentValue)
+                val upd = e.copy(
+                    currentValue = liveVal,
+                    attached = true,
+                    freezeStatus = if (e.frozen) "arming" else ""
+                )
+                updatedById[e.id] = upd
+                if (e.frozen) toRearm.add(upd)
+            } else {
+                updatedById[e.id] = e.copy(
+                    attached = false,
+                    freezeStatus = if (e.frozen) "detached" else ""
+                )
+            }
+        }
+        _state.update { st ->
+            st.copy(
+                watchList = st.watchList.map { updatedById[it.id] ?: it },
+                statusText = "Auto-hooked reload: reattached $reattachedCnt/${pageWatches.size} watches" +
+                    if (toRearm.isNotEmpty()) " · re-arming ${toRearm.size} lock(s)" else ""
+            )
+        }
+        if (toRearm.isNotEmpty()) {
+            applyFreezeBatch(toRearm, freeze = true)
+        }
+    }
+
+    fun findMirrorsForWatch(watchId: String) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        _state.update { it.copy(busy = true, statusText = "Finding mirror copies of ${entry.label} (${entry.currentValue})...") }
+        scope.launch {
+            val raw = when (entry.scope) {
+                MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) {
+                    NativeMemoryScanner.findMirrors(entry.addr, entry.dataType, 60, 8_000)
+                }
+                MemScope.PAGE_WASM -> {
+                    val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
+                    runPageCommand(JSONObject().apply {
+                        put("op", "findMirrors")
+                        put("id", entry.addr)
+                        if (tFrame != null) put("targetFrame", tFrame)
+                    })
+                }
+            }
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val arr = obj.optJSONArray("items") ?: JSONArray()
+                val items = ArrayList<MemScanResultItem>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    items.add(
+                        MemScanResultItem(
+                            addr = o.optString("addr"),
+                            value = o.optString("val"),
+                            prevValue = o.optString("val"),
+                            type = o.optString("type", entry.dataType.jsCode),
+                            kind = o.optString("kind", if (entry.scope == MemScope.FABLE_NATIVE) "native" else "js"),
+                            role = o.optString("role", "game"),
+                            score = o.optInt("score", 80),
+                            engine = o.optString("engine", "")
+                        )
+                    )
+                }
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        mirrorOriginAddr = entry.addr,
+                        mirrorScope = entry.scope,
+                        mirrorResults = items,
+                        statusText = "Found ${items.size} mirror copy${if (items.size == 1) "" else "ies"} of ${entry.label}"
+                    )
+                }
+            } else {
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        mirrorOriginAddr = entry.addr,
+                        mirrorResults = emptyList(),
+                        statusText = obj?.optString("error") ?: "Mirror search failed"
+                    )
+                }
+            }
+        }
+    }
+
+    fun lockAllMirrors() {
+        val st = _state.value
+        val mirrors = st.mirrorResults.take(30)
+        if (mirrors.isEmpty()) return
+        val origin = st.watchList.firstOrNull { it.addr == st.mirrorOriginAddr }
+        val freezeVal = origin?.frozenValue?.ifBlank { origin.currentValue } ?: mirrors.first().value
+        val freezeRule = origin?.freezeRule ?: MemFreezeRule.EXACT
+        val existingIds = st.watchList.map { it.id }.toHashSet()
+        val added = ArrayList<MemWatchEntry>()
+        val toFreeze = ArrayList<MemWatchEntry>()
+        for (m in mirrors) {
+            val dt = resolveDataType(m.type, origin?.dataType ?: MemDataType.INT32)
+            val wid = "${st.mirrorScope.name}|${m.addr}"
+            val ex = st.watchList.firstOrNull { it.id == wid }
+            if (ex == null && wid !in existingIds) {
+                existingIds.add(wid)
+                val ne = MemWatchEntry(
+                    id = wid,
+                    scope = st.mirrorScope,
+                    addr = m.addr,
+                    label = "Mirror: " + m.addr.removePrefix("js:").takeLast(24),
+                    dataType = dt,
+                    currentValue = m.value,
+                    originalValue = m.value,
+                    role = m.role,
+                    frozen = true,
+                    frozenValue = freezeVal,
+                    freezeRule = freezeRule,
+                    freezeStatus = "arming",
+                    attached = true
+                )
+                added.add(ne)
+                toFreeze.add(ne)
+            } else if (ex != null) {
+                toFreeze.add(ex.copy(frozen = true, frozenValue = freezeVal, freezeRule = freezeRule, freezeStatus = "arming"))
+            }
+        }
+        _state.update { cur ->
+            cur.copy(
+                watchList = cur.watchList + added,
+                mirrorResults = emptyList(),
+                statusText = "Arming Mirror Lock on ${toFreeze.size} copies..."
+            )
+        }
+        scope.launch { applyFreezeBatch(toFreeze, freeze = true) }
+        ensureWatchLoop()
+    }
+
+    fun findRealValueFromUiWatch(watchId: String) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        val latestAttempt = entry.traceEvents.lastOrNull()?.newVal?.takeIf { it.isNotBlank() }
+            ?: entry.originalValue.takeIf { it.isNotBlank() }
+            ?: entry.currentValue
+        val cleanNum = WebsiteMemoryEngine.normalizeNumericInput(latestAttempt, MemDataType.INT32)
+        _state.update {
+            it.copy(
+                scope = MemScope.PAGE_WASM,
+                dataType = MemDataType.AUTO,
+                scanType = MemScanType.EXACT,
+                hideUiNoise = true,
+                statusText = "Scanning real gameplay values for '$cleanNum' (UI labels hidden)..."
+            )
+        }
+        if (cleanNum.isNotBlank()) {
+            firstScan(cleanNum, "")
+        }
+    }
+
+    private fun detectUiWarningReason(role: String, addr: String, events: List<MemTraceEvent>): String {
+        val uiCallerRe = Regex("(_setString|setText|updateLabel|renderText|fillText|textContent|innerText|Label\.)", RegexOption.IGNORE_CASE)
+        val badEv = events.lastOrNull { uiCallerRe.containsMatchIn(it.caller) }
+        if (badEv != null) {
+            return "UI renderer detected (${badEv.caller.take(28)}) · tap Find Real"
+        }
+        if (role == "ui" || addr.contains("._string") || addr.contains("._node._parent")) {
+            return "Likely UI display label · tap Find Real for gameplay value"
+        }
+        return ""
     }
 
     fun toggleLiveScanRefresh() {
@@ -431,6 +737,7 @@ class MemoryEngineManager @Inject constructor(
                             put("val2", n2)
                             put("maxReturn", 300)
                             put("timeoutMs", timeoutMs)
+                            put("hideUi", st.hideUiNoise)
                         }
                         runPageCommand(cmd)
                     }
@@ -486,6 +793,7 @@ class MemoryEngineManager @Inject constructor(
                             put("val2", WebsiteMemoryEngine.normalizeNumericInput(val2, st.dataType))
                             put("maxReturn", 300)
                             put("timeoutMs", timeoutMs)
+                            put("hideUi", st.hideUiNoise)
                         }
                         runPageCommand(cmd)
                     }
@@ -553,6 +861,9 @@ class MemoryEngineManager @Inject constructor(
                     dataType = dt,
                     currentValue = item.value,
                     originalValue = item.value,
+                    role = item.role,
+                    valueHistory = listOf(item.value),
+                    uiWarningReason = detectUiWarningReason(item.role, item.addr, emptyList()),
                     frozen = freezeImmediately,
                     frozenValue = if (freezeImmediately) item.value else "",
                     freezeStatus = if (freezeImmediately) "arming" else "",
@@ -696,6 +1007,7 @@ class MemoryEngineManager @Inject constructor(
                 MemScope.PAGE_WASM -> runPageCommand(JSONObject().apply {
                     put("op", "refreshHits")
                     put("maxReturn", 300)
+                    put("hideUi", st.hideUiNoise)
                 })
             }
             applyScanResponse(raw, isFirst = false)
@@ -790,6 +1102,9 @@ class MemoryEngineManager @Inject constructor(
             dataType = dt,
             currentValue = item.value,
             originalValue = item.value,
+            role = item.role,
+            valueHistory = listOf(item.value),
+            uiWarningReason = detectUiWarningReason(item.role, item.addr, emptyList()),
             xorMode = item.xorMode,
             xorKey = item.xorKey,
             xorKeyAddr = item.xorKeyAddr,
@@ -1443,6 +1758,7 @@ class MemoryEngineManager @Inject constructor(
                     put("op", "setFreeze")
                     put("id", entry.addr)
                     put("rule", entry.freezeRule.jsCode)
+                    put("strength", _state.value.freezeStrength.level)
                     if (tFrame != null) put("targetFrame", tFrame)
                     put("val", WebsiteMemoryEngine.normalizeNumericInput(entry.frozenValue.ifBlank { entry.currentValue }, entry.dataType))
                 }
@@ -1518,6 +1834,7 @@ class MemoryEngineManager @Inject constructor(
                 }
                 val raw = runPageCommand(JSONObject().apply {
                     put("op", "freezeBatch")
+                    put("strength", _state.value.freezeStrength.level)
                     put("entries", arr)
                 })
                 val respObj = runCatching { JSONObject(raw) }.getOrNull()
@@ -1576,6 +1893,7 @@ class MemoryEngineManager @Inject constructor(
                 e.copy(
                     freezeMode = info.optString("mode", e.freezeMode),
                     blockedWrites = info.optLong("blocked", e.blockedWrites),
+                    writesPerSec = info.optInt("rate", e.writesPerSec),
                     freezeStatus = info.optString("status", e.freezeStatus)
                 )
             })
@@ -1605,7 +1923,8 @@ class MemoryEngineManager @Inject constructor(
                 }
                 e.copy(
                     traceCount = tInfo.optInt("count", evList.size),
-                    traceEvents = evList
+                    traceEvents = evList,
+                    uiWarningReason = detectUiWarningReason(e.role, e.addr, evList)
                 )
             })
         }
@@ -1861,6 +2180,18 @@ class MemoryEngineManager @Inject constructor(
                         put("ids", ids)
                     })
                     val obj = runCatching { JSONObject(raw) }.getOrNull()
+                    val rbGen = obj?.optString("docGen").orEmpty()
+                    if (rbGen.isNotBlank()) {
+                        val genChanged = lastKnownDocGen.isNotBlank() && rbGen != lastKnownDocGen
+                        lastKnownDocGen = rbGen
+                        if (!_state.value.pageHookLive || genChanged) {
+                            _state.update { it.copy(pageHookLive = true, hookedEarly = obj?.optBoolean("hookedEarly", it.hookedEarly) ?: it.hookedEarly, docGen = rbGen) }
+                        }
+                        if (genChanged && _state.value.autoReattachOnReload) {
+                            autoReattachAndRearmAfterReload()
+                            continue
+                        }
+                    }
                     val vals = obj?.optJSONObject("values")
                     if (vals != null) {
                         for (w in pageWatches) {
@@ -1909,9 +2240,11 @@ class MemoryEngineManager @Inject constructor(
                                     } else ""
                                     (e.traceEvents + MemTraceEvent(nowMs, e.currentValue, nv, dStr, "native-mem")).takeLast(20)
                                 } else e.traceEvents
+                                val nextHist = if (changed) (e.valueHistory + nv).takeLast(8) else if (e.valueHistory.isEmpty()) listOf(nv) else e.valueHistory
                                 e.copy(
                                     currentValue = nv,
                                     lastChangedAtMs = if (changed) nowMs else e.lastChangedAtMs,
+                                    valueHistory = nextHist,
                                     traceEvents = nextEvents,
                                     traceCount = if (changed && e.tracing && e.scope == MemScope.FABLE_NATIVE) e.traceCount + 1 else e.traceCount
                                 )
@@ -2035,6 +2368,8 @@ class MemoryEngineManager @Inject constructor(
                     prevValue = o.optString("prev", curVal),
                     type = o.optString("type", _state.value.dataType.jsCode),
                     kind = o.optString("kind", if (_state.value.scope == MemScope.FABLE_NATIVE) "native" else "js"),
+                    role = o.optString("role", if (_state.value.scope == MemScope.FABLE_NATIVE) "game" else "game"),
+                    score = o.optInt("score", 78),
                     engine = o.optString("engine", ""),
                     xorMode = o.optInt("xorMode", 0),
                     xorKey = o.optLong("xorKey", 0L),
@@ -2076,6 +2411,10 @@ class MemoryEngineManager @Inject constructor(
                 canUndo = canUndo,
                 undoDepth = undoDepth,
                 totalMatches = total,
+                uiHiddenCount = obj.optInt("uiHiddenCount", 0),
+                pageHookLive = if (_state.value.scope == MemScope.PAGE_WASM) true else it.pageHookLive,
+                hookedEarly = obj.optBoolean("hookedEarly", it.hookedEarly),
+                docGen = obj.optString("docGen").ifBlank { it.docGen },
                 wasmCount = wasmCnt,
                 bufCount = bufCnt,
                 workerCount = workerCnt,

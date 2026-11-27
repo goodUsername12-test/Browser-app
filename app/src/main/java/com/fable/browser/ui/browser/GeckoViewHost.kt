@@ -1190,7 +1190,45 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                             }
                         }
                     } ?: return "{\"ok\":false,\"error\":\"Blink scan timed out (${timeoutMs / 1000L}s)\"}"
-                    val topObj = runCatching { org.json.JSONObject(topRaw) }.getOrNull()
+                    var topRawFinal = topRaw
+                    var topObj = runCatching { org.json.JSONObject(topRawFinal) }.getOrNull()
+                    if (topObj != null && topObj.optBoolean("notHooked", false)) {
+                        val curSettings = tab.hybridSettingsProvider?.invoke()
+                        if (curSettings?.memoryEngineEnabled == true) {
+                            val memBoot = com.fable.browser.engine.WebsiteMemoryEngine.buildBootstrapScript(curSettings)
+                            val freshBoot = tab.hybridBootstrapProvider?.invoke(wv.url ?: tab.url.value).orEmpty()
+                            if (memBoot.isNotBlank()) {
+                                val retryRaw = kotlinx.coroutines.withTimeoutOrNull(timeoutMs + 2_000L) {
+                                    kotlinx.coroutines.suspendCancellableCoroutine<String> { cont ->
+                                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                            runCatching {
+                                                if (freshBoot.isNotBlank()) {
+                                                    com.fable.browser.engine.FableWebGpuManager.installDocumentStartBootstrap(wv, freshBoot)
+                                                }
+                                                wv.evaluateJavascript(memBoot) {
+                                                    wv.evaluateJavascript(script) { raw2 ->
+                                                        if (!cont.isActive) return@evaluateJavascript
+                                                        val unq2 = if (raw2.isNullOrBlank() || raw2 == "null") {
+                                                            "{"ok":false,"error":"Empty page response"}"
+                                                        } else {
+                                                            runCatching { org.json.JSONTokener(raw2).nextValue()?.toString() }.getOrNull() ?: raw2
+                                                        }
+                                                        cont.resumeWith(Result.success(unq2))
+                                                    }
+                                                }
+                                            }.onFailure {
+                                                if (cont.isActive) cont.resumeWith(Result.success(topRawFinal))
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!retryRaw.isNullOrBlank()) {
+                                    topRawFinal = retryRaw
+                                    topObj = runCatching { org.json.JSONObject(topRawFinal) }.getOrNull()
+                                }
+                            }
+                        }
+                    }
                     val childFrames = topObj?.optInt("childFrames", 0) ?: 0
                     val needsSubframes = childFrames > 0 || (targetFrame.isNotBlank() && targetFrame != "f0")
                     if (needsSubframes) {
@@ -1220,7 +1258,7 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
                     }
                     val allPayloads = ArrayList<String>(1 + reqState.results.size)
                     if (topObj == null || !topObj.optBoolean("skippedFrame", false)) {
-                        allPayloads.add(topRaw)
+                        allPayloads.add(topRawFinal)
                     }
                     allPayloads.addAll(reqState.results)
                     return com.fable.browser.engine.WebsiteMemoryEngine.mergeMultiFrameResults(allPayloads, op, maxRet)

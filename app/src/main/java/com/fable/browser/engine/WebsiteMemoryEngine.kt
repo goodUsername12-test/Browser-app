@@ -113,11 +113,55 @@ object WebsiteMemoryEngine {
                 val tr = o.optJSONObject("traces")
                 if (tr != null) tr.keys().forEach { k -> mergedTraces.put(k, tr.opt(k)) }
             }
+            var docGen = ""
+            var hookedEarly = false
+            for (o in parsed) {
+                if (docGen.isEmpty()) docGen = o.optString("docGen")
+                if (o.optBoolean("hookedEarly", false)) hookedEarly = true
+            }
             return JSONObject()
                 .put("ok", true)
+                .put("docGen", docGen)
+                .put("hookedEarly", hookedEarly)
                 .put("values", mergedVals)
                 .put("freezeStats", mergedStats)
                 .put("traces", mergedTraces)
+                .toString()
+        }
+        if (op == "ping") {
+            var docGen = ""
+            var hookedEarly = false
+            var freezeStrength = 1
+            var wasmCount = 0
+            var bufCount = 0
+            var workerCount = 0
+            var fc = 0
+            val enginesSet = LinkedHashSet<String>()
+            for (o in parsed) {
+                if (!o.optBoolean("ok", false)) continue
+                fc++
+                if (docGen.isEmpty()) docGen = o.optString("docGen")
+                if (o.optBoolean("hookedEarly", false)) hookedEarly = true
+                if (o.has("freezeStrength")) freezeStrength = o.optInt("freezeStrength", freezeStrength)
+                wasmCount += o.optInt("wasmCount", 0)
+                bufCount += o.optInt("bufCount", 0)
+                workerCount += o.optInt("workerCount", 0)
+                val engs = o.optJSONArray("engines")
+                if (engs != null) for (ei in 0 until engs.length()) {
+                    val en = engs.optString(ei)
+                    if (en.isNotBlank()) enginesSet.add(en)
+                }
+            }
+            return JSONObject()
+                .put("ok", fc > 0)
+                .put("docGen", docGen)
+                .put("hookedEarly", hookedEarly)
+                .put("freezeStrength", freezeStrength)
+                .put("wasmCount", wasmCount)
+                .put("bufCount", bufCount)
+                .put("workerCount", workerCount)
+                .put("frameCount", fc)
+                .put("engines", JSONArray(enginesSet.toList()))
                 .toString()
         }
         if (op == "getTraceLogs") {
@@ -161,11 +205,11 @@ object WebsiteMemoryEngine {
                 .put("freezeStats", mergedStats)
                 .toString()
         }
-        if (op == "unfreeze" || op == "unfreezeBatch" || op == "unfreezeAll" || op == "clearTrace") {
+        if (op == "unfreeze" || op == "unfreezeBatch" || op == "unfreezeAll" || op == "clearTrace" || op == "setFreezeStrength") {
             return JSONObject().put("ok", true).toString()
         }
         if (op == "write" || op == "hexDump" || op == "writeHex" || op == "setFreeze" ||
-            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach") {
+            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach" || op == "findMirrors") {
             val hit = parsed.firstOrNull { it.optBoolean("ok", false) } ?: parsed[0]
             return hit.toString()
         }
@@ -205,7 +249,10 @@ object WebsiteMemoryEngine {
         }
 
         var anyOk = false
+        var docGen = ""
+        var hookedEarly = false
         var total = 0
+        var uiHiddenCount = 0
         var canUndo = false
         var undoDepth = 0
         var wasmCount = 0
@@ -221,9 +268,7 @@ object WebsiteMemoryEngine {
         var frameCount = 0
         var firstErr: String? = null
         val enginesSet = LinkedHashSet<String>()
-        val wasmItems = ArrayList<JSONObject>()
-        val bufItems = ArrayList<JSONObject>()
-        val otherItems = ArrayList<JSONObject>()
+        val allItems = ArrayList<JSONObject>()
 
         for (o in parsed) {
             if (!o.optBoolean("ok", false)) {
@@ -232,7 +277,10 @@ object WebsiteMemoryEngine {
             }
             anyOk = true
             frameCount++
+            if (docGen.isEmpty()) docGen = o.optString("docGen")
+            if (o.optBoolean("hookedEarly", false)) hookedEarly = true
             total += o.optInt("total", 0)
+            uiHiddenCount += o.optInt("uiHiddenCount", 0)
             if (o.optBoolean("canUndo", false)) canUndo = true
             undoDepth = maxOf(undoDepth, o.optInt("undoDepth", 0))
             wasmCount += o.optInt("wasmCount", 0)
@@ -257,24 +305,29 @@ object WebsiteMemoryEngine {
             val arr = o.optJSONArray("items") ?: continue
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: continue
-                when (item.optString("kind")) {
-                    "wasm" -> wasmItems.add(item)
-                    "ab", "ta" -> bufItems.add(item)
-                    else -> otherItems.add(item)
-                }
+                allItems.add(item)
             }
         }
         if (!anyOk) {
             return JSONObject().put("ok", false).put("error", firstErr ?: "Scan failed").toString()
         }
+        allItems.sortByDescending {
+            val def = when (it.optString("kind")) {
+                "wasm" -> 100
+                "ab", "ta" -> 92
+                else -> 50
+            }
+            if (it.has("score")) it.optInt("score", def) else def
+        }
         val mergedItems = JSONArray()
-        for (item in wasmItems) { if (mergedItems.length() < maxReturn) mergedItems.put(item) }
-        for (item in bufItems) { if (mergedItems.length() < maxReturn) mergedItems.put(item) }
-        for (item in otherItems) { if (mergedItems.length() < maxReturn) mergedItems.put(item) }
+        for (item in allItems) { if (mergedItems.length() < maxReturn) mergedItems.put(item) }
 
         val out = JSONObject()
             .put("ok", true)
+            .put("docGen", docGen)
+            .put("hookedEarly", hookedEarly)
             .put("total", total)
+            .put("uiHiddenCount", uiHiddenCount)
             .put("canUndo", canUndo)
             .put("undoDepth", undoDepth)
             .put("wasmCount", wasmCount)
@@ -300,13 +353,20 @@ object WebsiteMemoryEngine {
 
     fun buildBootstrapScriptInternal(channelId: String = CHANNEL_ID): String {
         val chJson = JSONObject.quote(channelId)
-        val sb = StringBuilder(140_000)
+        val sb = StringBuilder(170_000)
         sb.append(JS_PART_1.replace("__CH_ARG__", chJson))
-        sb.append("\n").append(JS_PART_2)
-        sb.append("\n").append(JS_PART_3)
-        sb.append("\n").append(JS_PART_4)
-        sb.append("\n").append(JS_PART_5)
-        sb.append("\n").append(JS_PART_6)
+        sb.append("
+").append(JS_PART_2)
+        sb.append("
+").append(JS_PART_3)
+        sb.append("
+").append(JS_PART_4)
+        sb.append("
+").append(JS_PART_5)
+        sb.append("
+").append(JS_PART_6)
+        sb.append("
+").append(JS_PART_7)
         return sb.toString()
     }
 
@@ -326,7 +386,7 @@ object WebsiteMemoryEngine {
             }
             send();
             if (!box.ok) {
-                return JSON.stringify({ ok: false, error: "Memory scanner not hooked yet (tap Hook Reload)", childFrames: childFrames });
+                return JSON.stringify({ ok: false, notHooked: true, error: "Memory scanner auto-hooking...", childFrames: childFrames });
             }
             var res = box.out || { ok: false, error: "Empty response" };
             if (typeof res === "object" && res !== null) {
@@ -359,6 +419,14 @@ if (ping()) return;
 var IS_TOP = false;
 try { IS_TOP = (window === window.top); } catch (_) { IS_TOP = false; }
 var FRAME_ID = IS_TOP ? "f0" : ("f_" + Math.random().toString(36).slice(2, 8));
+var DOC_GEN = "d_" + Math.random().toString(36).slice(2, 10);
+var HOOKED_EARLY = false;
+try { HOOKED_EARLY = (typeof document !== "undefined" && document && document.readyState === "loading"); } catch (_) {}
+var freezeStrength = 1; // 0=Normal, 1=Strong, 2=Max (Titan)
+var burstChannel = null;
+var burstPending = false;
+var burstFrameStart = 0;
+var burstFrameCount = 0;
 var origDateNow = Date.now;
 var origSetInterval = typeof window.setInterval === "function" ? window.setInterval.bind(window) : null;
 var origClearInterval = typeof window.clearInterval === "function" ? window.clearInterval.bind(window) : null;
@@ -414,8 +482,8 @@ var closureMapRefs = [];
 var closureMapSeen = new WeakSet();
 var closureSetRefs = [];
 var closureSetSeen = new WeakSet();
-var MAX_TRACKED_BUFS = 3000;
-var MAX_TRACKED_CLOSURE = 600;
+var MAX_TRACKED_BUFS = 5000;
+var MAX_TRACKED_CLOSURE = 2000;
 var MAX_SCAN_BYTES = 512 * 1024 * 1024;
 var MAX_UNKNOWN_SNAP_BYTES = 128 * 1024 * 1024;
 function mkRef(o) {
@@ -546,6 +614,17 @@ try {
 if (typeof WebAssembly === "object" && WebAssembly) {
 if (typeof WebAssembly.Memory === "function") {
 var OrigMem = WebAssembly.Memory;
+if (OrigMem.prototype && typeof OrigMem.prototype.grow === "function") {
+var origWasmGrow = OrigMem.prototype.grow;
+OrigMem.prototype.grow = mask(function grow() {
+var ret = origWasmGrow.apply(this, arguments);
+try {
+trackWasmMem(this);
+if (typeof rebindWasmFreezes === "function") rebindWasmFreezes(this);
+} catch (_) {}
+return ret;
+}, origWasmGrow, "grow");
+}
 var ProxMem = new Proxy(OrigMem, {
 construct: function(target, args, newTarget) {
 var m = Reflect.construct(target, args, newTarget);
@@ -663,6 +742,64 @@ if (res && typeof res === "object") trackClosureObj(res);
 return res;
 }, origJsonParse, "parse");
 }
+try {
+if (typeof Map === "function" && Map.prototype && typeof Map.prototype.set === "function") {
+var origMapProtoSet = Map.prototype.set;
+Map.prototype.set = mask(function set(k, v) {
+if (closureMapRefs.length < MAX_TRACKED_CLOSURE) trackClosureMap(this);
+if (v && typeof v === "object" && closureObjRefs.length < MAX_TRACKED_CLOSURE) trackClosureObj(v);
+return origMapProtoSet.apply(this, arguments);
+}, origMapProtoSet, "set");
+}
+if (typeof Set === "function" && Set.prototype && typeof Set.prototype.add === "function") {
+var origSetProtoAdd = Set.prototype.add;
+Set.prototype.add = mask(function add(v) {
+if (closureSetRefs.length < MAX_TRACKED_CLOSURE) trackClosureSet(this);
+if (v && typeof v === "object" && closureObjRefs.length < MAX_TRACKED_CLOSURE) trackClosureObj(v);
+return origSetProtoAdd.apply(this, arguments);
+}, origSetProtoAdd, "add");
+}
+if (typeof WeakMap === "function" && WeakMap.prototype && typeof WeakMap.prototype.set === "function") {
+var origWmProtoSet = WeakMap.prototype.set;
+WeakMap.prototype.set = mask(function set(k, v) {
+if (closureObjRefs.length < MAX_TRACKED_CLOSURE) {
+if (v && typeof v === "object") trackClosureObj(v);
+else if (k && typeof k === "object") trackClosureObj(k);
+}
+return origWmProtoSet.apply(this, arguments);
+}, origWmProtoSet, "set");
+}
+if (typeof ArrayBuffer === "function" && ArrayBuffer.prototype && typeof ArrayBuffer.prototype.slice === "function") {
+var origAbSlice = ArrayBuffer.prototype.slice;
+ArrayBuffer.prototype.slice = mask(function slice() {
+var outAb = origAbSlice.apply(this, arguments);
+if (outAb && outAb.byteLength >= 16) trackRawBuf(outAb);
+return outAb;
+}, origAbSlice, "slice");
+}
+if (typeof Response === "function" && Response.prototype) {
+if (typeof Response.prototype.arrayBuffer === "function") {
+var origRespAb = Response.prototype.arrayBuffer;
+Response.prototype.arrayBuffer = mask(function arrayBuffer() {
+var p = origRespAb.apply(this, arguments);
+if (p && typeof p.then === "function") {
+p.then(function(ab) { if (ab && ab.byteLength >= 16) trackRawBuf(ab); }, function() {});
+}
+return p;
+}, origRespAb, "arrayBuffer");
+}
+if (typeof Response.prototype.json === "function") {
+var origRespJson = Response.prototype.json;
+Response.prototype.json = mask(function json() {
+var p = origRespJson.apply(this, arguments);
+if (p && typeof p.then === "function") {
+p.then(function(o) { if (o && typeof o === "object") trackClosureObj(o); }, function() {});
+}
+return p;
+}, origRespJson, "json");
+}
+}
+} catch (_) {}
 if (typeof Worker === "function") {
 var OrigWorker = Worker;
 var ProxWorker = new Proxy(OrigWorker, {
@@ -770,7 +907,7 @@ return eng;
 }
 var hits = [];
 var undoStack = [];
-var MAX_UNDO_DEPTH = 5;
+var MAX_UNDO_DEPTH = 8;
 var unknownSnaps = null;
 var lastType = "auto";
 var taRegistry = [];
@@ -888,6 +1025,9 @@ if (dt === "u32") return dv.getUint32(off, true);
 if (dt === "i64") return Number(dv.getBigInt64(off, true));
 if (dt === "f32") return dv.getFloat32(off, true);
 if (dt === "f64") return dv.getFloat64(off, true);
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_2 = """
 } catch (_) {}
 return NaN;
 }
@@ -967,9 +1107,6 @@ var r2 = Number(cleanNumStr(s.slice(sgl + 1)));
 if (Number.isFinite(r2)) rangeBytes = Math.max(4, Math.min(4096, Math.round(r2)));
 }
 }
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_2 = """
 var rawTerms = body.split(";").map(function(x) { return x.trim(); }).filter(Boolean);
 if (rawTerms.length < 2 || rawTerms.length > 12) return null;
 var terms = [];
@@ -1052,9 +1189,17 @@ return { ok: true, key: 0 };
 function readHitCurrent(h) {
 try {
 if (h.kind === "js") {
-var obj = h.objRef.deref();
-if (!obj) return { ok: false, val: "<gc>" };
+var obj = h.objRef ? h.objRef.deref() : null;
+if (!obj) {
+var reb = resolveJsPathFromWindow(h.id);
+if (reb) { obj = reb.obj; h.objRef = mkRef(obj); h.key = reb.key; }
+else return { ok: false, val: "<gc>" };
+}
 var rawJs = obj[h.key];
+if (typeof rawJs === "bigint") {
+var bn = Number(rawJs);
+return { ok: true, val: Number.isSafeInteger(bn) ? bn : rawJs.toString() };
+}
 if (h.xorMode === 3 && typeof rawJs === "number") {
 var lkJ = readLiveXorKey(h, null);
 if (!lkJ.ok) return { ok: false, val: "<key err>" };
@@ -1263,14 +1408,20 @@ return true;
 }
 }
 if (h.kind === "js") {
-var obj = h.objRef.deref();
-if (!obj) return false;
+var obj = h.objRef ? h.objRef.deref() : null;
+if (!obj) {
+var rebW = resolveJsPathFromWindow(h.id);
+if (rebW) { obj = rebW.obj; h.objRef = mkRef(obj); h.key = rebW.key; }
+else return false;
+}
 var cur = undefined;
 try { cur = obj[h.key]; } catch (_) {}
 var cs = cleanNumStr(valStr);
-var nextJsVal = (typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(cs)) && cs !== ""))
+var nextJsVal = (typeof cur === "bigint" && typeof BigInt === "function" && !Number.isNaN(Number(cs)) && cs !== "")
+? BigInt(Math.trunc(Number(cs)))
+: ((typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(cs)) && cs !== ""))
 ? Number(cs)
-: (typeof cur === "boolean" ? (valStr === "true" || valStr === "1") : String(valStr));
+: (typeof cur === "boolean" ? (valStr === "true" || valStr === "1") : String(valStr)));
 var rawJsWrite = nextJsVal;
 if (h.xorMode === 3 && typeof nextJsVal === "number") {
 var lkJw = readLiveXorKey(h, null);
@@ -1481,6 +1632,9 @@ if (storageProtoHook.lsKeys.size > 0 || storageProtoHook.ssKeys.size > 0) return
 var restoreFn = function(name, origFn) {
 if (!origFn) return;
 try {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_3 = """
 Object.defineProperty(storageProtoHook.targetObj, name, { value: origFn, writable: true, configurable: true, enumerable: true });
 } catch (_) {
 try { storageProtoHook.targetObj[name] = origFn; } catch (_2) {}
@@ -1599,31 +1753,116 @@ if (!isStorage && fe.status === "fighting") anyFightingBinary = true;
 });
 return anyFightingBinary;
 }
+function rebindWasmFreezes(memObj) {
+if (!memObj || frozenMap.size === 0) return;
+frozenMap.forEach(function(fe) {
+var h = fe.rec;
+if (!h || h.kind !== "wasm") return;
+var curM = h.memRef ? h.memRef.deref() : null;
+if (curM !== memObj) return;
+if (fe.rule === "eq") {
+if (writeHitValue(h, fe.valStr, true)) {
+fe.targetBytes = captureTargetBytes(h);
+fe.status = "enforcing";
+}
+} else {
+var rdG = readHitCurrent(h);
+if (rdG.ok) {
+var evG = ruleEval(rdG.val, fe);
+if (evG.violated) writeHitValue(h, String(evG.nextVal), true);
+}
+}
+});
+}
+function tryRebindFrozenJs(fe) {
+if (!fe || !fe.rec || fe.rec.kind !== "js") return false;
+var curObj = fe.rec.objRef ? fe.rec.objRef.deref() : null;
+var resolved = resolveJsPathFromWindow(fe.localId);
+if (!resolved || !resolved.obj) return false;
+if (curObj && curObj === resolved.obj) return false;
+fe.rec.objRef = mkRef(resolved.obj);
+fe.rec.key = resolved.key;
+fe.trapInstalled = false;
+if (fe.rule === "eq") writeHitValue(fe.rec, fe.valStr, true);
+installJsPropertyHook(fe.localId, resolved.obj, resolved.key, fe);
+fe.status = "enforcing";
+return true;
+}
+function scheduleBurstPass() {
+if (freezeStrength < 2 || frozenMap.size === 0 || burstPending) return;
+var nowB = origDateNow();
+if (nowB - burstFrameStart >= 16) {
+burstFrameStart = nowB;
+burstFrameCount = 0;
+}
+if (burstFrameCount >= 6) return;
+burstFrameCount++;
+if (typeof MessageChannel === "function") {
+if (!burstChannel) {
+try {
+burstChannel = new MessageChannel();
+burstChannel.port1.onmessage = function() {
+burstPending = false;
+if (frozenMap.size > 0) {
+var stillFight = enforceSingleBinaryPass();
+if (stillFight && freezeStrength >= 2) scheduleBurstPass();
+}
+};
+} catch (_) { burstChannel = null; }
+}
+if (burstChannel) {
+burstPending = true;
+try { burstChannel.port2.postMessage(0); return; } catch (_) { burstPending = false; }
+}
+}
+if (typeof Promise === "function") {
+burstPending = true;
+Promise.resolve().then(function() {
+burstPending = false;
+if (frozenMap.size > 0) enforceSingleBinaryPass();
+});
+}
+}
 function enforceBinaryFreezes() {
 lastEnforceTickMs = origDateNow();
 if (frozenMap.size === 0) {
 stopFreezeLoops();
 return;
 }
+if (freezeStrength >= 1) {
+frozenMap.forEach(function(fe) {
+if (fe.rec && fe.rec.kind === "js" && fe.rec.id && fe.rec.id.indexOf("js:") === 0) {
+var liveO = fe.rec.objRef ? fe.rec.objRef.deref() : null;
+if (!liveO) tryRebindFrozenJs(fe);
+}
+});
+}
 var fighting = enforceSingleBinaryPass();
-if (fighting && typeof Promise === "function") {
+if (fighting) {
+if (freezeStrength >= 2) {
+scheduleBurstPass();
+} else if (typeof Promise === "function") {
 Promise.resolve().then(function() {
 if (frozenMap.size > 0) enforceSingleBinaryPass();
 });
 }
 }
+}
+function activeBinaryModeLabel(hasXor) {
+if (freezeStrength >= 2) return hasXor ? "MAX-XOR" : "MAX-1000Hz";
+if (freezeStrength === 0) return hasXor ? "60Hz-XOR" : "60Hz";
+return hasXor ? "250Hz-XOR" : "250Hz";
+}
 function startFreezeLoops() {
+var periodMs = freezeStrength >= 2 ? 2 : (freezeStrength === 0 ? 16 : 4);
 if (freezeIntervalId === null) {
 var si = origSetInterval || setInterval;
-freezeIntervalId = si(enforceBinaryFreezes, 4);
+freezeIntervalId = si(enforceBinaryFreezes, periodMs);
 }
-if (freezeRafId === null && (origRAF || typeof window.requestAnimationFrame === "function")) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_3 = """
+if (freezeStrength >= 1 && freezeRafId === null && (origRAF || typeof window.requestAnimationFrame === "function")) {
 var rafFn = origRAF || window.requestAnimationFrame.bind(window);
 var rafTick = function() {
-if (frozenMap.size === 0) {
+if (frozenMap.size === 0 || freezeStrength < 1) {
 freezeRafId = null;
 return;
 }
@@ -1634,6 +1873,11 @@ freezeRafId = rafFn(rafTick);
 }
 }
 function stopFreezeLoops() {
+burstPending = false;
+if (burstChannel) {
+try { burstChannel.port1.close(); burstChannel.port2.close(); } catch (_) {}
+burstChannel = null;
+}
 if (freezeIntervalId !== null) {
 try { (origClearInterval || clearInterval)(freezeIntervalId); } catch (_) {}
 freezeIntervalId = null;
@@ -1826,7 +2070,7 @@ stepDelta: 0,
 lastStepMs: origDateNow(),
 backingVal: null,
 rule: "eq",
-mode: rec.xorMode ? "250Hz-XOR" : "250Hz",
+mode: activeBinaryModeLabel(!!rec.xorMode),
 blocked: 0,
 recentBlocked: 0,
 ratePerSec: 0,
@@ -1887,7 +2131,9 @@ try {
 var mw = mapWrapState.get(mp);
 if (!mw) {
 var origSet = mp.set;
-mw = { origSet: origSet, keys: new Map() };
+var origDel = mp.delete;
+var origClr = mp.clear;
+mw = { origSet: origSet, origDel: origDel, origClr: origClr, keys: new Map() };
 mp.set = mask(function set(mk, mv) {
 var f = mw.keys.get(mk);
 if (f) {
@@ -1900,6 +2146,28 @@ return origSet.call(this, mk, evM.nextVal);
 }
 return origSet.apply(this, arguments);
 }, origSet, "set");
+mp.delete = mask(function del(mk) {
+var f = mw.keys.get(mk);
+if (f) {
+f.blocked++;
+f.recentBlocked++;
+return false;
+}
+return origDel.apply(this, arguments);
+}, origDel, "delete");
+mp.clear = mask(function clear() {
+var saved = [];
+mw.keys.forEach(function(feM, mk) {
+saved.push([mk, feM.rule === "eq" ? feM.parsedVal : (feM.backingVal !== null ? feM.backingVal : feM.parsedVal), feM]);
+});
+var r = origClr.apply(this, arguments);
+for (var si = 0; si < saved.length; si++) {
+origSet.call(this, saved[si][0], saved[si][1]);
+saved[si][2].blocked++;
+saved[si][2].recentBlocked++;
+}
+return r;
+}, origClr, "clear");
 mapWrapState.set(mp, mw);
 }
 mw.keys.set(rec.key, fe);
@@ -1942,6 +2210,8 @@ if (mw) {
 mw.keys.delete(fe.rec.key);
 if (mw.keys.size === 0) {
 try { delete mp.set; } catch (_) { mp.set = mw.origSet; }
+try { delete mp.delete; } catch (_) { mp.delete = mw.origDel; }
+try { delete mp.clear; } catch (_) { mp.clear = mw.origClr; }
 mapWrapState.delete(mp);
 }
 }
@@ -2084,6 +2354,9 @@ var scanLen = Math.min(byteLen, MAX_SCAN_BYTES);
 var memRef = kind === "wasm" ? extraRef : null;
 var abRef = kind === "ab" ? extraRef : null;
 function pushHit(off, typeStr, len, prevVal, extraTag, scaleVal) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_4 = """
 var idStr = labelPrefix + "+0x" + off.toString(16).toUpperCase() + (typeStr === "str" || typeStr === "aob" ? "" : (":" + typeStr)) + (extraTag || "");
 out.push({
 id: idStr,
@@ -2283,9 +2556,6 @@ var dv = new DataView(buf, byteOff, scanLen);
 var sz = dt === "i8" ? 1 : (dt === "i16" ? 2 : ((dt === "i32" || dt === "u32" || dt === "f32") ? 4 : 8));
 var endOff = scanLen - sz;
 for (var off2 = 0; off2 <= endOff && out.length < cap; off2 += sz) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_4 = """
 if ((off2 & 262143) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
 var val = readViewVal(dv, off2, dt);
 if (matchNum(val, 0, false, dt, sc, v1, v2)) {
@@ -2376,12 +2646,35 @@ enqueue(win.pc.Application.getApplication(), "pc.Application");
 }
 if (win.cc) {
 enqueue(win.cc.game, "cc.game");
+enqueue(win.cc.director, "cc.director");
+enqueue(win.cc.assetManager, "cc.assetManager");
 try {
-if (win.cc.director && typeof win.cc.director.getScene === "function") {
-enqueue(win.cc.director.getScene(), "cc.scene");
+if (win.cc.director) {
+if (typeof win.cc.director.getScene === "function") enqueue(win.cc.director.getScene(), "cc.scene");
+if (win.cc.director._scene) enqueue(win.cc.director._scene, "cc._scene");
+if (win.cc.director._compScheduler) enqueue(win.cc.director._compScheduler, "cc.compSched");
+if (win.cc.director._scheduler) enqueue(win.cc.director._scheduler, "cc.sched");
 }
 } catch (_) {}
 }
+if (win.System) enqueue(win.System, "System");
+enqueue(win.Laya, "Laya");
+enqueue(win.egret, "egret");
+enqueue(win.createjs, "createjs");
+enqueue(win.THREE, "THREE");
+enqueue(win.spine, "spine");
+enqueue(win.ig, "ig");
+enqueue(win.Crafty, "Crafty");
+enqueue(win.me, "me");
+try {
+var wTopKeys = Object.getOwnPropertyNames(win);
+for (var wti = 0; wti < wTopKeys.length; wti++) {
+var wtk = wTopKeys[wti];
+if (wtk.indexOf("webpackChunk") === 0 || wtk.indexOf("webpackJsonp") === 0 || wtk === "__webpack_require__") {
+try { enqueue(win[wtk], wtk); } catch (_) {}
+}
+}
+} catch (_) {}
 if (win.BABYLON && win.BABYLON.Engine && Array.isArray(win.BABYLON.Engine.Instances)) {
 for (var bi = 0; bi < win.BABYLON.Engine.Instances.length && bi < 4; bi++) {
 enqueue(win.BABYLON.Engine.Instances[bi], "BABYLON[" + bi + "]");
@@ -2472,7 +2765,7 @@ function collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, cap, scannedBufs,
 var visited = new WeakSet();
 var queue = [{ obj: window, path: "window", depth: 0 }];
 seedEngineAndFrameworkRoots(window, queue, visited);
-var maxNodes = 60000;
+var maxNodes = 110000;
 var nodesVisited = 0;
 var qHead = 0;
 var taSeen = new WeakSet();
@@ -2547,7 +2840,7 @@ if (typeof mv === "number") {
 if (dt !== "str" && dt !== "aob" && matchNum(mv, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
 out.push({ id: "map:" + cur.path + "[" + keyLabel + "]", kind: "map", objRef: mkRef(obj), key: mk, dt: Number.isInteger(mv) ? "i32" : "f64", prev: mv });
 }
-} else if (mv && typeof mv === "object" && cur.depth < 12 && !visited.has(mv)) {
+} else if (mv && typeof mv === "object" && cur.depth < 16 && !visited.has(mv)) {
 queue.push({ obj: mv, path: cur.path + "[" + keyLabel + "]", depth: cur.depth + 1 });
 }
 });
@@ -2560,7 +2853,7 @@ try {
 obj.forEach(function(sv) {
 if (sCount >= 500 || out.length >= cap) return;
 sCount++;
-if (sv && typeof sv === "object" && cur.depth < 12 && !visited.has(sv)) {
+if (sv && typeof sv === "object" && cur.depth < 16 && !visited.has(sv)) {
 queue.push({ obj: sv, path: cur.path + "{#" + sCount + "}", depth: cur.depth + 1 });
 }
 });
@@ -2581,7 +2874,7 @@ if (typeof aval === "number") {
 if (dt !== "str" && dt !== "aob" && matchNum(aval, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
 out.push({ id: "js:" + cur.path + "[" + ai + "]", kind: "js", objRef: mkRef(obj), key: ai, dt: Number.isInteger(aval) ? "i32" : "f64", prev: aval });
 }
-} else if (aval && typeof aval === "object" && cur.depth < 12 && objEnqueued < 160) {
+} else if (aval && typeof aval === "object" && cur.depth < 18 && objEnqueued < 350) {
 try {
 if (!visited.has(aval)) {
 objEnqueued++;
@@ -2594,17 +2887,20 @@ continue;
 }
 var keys;
 try {
-keys = cur.depth <= 2 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
+keys = cur.depth <= 8 ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
 } catch (_) {
 try { keys = Object.keys(obj); } catch (_2) { skippedXOriginCount++; continue; }
 }
-if (cur.depth > 0 && cur.depth <= 4) {
+if (cur.depth > 0 && cur.depth <= 14) {
 try {
 var proto = Object.getPrototypeOf(obj);
-if (proto && proto !== Object.prototype && proto !== Array.prototype && proto !== Function.prototype) {
+var kSet = null;
+var hop = 0;
+while (proto && proto !== Object.prototype && proto !== Array.prototype && proto !== Function.prototype && hop < 4) {
+hop++;
 var pKeys = Object.getOwnPropertyNames(proto);
-if (pKeys.length > 0 && pKeys.length <= 64) {
-var kSet = new Set(keys);
+if (pKeys.length > 0 && pKeys.length <= 96) {
+if (!kSet) kSet = new Set(keys);
 for (var pki = 0; pki < pKeys.length; pki++) {
 var pk = pKeys[pki];
 if (pk === "constructor" || kSet.has(pk) || SKIP_KEYS.has(pk) || INTERNAL_KEY_RE.test(pk)) continue;
@@ -2615,6 +2911,20 @@ keys.push(pk);
 kSet.add(pk);
 }
 }
+}
+proto = Object.getPrototypeOf(proto);
+}
+} catch (_) {}
+}
+if (cur.depth > 0 && cur.depth <= 5 && typeof Object.getOwnPropertySymbols === "function") {
+try {
+var syms = Object.getOwnPropertySymbols(obj);
+for (var syi = 0; syi < syms.length && syi < 16 && out.length < cap; syi++) {
+var sym = syms[syi];
+var sv = undefined;
+try { sv = obj[sym]; } catch (_) { continue; }
+if (sv && typeof sv === "object" && !visited.has(sv)) {
+queue.push({ obj: sv, path: cur.path + "[Sym#" + syi + "]", depth: cur.depth + 1 });
 }
 }
 } catch (_) {}
@@ -2628,6 +2938,9 @@ var desc = null;
 try {
 desc = Object.getOwnPropertyDescriptor(obj, k);
 if (!desc && cur.depth > 0) {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_5 = """
 var pCh = findPropertyDescriptorChain(obj, k);
 if (pCh && pCh.desc && typeof pCh.desc.get === "function" && typeof pCh.desc.set === "function") desc = pCh.desc;
 }
@@ -2654,12 +2967,18 @@ if (!isWritable) continue;
 if (dt !== "str" && dt !== "aob" && matchNum(val, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
 out.push({ id: "js:" + nextPath, kind: "js", objRef: mkRef(obj), key: k, dt: Number.isInteger(val) ? "i32" : "f64", prev: val });
 }
+} else if (typeof val === "bigint") {
+if (!isWritable) continue;
+var bNum = Number(val);
+if (dt !== "str" && dt !== "aob" && Number.isFinite(bNum) && matchNum(bNum, 0, false, "i64", sc, v1, v2)) {
+out.push({ id: "js:" + nextPath, kind: "js", objRef: mkRef(obj), key: k, dt: "i64", prev: bNum });
+}
 } else if (typeof val === "string") {
 if (!isWritable) continue;
 if ((dt === "str" || dt === "auto") && s1 && val.indexOf(s1) !== -1 && val.length <= 256) {
 out.push({ id: "js:" + nextPath, kind: "js", objRef: mkRef(obj), key: k, dt: "str", prev: val });
 }
-} else if (val && (typeof val === "object" || typeof val === "function") && cur.depth < 12) {
+} else if (val && (typeof val === "object" || typeof val === "function") && cur.depth < 18) {
 if (SKIP_SUBTREE_KEYS.has(k)) continue;
 if (typeof val === "function" && cur.depth > 1) continue;
 try {
@@ -2869,9 +3188,6 @@ off: fh.off, dt: fh.dt, len: fh.len, prev: fh.val, scale: 0
 }
 }
 function scanBufferXor(buf, byteOff, byteLen, kind, bufIdx, labelPrefix, targetI32, hasExplicitKey, explicitKey, out, cap, extraRef, deadlineMs, stateFlags) {
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_5 = """
 if (!buf || byteLen < 4 || out.length >= cap) return;
 var scanLen = Math.min(byteLen, MAX_SCAN_BYTES) & ~3;
 if (scanLen < 4) return;
@@ -3136,13 +3452,48 @@ if (!hits.length && !unknownSnaps) return;
 if (undoStack.length >= MAX_UNDO_DEPTH) undoStack.shift();
 undoStack.push({ hits: hits.slice(), unknownSnaps: unknownSnaps, lastType: lastType });
 }
+var UI_PATH_RE = /(?:^|[.\[\]_\-])(node|parent|children|label|string|richtext|bitmaptext|textcontent|innertext|innerhtml|font|color|rgba|alpha|opacity|style|css|matrix|quat|rect|bounds|anchor|width|height|scalex|scaley|scalez|rotation|angle|vertex|uv|canvas|hud|tooltip|sprite|mesh|material|camera|light|shadow|view|render|display|caption|title|text)(?:${'$'}|[.\[\]_\-\d])/i;
+var GAME_KEY_RE = /(?:^|[.\[\]_\-])(coin|coins|gold|gem|gems|hp|health|maxhp|life|lives|move|moves|step|steps|score|points|ammo|mana|mp|energy|stamina|star|stars|target|targets|goal|goals|count|level|stage|wave|dmg|damage|atk|attack|def|defense|speed|xp|exp|money|cash|credit|credits|diamond|diamonds|token|tokens|time|timer|cd|cooldown|shield|armor|fuel|power|qty|amount|remain|remaining|left|turn|turns|bomb|booster|hint|hints|heart|hearts|key|keys|item|items|inv|inventory|bag|wallet|bank|balance|ruby|rubies|crystal|crystals|trophy|rank|combo|streak|multiplier|progress)(?:${'$'}|[.\[\]_\-\d])/i;
+function classifyHitAuthority(h) {
+if (!h) return { role: "game", score: 50 };
+if (h.kind === "wasm") return { role: "wasm", score: 100 };
+if (h.kind === "ab" || h.kind === "ta") return { role: "buf", score: 92 };
+if (h.kind === "ls" || h.kind === "ss" || h.kind === "lsjson" || h.kind === "ssjson") {
+return { role: "store", score: GAME_KEY_RE.test(h.id) ? 88 : 76 };
+}
+var idStr = String(h.id || "");
+var keyStr = String(h.key || "");
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_6 = """
+var isStrDuringNum = (h.dt === "str" && lastType !== "str");
+if (isStrDuringNum || UI_PATH_RE.test(idStr) || UI_PATH_RE.test(keyStr)) {
+return { role: "ui", score: isStrDuringNum ? 8 : 16 };
+}
+if (GAME_KEY_RE.test(keyStr)) return { role: "game", score: 96 };
+if (GAME_KEY_RE.test(idStr)) return { role: "game", score: 88 };
+if (h.kind === "map") return { role: "game", score: 84 };
+return { role: "game", score: 78 };
+}
 function formatHitsResult(maxRet, meta) {
-var lim = Math.min(hits.length, maxRet || 300);
-var items = [];
+var hideUi = !!(meta && meta.hideUi);
 var engs = detectEngines();
 var primaryEng = engs.length ? engs[0] : "";
+var scored = [];
+var uiFilteredOut = 0;
+var scanLim = Math.min(hits.length, Math.max((maxRet || 300) * 6, 1500));
+for (var si = 0; si < scanLim; si++) {
+var hh = hits[si];
+var cl = classifyHitAuthority(hh);
+if (hideUi && cl.role === "ui") { uiFilteredOut++; continue; }
+scored.push({ h: hh, role: cl.role, score: cl.score });
+}
+scored.sort(function(a, b) { return b.score - a.score; });
+var lim = Math.min(scored.length, maxRet || 300);
+var items = [];
 for (var i = 0; i < lim; i++) {
-var h = hits[i];
+var sh = scored[i];
+var h = sh.h;
 watchRefs.set(h.id, h);
 var rd = readHitCurrent(h);
 items.push({
@@ -3151,6 +3502,8 @@ val: formatVal(rd.val, h.dt),
 prev: formatVal(h.prev, h.dt),
 type: h.dt,
 kind: h.kind,
+role: sh.role,
+score: sh.score,
 engine: primaryEng
 });
 }
@@ -3158,7 +3511,11 @@ var totalSlots = unknownSnaps ? (hits.length + unknownSnaps.totalSlots) : hits.l
 return {
 ok: true,
 frameId: FRAME_ID,
+docGen: DOC_GEN,
+hookedEarly: HOOKED_EARLY,
+freezeStrength: freezeStrength,
 total: totalSlots,
+uiHiddenCount: uiFilteredOut,
 snapshotActive: !!unknownSnaps,
 canUndo: undoStack.length > 0,
 undoDepth: undoStack.length,
@@ -3205,14 +3562,82 @@ try {
 if (cmd.targetFrame && cmd.targetFrame !== FRAME_ID) {
 return { ok: false, skippedFrame: true };
 }
-if (cmd.op === "ping") return { ok: true, frameId: FRAME_ID, engines: detectEngines() };
+if (cmd.op === "ping") {
+return {
+ok: true,
+frameId: FRAME_ID,
+docGen: DOC_GEN,
+hookedEarly: HOOKED_EARLY,
+freezeStrength: freezeStrength,
+wasmCount: liveWasmEntries().length,
+bufCount: abRegistry.length + taRegistry.length,
+workerCount: liveWorkerCount(),
+engines: detectEngines()
+};
+}
+if (cmd.op === "setFreezeStrength") {
+var lvl = Number(cmd.level);
+if (Number.isFinite(lvl)) {
+freezeStrength = Math.max(0, Math.min(2, Math.round(lvl)));
+frozenMap.forEach(function(fe) {
+if (!fe.trapInstalled && fe.rec && (fe.rec.kind === "wasm" || fe.rec.kind === "ta" || fe.rec.kind === "ab")) {
+fe.mode = activeBinaryModeLabel(!!fe.rec.xorMode);
+}
+});
+if (frozenMap.size > 0) { stopFreezeLoops(); startFreezeLoops(); }
+}
+return { ok: true, frameId: FRAME_ID, freezeStrength: freezeStrength };
+}
+if (cmd.op === "findMirrors") {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var locMir = stripOwnFramePrefix(cmd.id);
+var recMir = watchRefs.get(locMir);
+if (!recMir) return { ok: false, error: "Entry not found in frame" };
+var rdMir = readHitCurrent(recMir);
+if (!rdMir.ok) return { ok: false, error: "Target unreadable" };
+var mVal = Number(cleanNumStr(rdMir.val));
+if (!Number.isFinite(mVal)) return { ok: false, error: "Mirrors requires a numeric value" };
+var mOut = [];
+var mSeen = new WeakSet();
+var mDead = Date.now() + 6000;
+var mFlags = { timedOut: false };
+var mCap = 400;
+var mWasm = liveWasmEntries();
+for (var mwi = 0; mwi < mWasm.length && mOut.length < mCap; mwi++) {
+var mwb = mWasm[mwi].mem.buffer;
+mSeen.add(mwb);
+scanBuffer(mwb, 0, mwb.byteLength, "wasm", mWasm[mwi].id, "wasm#" + mWasm[mwi].id, "auto", "exact", mVal, 0, "", { bytes: [], mask: [] }, mOut, mCap, mWasm[mwi].ref, mDead, mFlags);
+}
+collectJsAndTypedArrays("auto", "exact", mVal, 0, "", { bytes: [], mask: [] }, mOut, mCap, mSeen, mDead, mFlags);
+var mItems = [];
+var mEng = detectEngines();
+var mPrim = mEng.length ? mEng[0] : "";
+for (var mri = 0; mri < mOut.length; mri++) {
+var mh = mOut[mri];
+if (mh.id === locMir) continue;
+var mcl = classifyHitAuthority(mh);
+if (mcl.role === "ui") continue;
+watchRefs.set(mh.id, mh);
+mItems.push({
+addr: qualifyId(mh.id),
+val: formatVal(mh.prev, mh.dt),
+type: mh.dt,
+kind: mh.kind,
+role: mcl.role,
+score: mcl.score,
+engine: mPrim
+});
+}
+mItems.sort(function(a, b) { return b.score - a.score; });
+return { ok: true, frameId: FRAME_ID, count: Math.min(mItems.length, 60), items: mItems.slice(0, 60) };
+}
 if (cmd.op === "reset") {
 hits = []; undoStack = []; unknownSnaps = null;
 if (cmd.clearFreezes) { clearAllFreezes(); clearAllTraces(); }
 return formatHitsResult(0, { elapsedMs: 0, timedOut: false });
 }
 if (cmd.op === "refreshHits") {
-return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0 });
+return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0, hideUi: !!cmd.hideUi });
 }
 if (cmd.op === "undo") {
 if (!undoStack.length) return { ok: false, error: "Nothing to undo" };
@@ -3220,7 +3645,7 @@ var prevState = undoStack.pop();
 hits = prevState.hits || [];
 unknownSnaps = prevState.unknownSnaps || null;
 lastType = prevState.lastType || lastType;
-return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0 });
+return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0, hideUi: !!cmd.hideUi });
 }
 if (cmd.op === "writeAll") {
 var valAll = String(cmd.val || "");
@@ -3251,12 +3676,20 @@ valsW[ew.id] = formatVal(rdWb.val, rW.dt);
 return { ok: true, frameId: FRAME_ID, wrote: wroteB, values: valsW };
 }
 if (cmd.op === "setFreeze") {
+if (typeof cmd.strength === "number" && Number.isFinite(cmd.strength)) {
+var nl = Math.max(0, Math.min(2, Math.round(cmd.strength)));
+if (nl !== freezeStrength) { freezeStrength = nl; if (frozenMap.size > 0) { stopFreezeLoops(); startFreezeLoops(); } }
+}
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
 var fr = installFreezeEntry(stripOwnFramePrefix(cmd.id), cmd.val, cmd.rule || "eq");
 fr.frameId = FRAME_ID;
 return fr;
 }
 if (cmd.op === "freezeBatch") {
+if (typeof cmd.strength === "number" && Number.isFinite(cmd.strength)) {
+var nlB = Math.max(0, Math.min(2, Math.round(cmd.strength)));
+if (nlB !== freezeStrength) { freezeStrength = nlB; if (frozenMap.size > 0) { stopFreezeLoops(); startFreezeLoops(); } }
+}
 var entriesF = Array.isArray(cmd.entries) ? cmd.entries : [];
 var locked = 0;
 var lockedIds = [];
@@ -3391,7 +3824,7 @@ var giIdx = abRegistry.length; var giRef = mkRef(rawG[gbi]); abRegistry.push(giR
 scanBufferGroup(rawG[gbi], 0, rawG[gbi].byteLength, "ab", giIdx, "buf#" + giIdx, gq, out, capG, giRef, deadlineMs, stateFlags);
 }
 hits = out;
-return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: Date.now() - tStart, timedOut: stateFlags.timedOut });
+return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: Date.now() - tStart, timedOut: stateFlags.timedOut, hideUi: !!cmd.hideUi });
 }
 if (sc === "xor") {
 var xs1 = cleanNumStr(cmd.val1);
@@ -3413,9 +3846,6 @@ scannedBufs.add(xmb);
 scanBufferXor(xmb, 0, xmb.byteLength, "wasm", memsX[xmi].id, "wasm#" + memsX[xmi].id, xv1 | 0, hasKey, keyVal, out, capX, memsX[xmi].ref, deadlineMs, stateFlags);
 }
 if (!stateFlags.timedOut) scanJsSpecial("xor", null, xv1 | 0, hasKey, keyVal, out, capX, scannedBufs, deadlineMs, stateFlags);
-    """.trimStart('\n').trimEnd('\n')
-
-    private val JS_PART_6 = """
 var rawX = liveRawBuffers(scannedBufs);
 for (var xbi = 0; xbi < rawX.length && out.length < capX && !stateFlags.timedOut; xbi++) {
 scannedBufs.add(rawX[xbi]);
@@ -3424,7 +3854,7 @@ scanBufferXor(rawX[xbi], 0, rawX[xbi].byteLength, "ab", xiIdx, "buf#" + xiIdx, x
 }
 hits = out;
 lastType = "i32";
-return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: Date.now() - tStart, timedOut: stateFlags.timedOut });
+return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: Date.now() - tStart, timedOut: stateFlags.timedOut, hideUi: !!cmd.hideUi });
 }
 var s1 = (dt === "str" || dt === "aob") ? String(cmd.val1 || "") : cleanNumStr(cmd.val1);
 var s2 = (dt === "str" || dt === "aob") ? String(cmd.val2 || "") : cleanNumStr(cmd.val2);
@@ -3453,7 +3883,7 @@ for (var ubi2 = 0; ubi2 < rawU.length; ubi2++) scannedBufs.add(rawU[ubi2]);
 collectJsAndTypedArrays(dt, sc, v1, v2, s1, aob, out, 30000, scannedBufs, deadlineMs, stateFlags);
 scanStorage(dt, sc, v1, v2, s1, out, 30000);
 hits = out;
-return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: Date.now() - tStart, timedOut: stateFlags.timedOut });
+return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: Date.now() - tStart, timedOut: stateFlags.timedOut, hideUi: !!cmd.hideUi });
 }
 var mems = liveWasmEntries();
 for (var mi = 0; mi < mems.length && out.length < cap && !stateFlags.timedOut; mi++) {
@@ -3497,7 +3927,8 @@ hits = out;
 return formatHitsResult(cmd.maxReturn || 300, {
 elapsedMs: Date.now() - tStart,
 timedOut: stateFlags.timedOut,
-fallbackUsed: stateFlags.fallbackUsed
+fallbackUsed: stateFlags.fallbackUsed,
+hideUi: !!cmd.hideUi
 });
 }
 if (cmd.op === "nextScan") {
@@ -3506,7 +3937,7 @@ var budgetMs2 = Math.max(1000, Math.min(80000, Number(cmd.timeoutMs) || 15000));
 var deadlineMs2 = tStart2 + budgetMs2;
 var stateFlags2 = { timedOut: false };
 if (!hits.length && !unknownSnaps) {
-return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0 });
+return formatHitsResult(cmd.maxReturn || 300, { elapsedMs: 0, hideUi: !!cmd.hideUi });
 }
 var sc2 = cmd.scanType || "exact";
 var s1n = (lastType === "str" || lastType === "aob") ? String(cmd.val1 || "") : cleanNumStr(cmd.val1);
@@ -3555,7 +3986,8 @@ h.prev = rd.val; next.push(h);
 hits = next;
 return formatHitsResult(cmd.maxReturn || 300, {
 elapsedMs: Date.now() - tStart2,
-timedOut: stateFlags2.timedOut
+timedOut: stateFlags2.timedOut,
+hideUi: !!cmd.hideUi
 });
 }
 if (cmd.op === "readBatch") {
@@ -3571,7 +4003,7 @@ var r = readHitCurrent(rec);
 vals[fullId] = r.ok ? formatVal(r.val, rec.dt) : String(r.val);
 }
 }
-return { ok: true, frameId: FRAME_ID, values: vals, freezeStats: collectFreezeStatsMap(), traces: collectTraceLogsMap() };
+return { ok: true, frameId: FRAME_ID, docGen: DOC_GEN, hookedEarly: HOOKED_EARLY, values: vals, freezeStats: collectFreezeStatsMap(), traces: collectTraceLogsMap() };
 }
 if (cmd.op === "write") {
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
@@ -3583,6 +4015,9 @@ var rdW = readHitCurrent(recW);
 return { ok: okW, frameId: FRAME_ID, val: formatVal(rdW.val, recW.dt) };
 }
 if (cmd.op === "hexDump") {
+    """.trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_7 = """
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
 var localH = stripOwnFramePrefix(cmd.id);
 var recH = watchRefs.get(localH);

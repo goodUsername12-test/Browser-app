@@ -1087,6 +1087,48 @@ fun PerformanceSettingsScreen(
                     checked = settings.memoryEngineShowPanel,
                     onCheckedChange = viewModel::setMemoryEngineShowPanel
                 )
+                SwitchRow(
+                    title = "Auto-Hook & Auto-Reattach Freeze on Page Refresh",
+                    subtitle = "Automatically hooks pages at document_start on refresh without pressing Hook Reload, and re-arms frozen Watch entries cleanly.",
+                    checked = settings.memoryEngineAutoReattach,
+                    onCheckedChange = viewModel::setMemoryEngineAutoReattach
+                )
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Text(
+                        text = "Freeze Strength Mode",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = "Normal (60Hz/250Hz battery), Strong (250Hz/667Hz default), or MAX Titan (1000Hz MessageChannel burst + 2500Hz native + WASM grow survival)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        com.fable.browser.engine.MemFreezeStrength.entries.forEach { stg ->
+                            val sel = settings.memoryEngineFreezeStrength == stg.level
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { viewModel.setMemoryEngineFreezeStrength(stg.level) }
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 9.dp)
+                                ) {
+                                    Text(
+                                        text = stg.shortLabel,
+                                        color = if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         ListDivider()

@@ -542,9 +542,20 @@ class MainActivity : FragmentActivity() {
                                 val s2Clamp = settingsStore.settings.first()
                                 settingsStore.resetMemoryEnginePanelLayout()
                                 val s3Reset = settingsStore.settings.first()
+                                settingsStore.setMemoryEngineFreezeStrength(2)
+                                settingsStore.setMemoryEngineAutoReattach(true)
+                                val s4V66 = settingsStore.settings.first()
+                                settingsStore.setMemoryEngineFreezeStrength(1)
+                                val mirOk = withContext(Dispatchers.IO) {
+                                    com.fable.browser.engine.NativeMemoryScanner.setFreezeStrength(2)
+                                    val mirRaw = if (firstAddr.isNotEmpty()) com.fable.browser.engine.NativeMemoryScanner.findMirrors(firstAddr, com.fable.browser.engine.MemDataType.INT32, 20, 4000) else "{}"
+                                    com.fable.browser.engine.NativeMemoryScanner.setFreezeStrength(1)
+                                    runCatching { org.json.JSONObject(mirRaw).optBoolean("ok", false) }.getOrDefault(false)
+                                }
                                 val sizeMgrOk = (s1Set.memoryEnginePanelWidthPct == 75 && s1Set.memoryEnginePanelHeightPct == 80 && s1Set.memoryEnginePanelScalePct == 115) &&
                                     (s2Clamp.memoryEnginePanelWidthPct == 55 && s2Clamp.memoryEnginePanelHeightPct == 95 && s2Clamp.memoryEnginePanelScalePct == 140) &&
-                                    (s3Reset.memoryEnginePanelWidthPct == 88 && s3Reset.memoryEnginePanelHeightPct == 62 && s3Reset.memoryEnginePanelScalePct == 100)
+                                    (s3Reset.memoryEnginePanelWidthPct == 88 && s3Reset.memoryEnginePanelHeightPct == 62 && s3Reset.memoryEnginePanelScalePct == 100) &&
+                                    (s4V66.memoryEngineFreezeStrength == 2 && s4V66.memoryEngineAutoReattach) && mirOk
                                 val ultraNativeOk = groupOk && xorOk && hexWriteOk && sizeMgrOk
                                 android.util.Log.i(
                                     "FABLE-MEM-CHECK",

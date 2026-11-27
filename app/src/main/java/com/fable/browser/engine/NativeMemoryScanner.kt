@@ -100,6 +100,12 @@ object NativeMemoryScanner {
     @JvmStatic
     private external fun nativeGetFreezeStats(): String
 
+    @JvmStatic
+    private external fun nativeSetFreezeStrength(level: Int)
+
+    @JvmStatic
+    private external fun nativeFindMirrors(targetAddr: Long, dtype: Int, maxReturn: Int, timeoutMs: Int): String
+
     fun firstScan(
         dtype: MemDataType,
         scanType: MemScanType,
@@ -235,6 +241,18 @@ object NativeMemoryScanner {
     fun getFreezeStats(): String {
         if (!isAvailable) return "{\"ok\":true,\"stats\":{}}"
         return runCatching { nativeGetFreezeStats() }.getOrDefault("{\"ok\":true,\"stats\":{}}")
+    }
+
+    fun setFreezeStrength(level: Int) {
+        if (isAvailable) runCatching { nativeSetFreezeStrength(level.coerceIn(0, 2)) }
+    }
+
+    fun findMirrors(addrHex: String, dtype: MemDataType, maxReturn: Int = 60, timeoutMs: Int = 8_000): String {
+        if (!isAvailable) return "{\"ok\":false,\"error\":\"Native library unavailable\"}"
+        val addr = parseHexAddress(addrHex) ?: return "{\"ok\":false,\"error\":\"Invalid address\"}"
+        val nativeType = if (dtype == MemDataType.AUTO) MemDataType.INT32.code else dtype.code
+        return runCatching { nativeFindMirrors(addr, nativeType, maxReturn.coerceIn(1, 100), timeoutMs.coerceIn(1_000, 20_000)) }
+            .getOrElse { "{\"ok\":false,\"error\":\"Mirror scan failed\"}" }
     }
 
     fun hexDump(addrHex: String, len: Int = 128): String {

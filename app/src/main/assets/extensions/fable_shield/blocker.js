@@ -263,7 +263,45 @@ async function applyMemoryScannerScript() {
   const old = memScanRegistered;
   memScanRegistered = next;
   if (old) { try { await old.unregister(); } catch (_) {} }
+  // Immediately hook any already-open tabs/frames so no manual Hook Reload is needed
+  try {
+    if (browser.tabs && browser.tabs.query && browser.tabs.executeScript) {
+      const tabs = await browser.tabs.query({});
+      for (const tab of tabs) {
+        if (tab && tab.id !== undefined) {
+          ensureMemHookOnTab(tab.id).catch(() => {});
+        }
+      }
+    }
+  } catch (_) {}
 }
+
+async function ensureMemHookOnTab(tabId) {
+  if (!config.memoryEngineEnabled || !browser.tabs || !browser.tabs.executeScript) return;
+  try {
+    const check = await browser.tabs.executeScript(tabId, {
+      code: "typeof globalThis.__fableRunFrameMemCmd === 'function'",
+      allFrames: true
+    });
+    const needsInject = !Array.isArray(check) || check.length === 0 || check.some((v) => v !== true);
+    if (needsInject) {
+      const cfgStr = JSON.stringify({ enabled: true, ch: memScanChannel });
+      await browser.tabs.executeScript(tabId, { code: "var __MEM_CFG = " + cfgStr + ";", allFrames: true });
+      await browser.tabs.executeScript(tabId, { file: "memory_scanner.js", allFrames: true });
+    }
+  } catch (_) {}
+}
+
+try {
+  if (typeof browser !== "undefined" && browser.tabs && browser.tabs.onUpdated) {
+    browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+      if (!config.memoryEngineEnabled) return;
+      if (changeInfo && (changeInfo.status === "loading" || changeInfo.status === "complete")) {
+        ensureMemHookOnTab(tabId).catch(() => {});
+      }
+    });
+  }
+} catch (_) {}
 
 function mergeFrameMemPayloads(rawList, op, maxReturn) {
   const parsed = [];
@@ -285,7 +323,29 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
       if (o.freezeStats && typeof o.freezeStats === "object") Object.assign(freezeStats, o.freezeStats);
       if (o.traces && typeof o.traces === "object") Object.assign(traces, o.traces);
     }
-    return JSON.stringify({ ok: true, values: vals, freezeStats, traces });
+    let docGen = "", hookedEarly = false;
+    for (const o of parsed) {
+      if (!docGen && o.docGen) docGen = String(o.docGen);
+      if (o.hookedEarly) hookedEarly = true;
+    }
+    return JSON.stringify({ ok: true, docGen, hookedEarly, values: vals, freezeStats, traces });
+  }
+  if (op === "ping") {
+    let wasmCount = 0, bufCount = 0, workerCount = 0, fc = 0, hookedEarly = false, freezeStrength = 1;
+    let docGen = "";
+    const engSet = new Set();
+    for (const o of parsed) {
+      if (!o.ok) continue;
+      fc++;
+      if (!docGen && o.docGen) docGen = String(o.docGen);
+      if (o.hookedEarly) hookedEarly = true;
+      if (typeof o.freezeStrength === "number") freezeStrength = o.freezeStrength;
+      wasmCount += Number(o.wasmCount || 0);
+      bufCount += Number(o.bufCount || 0);
+      workerCount += Number(o.workerCount || 0);
+      for (const e of (o.engines || [])) { if (e) engSet.add(e); }
+    }
+    return JSON.stringify({ ok: fc > 0, docGen, hookedEarly, freezeStrength, wasmCount, bufCount, workerCount, frameCount: fc, engines: Array.from(engSet) });
   }
   if (op === "getTraceLogs") {
     const traces = {};
@@ -317,10 +377,10 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
     }
     return JSON.stringify({ ok: locked > 0, locked, lockedIds, failedIds, freezeStats });
   }
-  if (op === "unfreeze" || op === "unfreezeBatch" || op === "unfreezeAll" || op === "clearTrace") {
+  if (op === "unfreeze" || op === "unfreezeBatch" || op === "unfreezeAll" || op === "clearTrace" || op === "setFreezeStrength") {
     return JSON.stringify({ ok: true });
   }
-  if (op === "write" || op === "hexDump" || op === "writeHex" || op === "setFreeze" || op === "peekStruct" || op === "pointerScan" || op === "setTrace" || op === "reattach") {
+  if (op === "write" || op === "hexDump" || op === "writeHex" || op === "setFreeze" || op === "peekStruct" || op === "pointerScan" || op === "setTrace" || op === "reattach" || op === "findMirrors") {
     const hit = parsed.find((o) => o.ok) || parsed[0];
     return JSON.stringify(hit);
   }
@@ -340,17 +400,22 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
     }
     return JSON.stringify({ ok: fc > 0, count: regs.length, totalKb, workerCount, frameCount: fc, engines: Array.from(engSet), regions: regs });
   }
-  let anyOk = false, total = 0, canUndo = false, wasmCount = 0, bufCount = 0, workerCount = 0, skippedXOrigin = 0;
-  let maxElapsedMs = 0, anyTimedOut = false, anyFallback = false, anySnapshot = false;
+  let anyOk = false, total = 0, canUndo = false, undoDepth = 0, wasmCount = 0, bufCount = 0, workerCount = 0, skippedXOrigin = 0, uiHiddenCount = 0;
+  let maxElapsedMs = 0, anyTimedOut = false, anyFallback = false, anySnapshot = false, hookedEarly = false;
+  let docGen = "";
   let wrote = 0, hasWrote = false, fc = 0;
   let firstErr = null;
   const engSet = new Set();
-  const wasmItems = [], bufItems = [], otherItems = [];
+  const allItems = [];
   for (const o of parsed) {
     if (!o.ok) { if (!firstErr && o.error) firstErr = o.error; continue; }
     anyOk = true; fc++;
+    if (!docGen && o.docGen) docGen = String(o.docGen);
+    if (o.hookedEarly) hookedEarly = true;
     total += Number(o.total || 0);
+    uiHiddenCount += Number(o.uiHiddenCount || 0);
     if (o.canUndo) canUndo = true;
+    if (Number(o.undoDepth || 0) > undoDepth) undoDepth = Number(o.undoDepth || 0);
     wasmCount += Number(o.wasmCount || 0);
     bufCount += Number(o.bufCount || 0);
     workerCount += Number(o.workerCount || 0);
@@ -361,17 +426,15 @@ function mergeFrameMemPayloads(rawList, op, maxReturn) {
     if (o.snapshotActive) anySnapshot = true;
     for (const e of (o.engines || [])) { if (e) engSet.add(e); }
     if (typeof o.wrote === "number") { hasWrote = true; wrote += o.wrote; }
-    for (const it of (o.items || [])) {
-      if (it.kind === "wasm") wasmItems.push(it);
-      else if (it.kind === "ab" || it.kind === "ta") bufItems.push(it);
-      else otherItems.push(it);
-    }
+    for (const it of (o.items || [])) allItems.push(it);
   }
   if (!anyOk) return JSON.stringify({ ok: false, error: firstErr || "Scan failed" });
+  const defSc = (x) => typeof x.score === "number" ? x.score : (x.kind === "wasm" ? 100 : (x.kind === "ab" || x.kind === "ta" ? 92 : 50));
+  allItems.sort((a, b) => defSc(b) - defSc(a));
   const lim = maxReturn || 300;
-  const items = wasmItems.concat(bufItems, otherItems).slice(0, lim);
+  const items = allItems.slice(0, lim);
   const res = {
-    ok: true, total, canUndo, wasmCount, bufCount, workerCount, skippedXOrigin,
+    ok: true, docGen, hookedEarly, total, uiHiddenCount, canUndo, undoDepth, wasmCount, bufCount, workerCount, skippedXOrigin,
     frameCount: fc, elapsedMs: maxElapsedMs, timedOut: anyTimedOut, complete: !anyTimedOut,
     fallbackUsed: anyFallback, snapshotActive: anySnapshot, engines: Array.from(engSet), items
   };
@@ -815,6 +878,7 @@ function onNativeMessage(msg) {
     registerListeners();
     applyContentScripts(false);
     applyTimeScaleScript(false);
+    applyMemoryScannerScript();
   } else if (msg.type === "memory-engine-toggle") {
       config.memoryEngineEnabled = msg.enabled === true;
       applyMemoryScannerScript();

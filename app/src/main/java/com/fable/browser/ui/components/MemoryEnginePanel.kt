@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fable.browser.engine.MemDataType
 import com.fable.browser.engine.MemFreezeRule
+import com.fable.browser.engine.MemFreezeStrength
 import com.fable.browser.engine.MemScanResultItem
 import com.fable.browser.engine.MemScanType
 import com.fable.browser.engine.MemScope
@@ -136,7 +137,12 @@ fun MemoryEnginePanel(
     onLoadCheatTable: (String) -> Unit = {},
     onDeleteCheatTable: (String) -> Unit = {},
     onExportCheatTableJson: () -> String = { "" },
-    onImportCheatTableJson: (String) -> Boolean = { false }
+    onImportCheatTableJson: (String) -> Boolean = { false },
+    onSetFreezeStrength: (MemFreezeStrength) -> Unit = {},
+    onToggleHideUiNoise: () -> Unit = {},
+    onFindMirrorsForWatch: (String) -> Unit = {},
+    onLockAllMirrors: () -> Unit = {},
+    onFindRealValueFromUiWatch: (String) -> Unit = {}
 ) {
     val s = WebsiteMemoryEngine.clampPanelScalePct(scalePct) / 100f
     val wFrac = WebsiteMemoryEngine.clampPanelWidthPct(widthPct) / 100f
@@ -288,6 +294,21 @@ fun MemoryEnginePanel(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                if (state.scope == MemScope.PAGE_WASM && state.pageHookLive) {
+                    Surface(
+                        shape = RoundedCornerShape((6f * s).dp),
+                        color = if (state.hookedEarly) Color(0xFF064E3B) else Color(0xFF164E63),
+                        modifier = Modifier.padding(end = (4f * s).dp)
+                    ) {
+                        Text(
+                            text = if (state.hookedEarly) "Auto✓" else "Hook✓",
+                            color = if (state.hookedEarly) Color(0xFF6EE7B7) else Color(0xFF67E8F9),
+                            fontSize = fsTiny,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2f * s).dp)
+                        )
+                    }
+                }
                 Surface(
                     shape = RoundedCornerShape((8f * s).coerceIn(5f, 11f).dp),
                     color = cardBg,
@@ -740,13 +761,30 @@ fun MemoryEnginePanel(
                                 Spacer(Modifier.width((3f * s).dp))
                                 Surface(
                                     shape = RoundedCornerShape((6f * s).dp),
-                                    color = Color(0xFF065F46),
+                                    color = if (state.hideUiNoise) Color(0xFF0284C7) else Color(0xFF1E293B),
+                                    modifier = Modifier
+                                        .heightIn(min = (24f * s).coerceIn(20f, 32f).dp)
+                                        .clickable(enabled = !previewMode, onClick = onToggleHideUiNoise)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (5f * s).dp)) {
+                                        Text(
+                                            text = if (state.hideUiNoise) "No-UI✓" else "HideUI",
+                                            color = if (state.hideUiNoise) Color.White else Color(0xFFCBD5E1),
+                                            fontSize = fsTiny,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.width((3f * s).dp))
+                                Surface(
+                                    shape = RoundedCornerShape((6f * s).dp),
+                                    color = Color(0xFF1E293B),
                                     modifier = Modifier
                                         .heightIn(min = (24f * s).coerceIn(20f, 32f).dp)
                                         .clickable(enabled = !previewMode && !state.busy, onClick = onReloadAndHook)
                                 ) {
                                     Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (5f * s).dp)) {
-                                        Text(text = "Hook", color = Color(0xFFA7F3D0), fontSize = fsTiny, fontWeight = FontWeight.SemiBold)
+                                        Text(text = "↻Hook", color = Color(0xFFA7F3D0), fontSize = fsTiny, fontWeight = FontWeight.SemiBold)
                                     }
                                 }
                             }
@@ -948,14 +986,26 @@ fun MemoryEnginePanel(
                                             }
                                             Spacer(Modifier.width((4f * s).dp))
                                             Column(modifier = Modifier.weight(1f).clickable(enabled = !previewMode) { onToggleSelectScanAddr(item.addr) }) {
+                                                val roleTag = when (item.role) {
+                                                    "wasm" -> "[WASM] "
+                                                    "buf" -> "[BUF] "
+                                                    "ui" -> "[UI?] "
+                                                    "store" -> "[STORE] "
+                                                    else -> if (item.score >= 88) "[GAME] " else ""
+                                                }
                                                 val tagPrefix = buildString {
+                                                    append(roleTag)
                                                     if (item.engine.isNotBlank()) append("[${item.engine}] ")
                                                     if (item.xorMode != 0) append("[XOR] ")
                                                     append(item.addr)
                                                 }
                                                 Text(
                                                     text = tagPrefix,
-                                                    color = Color(0xFF93C5FD),
+                                                    color = when (item.role) {
+                                                        "ui" -> Color(0xFFFBBF24)
+                                                        "wasm" -> Color(0xFF67E8F9)
+                                                        else -> if (item.score >= 88) Color(0xFF6EE7B7) else Color(0xFF93C5FD)
+                                                    },
                                                     fontSize = fsTiny,
                                                     fontFamily = FontFamily.Monospace,
                                                     maxLines = 1,
@@ -1112,6 +1162,68 @@ fun MemoryEnginePanel(
                                 }
                             }
                         }
+                        if (state.mirrorResults.isNotEmpty()) {
+                            Spacer(Modifier.height((5f * s).dp))
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    text = "Mirrors of ${state.mirrorOriginAddr.takeLast(18)} (${state.mirrorResults.size})",
+                                    color = Color(0xFF67E8F9),
+                                    fontSize = fsTiny,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape((6f * s).dp),
+                                    color = Color(0xFF0284C7),
+                                    modifier = Modifier.clickable(enabled = !previewMode) {
+                                        onLockAllMirrors()
+                                        activeTab = 1
+                                    }
+                                ) {
+                                    Text(
+                                        text = "Lock All (${state.mirrorResults.size.coerceAtMost(30)})",
+                                        color = Color.White,
+                                        fontSize = fsTiny,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (2.5f * s).dp)
+                                    )
+                                }
+                            }
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy((3f * s).dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = (80f * s).coerceIn(50f, 120f).dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                state.mirrorResults.take(15).forEach { mr ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color(0xFF0F2942), RoundedCornerShape((6f * s).dp))
+                                            .padding(horizontal = (6f * s).dp, vertical = (2.5f * s).dp)
+                                    ) {
+                                        Text(
+                                            text = "[${mr.role.uppercase()}] ${mr.addr} = ${mr.value}",
+                                            color = Color(0xFFE0F2FE),
+                                            fontSize = fsTiny,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape((5f * s).dp),
+                                            color = accent,
+                                            modifier = Modifier.clickable(enabled = !previewMode) { onAddWatch(mr) }
+                                        ) {
+                                            Text(text = "+W", color = Color(0xFF042F2E), fontSize = fsTiny, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2f * s).dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // ==================== WATCH (EDIT, FREEZE, TRACE, CHEAT TABLES) TAB ====================
@@ -1120,6 +1232,41 @@ fun MemoryEnginePanel(
                         val wSelCount = state.selectedWatchIds.size
                         val wEffCount = if (wSelCount > 0) wSelCount else state.watchList.size
 
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy((3.5f * s).dp), modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "Freeze:",
+                                color = Color(0xFF94A3B8),
+                                fontSize = fsTiny,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            MemFreezeStrength.entries.forEach { stg ->
+                                val activeStg = state.freezeStrength == stg
+                                Surface(
+                                    shape = RoundedCornerShape((6f * s).dp),
+                                    color = when {
+                                        activeStg && stg == MemFreezeStrength.MAX -> Color(0xFFDC2626)
+                                        activeStg && stg == MemFreezeStrength.STRONG -> Color(0xFF0284C7)
+                                        activeStg -> Color(0xFF065F46)
+                                        else -> Color(0xFF1E293B)
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = (24f * s).coerceIn(20f, 32f).dp)
+                                        .clickable(enabled = !previewMode) { onSetFreezeStrength(stg) }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = (3f * s).dp)) {
+                                        Text(
+                                            text = stg.shortLabel,
+                                            color = Color.White,
+                                            fontSize = fsTiny,
+                                            fontWeight = if (activeStg) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height((4f * s).dp))
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy((4f * s).dp), modifier = Modifier.fillMaxWidth()) {
                             Text(
                                 text = "Watch (${state.watchList.size})",
@@ -1454,19 +1601,17 @@ fun MemoryEnginePanel(
                                                         "trap" -> "Trap"
                                                         "trap+poll" -> "Trap+Poll"
                                                         "accessor-trap" -> "Accessor"
-                                                        "250Hz" -> "250Hz"
-                                                        "250Hz-XOR" -> "250Hz-XOR"
-                                                        "500Hz" -> "500Hz"
-                                                        "500Hz-XOR" -> "500Hz-XOR"
+                                                        "MAX-1000Hz", "MAX-XOR", "2500Hz", "667Hz", "667Hz-XOR", "250Hz", "250Hz-XOR", "60Hz", "60Hz-XOR", "500Hz", "500Hz-XOR" -> w.freezeMode
                                                         else -> "Lock"
                                                     }
                                                     val ruleTxt = w.freezeRule.symbol
+                                                    val rpsTxt = if (w.writesPerSec > 0) " (${w.writesPerSec}/s)" else ""
                                                     val badgeTxt = when (w.freezeStatus) {
                                                         "failed" -> "FREEZE FAILED"
                                                         "detached" -> "DETACHED / GC'd"
                                                         "arming" -> "Arming $ruleTxt..."
-                                                        "fighting" -> "$modeTxt ($ruleTxt) · ${w.blockedWrites} blk (fighting)"
-                                                        "enforcing" -> "$modeTxt ($ruleTxt) · ${w.blockedWrites} blk"
+                                                        "fighting" -> "$modeTxt ($ruleTxt) · ${w.blockedWrites} blk$rpsTxt FIGHTING"
+                                                        "enforcing" -> "$modeTxt ($ruleTxt) · ${w.blockedWrites} blk$rpsTxt"
                                                         else -> "$modeTxt ($ruleTxt ${w.frozenValue})"
                                                     }
                                                     val badgeColor = when (w.freezeStatus) {
@@ -1637,6 +1782,65 @@ fun MemoryEnginePanel(
                                                     enabled = !previewMode,
                                                     onClick = { onPointerScan(w.addr, w.scope); activeTab = 0 }
                                                 )
+                                                CeButton(
+                                                    text = "Mirrors",
+                                                    bg = Color(0xFF0369A1),
+                                                    fg = Color.White,
+                                                    fontSize = fsTiny,
+                                                    minHeight = (26f * s).coerceIn(22f, 34f).dp,
+                                                    enabled = !previewMode,
+                                                    onClick = { onFindMirrorsForWatch(w.id); activeTab = 0 }
+                                                )
+                                            }
+                                        }
+
+                                        if (w.valueHistory.size >= 2) {
+                                            Spacer(Modifier.height((3f * s).dp))
+                                            Text(
+                                                text = "History: " + w.valueHistory.takeLast(6).joinToString(" → "),
+                                                color = Color(0xFF94A3B8),
+                                                fontSize = fsTiny,
+                                                fontFamily = FontFamily.Monospace,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+
+                                        if (w.uiWarningReason.isNotBlank()) {
+                                            Spacer(Modifier.height((4f * s).dp))
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy((4f * s).dp),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .background(Color(0xFF451A03), RoundedCornerShape((6f * s).dp))
+                                                    .border(1.dp, Color(0xFFF59E0B), RoundedCornerShape((6f * s).dp))
+                                                    .padding(horizontal = (6f * s).dp, vertical = (4f * s).dp)
+                                            ) {
+                                                Text(
+                                                    text = "⚠ ${w.uiWarningReason}",
+                                                    color = Color(0xFFFDE68A),
+                                                    fontSize = fsTiny,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Surface(
+                                                    shape = RoundedCornerShape((5f * s).dp),
+                                                    color = Color(0xFFF59E0B),
+                                                    modifier = Modifier.clickable(enabled = !previewMode) {
+                                                        onFindRealValueFromUiWatch(w.id)
+                                                        activeTab = 0
+                                                    }
+                                                ) {
+                                                    Text(
+                                                        text = "Find Real",
+                                                        color = Color(0xFF1F2937),
+                                                        fontSize = fsTiny,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = (6f * s).dp, vertical = (3f * s).dp)
+                                                    )
+                                                }
                                             }
                                         }
 
@@ -2125,7 +2329,12 @@ fun DraggableMemoryEnginePanel(
     onLoadCheatTable: (String) -> Unit = {},
     onDeleteCheatTable: (String) -> Unit = {},
     onExportCheatTableJson: () -> String = { "" },
-    onImportCheatTableJson: (String) -> Boolean = { false }
+    onImportCheatTableJson: (String) -> Boolean = { false },
+    onSetFreezeStrength: (MemFreezeStrength) -> Unit = {},
+    onToggleHideUiNoise: () -> Unit = {},
+    onFindMirrorsForWatch: (String) -> Unit = {},
+    onLockAllMirrors: () -> Unit = {},
+    onFindRealValueFromUiWatch: (String) -> Unit = {}
 ) {
     val density = LocalDensity.current
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
@@ -2249,6 +2458,11 @@ fun DraggableMemoryEnginePanel(
             onDeleteCheatTable = onDeleteCheatTable,
             onExportCheatTableJson = onExportCheatTableJson,
             onImportCheatTableJson = onImportCheatTableJson,
+            onSetFreezeStrength = onSetFreezeStrength,
+            onToggleHideUiNoise = onToggleHideUiNoise,
+            onFindMirrorsForWatch = onFindMirrorsForWatch,
+            onLockAllMirrors = onLockAllMirrors,
+            onFindRealValueFromUiWatch = onFindRealValueFromUiWatch,
             modifier = Modifier
                 .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
                 .onSizeChanged {

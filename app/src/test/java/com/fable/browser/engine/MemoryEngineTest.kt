@@ -184,5 +184,24 @@ class MemoryEngineTest {
         val ptrMerged = org.json.JSONObject(WebsiteMemoryEngine.mergeMultiFrameResults(listOf(ptr1, ptr2), "pointerScan", 300))
         assertTrue(ptrMerged.getBoolean("ok"))
         assertEquals(1, ptrMerged.getInt("count"))
+
+        // v66: ping merge preserves docGen, hookedEarly, engines, wasmCount
+        val p1 = """{"ok":true,"frameId":"f0","docGen":"d_abc123","hookedEarly":true,"freezeStrength":2,"wasmCount":0,"bufCount":2,"workerCount":1,"engines":["Cocos"]}"""
+        val p2 = """{"ok":true,"frameId":"f_sub","docGen":"d_sub99","hookedEarly":false,"freezeStrength":2,"wasmCount":1,"bufCount":3,"workerCount":0,"engines":["Unity"]}"""
+        val pMerged = org.json.JSONObject(WebsiteMemoryEngine.mergeMultiFrameResults(listOf(p1, p2), "ping", 300))
+        assertTrue(pMerged.getBoolean("ok"))
+        assertEquals("d_abc123", pMerged.getString("docGen"))
+        assertTrue(pMerged.getBoolean("hookedEarly"))
+        assertEquals(1, pMerged.getInt("wasmCount"))
+        assertEquals(5, pMerged.getInt("bufCount"))
+        assertEquals(2, pMerged.getInt("frameCount"))
+
+        // v66: score-based authority sorting places GAME hits ahead of UI? hits across frames
+        val sUi = """{"ok":true,"frameId":"f0","total":1,"items":[{"addr":"js:cc._node._string","val":"17","type":"str","kind":"js","role":"ui","score":8}]}"""
+        val sGame = """{"ok":true,"frameId":"f1","total":1,"items":[{"addr":"@f1|js:board.moves","val":"17","type":"i32","kind":"js","role":"game","score":96}]}"""
+        val sMerged = org.json.JSONObject(WebsiteMemoryEngine.mergeMultiFrameResults(listOf(sUi, sGame), "firstScan", 300))
+        assertEquals("@f1|js:board.moves", sMerged.getJSONArray("items").getJSONObject(0).getString("addr"))
+        assertEquals(MemFreezeStrength.MAX, MemFreezeStrength.fromLevel(2))
+        assertEquals(MemFreezeStrength.STRONG, MemFreezeStrength.fromLevel(99))
     }
 }

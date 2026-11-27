@@ -218,6 +218,8 @@ class SettingsViewModel @Inject constructor(
     fun setMemoryEnginePanelSize(widthPct: Int, heightPct: Int, scalePct: Int) = edit { store.setMemoryEnginePanelSize(widthPct, heightPct, scalePct) }
     fun setMemoryEnginePanelExpanded(v: Boolean) = edit { store.setMemoryEnginePanelExpanded(v) }
     fun resetMemoryEnginePanelLayout() = edit { store.resetMemoryEnginePanelLayout() }
+    fun setMemoryEngineFreezeStrength(v: Int) = edit { store.setMemoryEngineFreezeStrength(v) }
+    fun setMemoryEngineAutoReattach(v: Boolean) = edit { store.setMemoryEngineAutoReattach(v) }
 
     fun applyPreset(preset: PrivacyPreset) = edit {
         val stealth = preset == PrivacyPreset.STEALTH

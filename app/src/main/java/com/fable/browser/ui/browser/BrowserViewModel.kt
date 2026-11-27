@@ -360,6 +360,11 @@ class BrowserViewModel @Inject constructor(
         viewModelScope.launch { settingsStore.setMemoryEngineTimeoutSec(clamped) }
     }
 
+    fun setMemoryEngineFreezeStrength(strength: com.fable.browser.engine.MemFreezeStrength) {
+        memoryEngineManager.setFreezeStrength(strength)
+        viewModelScope.launch { settingsStore.setMemoryEngineFreezeStrength(strength.level) }
+    }
+
 
     fun saveAsPdf() {
         val tab = activeTab ?: return

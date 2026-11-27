@@ -51,9 +51,9 @@ constexpr int FR_MAX   = 2;
 constexpr int FR_RANGE = 3;
 constexpr int FR_STEP  = 4;
 
-constexpr std::size_t MAX_RESULTS_CAP        = 200000;
-constexpr std::size_t MAX_UNKNOWN_SNAP_BYTES = 48 * 1024 * 1024;
-constexpr std::size_t MAX_UNDO_DEPTH         = 5;
+constexpr std::size_t MAX_RESULTS_CAP        = 400000;
+constexpr std::size_t MAX_UNKNOWN_SNAP_BYTES = 96 * 1024 * 1024;
+constexpr std::size_t MAX_UNDO_DEPTH         = 8;
 constexpr std::size_t CHUNK_BYTES            = 256 * 1024;
 constexpr std::size_t PIPE_STEP_BYTES        = 4096;
 constexpr std::size_t MAX_REGION_BYTES       = 128 * 1024 * 1024;
@@ -1788,6 +1788,7 @@ struct NativeFreezeEntry {
 std::mutex g_freeze_mu;
 std::vector<NativeFreezeEntry> g_freezes;
 std::atomic<bool> g_freeze_running{false};
+std::atomic<int> g_freeze_strength{1}; // 0=Normal, 1=Strong, 2=Max (Titan)
 pthread_t g_freeze_thread{};
 bool g_freeze_thread_valid = false;
 
@@ -1887,6 +1888,15 @@ void* native_freeze_worker(void*) {
                             f.blocked_writes++;
                             f.recent_blocked++;
                             if (f.rule != FR_STEP) any_active_fight = true;
+                            if (g_freeze_strength.load(std::memory_order_relaxed) >= 2 && f.rule == FR_EXACT) {
+                                std::uint8_t verify_buf[64];
+                                const ssize_t vr = io.read_at(f.addr, verify_buf, write_len);
+                                if (vr == static_cast<ssize_t>(write_len) && std::memcmp(verify_buf, wr, write_len) != 0) {
+                                    io.write_at(f.addr, wr, write_len);
+                                    f.blocked_writes++;
+                                    f.recent_blocked++;
+                                }
+                            }
                         } else {
                             f.detached = true;
                         }
@@ -1895,8 +1905,12 @@ void* native_freeze_worker(void*) {
                 }
             }
         }
-        // Adaptive: 1.5ms (~667Hz) when actively fighting writes, 4ms (250Hz) when calm
-        ::usleep(any_active_fight ? 1500 : 4000);
+        const int st_lvl = g_freeze_strength.load(std::memory_order_relaxed);
+        const useconds_t sleep_us = (st_lvl >= 2)
+            ? (any_active_fight ? 400 : 1800)
+            : (st_lvl == 0 ? (any_active_fight ? 4000 : 8000)
+                           : (any_active_fight ? 1500 : 4000));
+        ::usleep(sleep_us);
     }
     return nullptr;
 }
@@ -2103,7 +2117,11 @@ std::string mem_freeze_stats_json_impl() {
         out += "\"";
         out += addr_hex;
         out += "\":{\"mode\":\"";
-        out += (f.xor_mode != 0 ? "500Hz-XOR" : "500Hz");
+        const int st_cur = g_freeze_strength.load(std::memory_order_relaxed);
+        const char* hz_tag = (st_cur >= 2) ? (f.xor_mode != 0 ? "MAX-XOR" : "2500Hz")
+            : (st_cur == 0 ? (f.xor_mode != 0 ? "250Hz-XOR" : "250Hz")
+                           : (f.xor_mode != 0 ? "667Hz-XOR" : "667Hz"));
+        out += hz_tag;
         out += "\",\"rule\":\"";
         out += rstr;
         out += "\",\"blocked\":";
@@ -2168,6 +2186,64 @@ std::string mem_peek_struct_impl(std::uint64_t base_addr, std::size_t radius) {
         out += "\"}";
     }
     out += "]}";
+    return out;
+}
+
+std::string mem_find_mirrors_impl(std::uint64_t target_addr, int dtype, std::size_t max_ret, int timeout_ms) {
+    const std::size_t sz = type_size(dtype, 0);
+    if (sz == 0 || sz > 8) return "{\"ok\":false,\"error\":\"Mirrors supports numeric types\"}";
+    SafeMemIo io(false);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot access self mem\"}";
+    std::uint8_t want[8] = {0};
+    if (io.read_at(target_addr, want, sz) != static_cast<ssize_t>(sz)) {
+        return "{\"ok\":false,\"error\":\"Target address unreadable\"}";
+    }
+    const auto regions = parse_self_maps();
+    const std::int64_t deadline = steady_now_ms() + std::clamp<int>(timeout_ms, 1000, 20000);
+    std::vector<std::uint8_t> chunk(CHUNK_BYTES);
+    const std::uint64_t chunk_lo = reinterpret_cast<std::uint64_t>(chunk.data());
+    const std::uint64_t chunk_hi = chunk_lo + chunk.capacity();
+    const std::uint64_t want_lo = reinterpret_cast<std::uint64_t>(want);
+    const std::uint64_t want_hi = want_lo + sizeof(want);
+    std::string out = "{\"ok\":true,\"items\":[";
+    std::size_t found = 0;
+    const std::string cur_val_str = format_value(want, sz, dtype);
+    for (const auto& reg : regions) {
+        if (found >= max_ret || steady_now_ms() >= deadline) break;
+        const std::uint64_t reg_len = reg.end - reg.start;
+        if (reg_len < sz || reg_len > MAX_REGION_BYTES) continue;
+        std::uint64_t off = 0;
+        while (off + sz <= reg_len && found < max_ret && steady_now_ms() < deadline) {
+            const std::size_t to_read = static_cast<std::size_t>(std::min<std::uint64_t>(CHUNK_BYTES, reg_len - off));
+            const ssize_t got = io.read_at(reg.start + off, chunk.data(), to_read);
+            if (got >= static_cast<ssize_t>(sz)) {
+                const std::size_t step = (sz >= 4) ? 4 : sz;
+                for (std::size_t i = 0; i + sz <= static_cast<std::size_t>(got) && found < max_ret; i += step) {
+                    const std::uint64_t a = reg.start + off + i;
+                    if (a == target_addr) continue;
+                    if (range_overlaps(a, sz, want_lo, want_hi)) continue;
+                    if (is_inside_scanner_internal(a, sz, chunk_lo, chunk_hi)) continue;
+                    if (std::memcmp(chunk.data() + i, want, sz) == 0) {
+                        if (found > 0) out += ",";
+                        found++;
+                        char hx[32];
+                        std::snprintf(hx, sizeof(hx), "0x%llX", static_cast<unsigned long long>(a));
+                        out += "{\"addr\":\"";
+                        out += hx;
+                        out += "\",\"val\":\"";
+                        out += cur_val_str;
+                        out += "\",\"type\":\"";
+                        out += type_code_str(dtype);
+                        out += "\",\"kind\":\"native\",\"role\":\"game\"}";
+                    }
+                }
+            }
+            off += to_read;
+        }
+    }
+    out += "],\"count\":";
+    out += std::to_string(found);
+    out += "}";
     return out;
 }
 
@@ -2382,6 +2458,23 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeUnfreezeAll(JNIEnv*, jcl
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeGetFreezeStats(JNIEnv* env, jclass) {
     const std::string res = mem_freeze_stats_json_impl();
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT void JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeSetFreezeStrength(JNIEnv*, jclass, jint level) {
+    g_freeze_strength.store(std::clamp<int>(level, 0, 2), std::memory_order_release);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeFindMirrors(
+        JNIEnv* env, jclass, jlong targetAddr, jint dtype, jint maxReturn, jint timeoutMs) {
+    const std::string res = mem_find_mirrors_impl(
+        static_cast<std::uint64_t>(targetAddr),
+        dtype,
+        static_cast<std::size_t>(std::clamp<int>(maxReturn, 1, 100)),
+        timeoutMs
+    );
     return env->NewStringUTF(res.c_str());
 }
 

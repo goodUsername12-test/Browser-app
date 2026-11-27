@@ -1161,13 +1161,19 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
                         }
                     } else {
                         // Auto-Key discovery: check neighbor keys at +-4, +-8, +-12, +-16 bytes
+                        // Require non-trivial 32-bit key entropy (both 16-bit halves non-zero/non-FFFF) to avoid heap pointer/zero noise
+                        auto is_plausible_xor = [](std::uint32_t v) -> bool {
+                            const std::uint32_t hi = v >> 16;
+                            const std::uint32_t lo = v & 0xFFFFu;
+                            return hi != 0u && hi != 0xFFFFu && lo != 0u && lo != 0xFFFFu && hi != lo;
+                        };
                         static constexpr int kDeltas[8] = { -4, 4, -8, 8, -12, 12, -16, 16 };
                         for (std::size_t si = 0; si < slots && g_hits.size() < cap; ++si) {
                             std::uint32_t w = 0;
                             std::memcpy(&w, chunk.data() + si * 4, 4);
-                            if (w == 0 || w == 0xFFFFFFFFu || w == target_u32) continue;
+                            if (w == 0 || w == 0xFFFFFFFFu || w == target_u32 || !is_plausible_xor(w)) continue;
                             const std::uint32_t needed_key = w ^ target_u32;
-                            if (needed_key == 0 || needed_key == 0xFFFFFFFFu || needed_key == w) continue;
+                            if (needed_key == 0 || needed_key == 0xFFFFFFFFu || needed_key == w || !is_plausible_xor(needed_key)) continue;
                             for (int d : kDeltas) {
                                 const std::int64_t nslot = static_cast<std::int64_t>(si) + (d / 4);
                                 if (nslot < 0 || static_cast<std::size_t>(nslot) >= slots) continue;
@@ -2120,7 +2126,7 @@ std::string mem_freeze_stats_json_impl() {
         const int st_cur = g_freeze_strength.load(std::memory_order_relaxed);
         const char* hz_tag = (st_cur >= 2) ? (f.xor_mode != 0 ? "MAX-XOR" : "2500Hz")
             : (st_cur == 0 ? (f.xor_mode != 0 ? "250Hz-XOR" : "250Hz")
-                           : (f.xor_mode != 0 ? "667Hz-XOR" : "667Hz"));
+                           : (f.xor_mode != 0 ? "500Hz-XOR" : "500Hz"));
         out += hz_tag;
         out += "\",\"rule\":\"";
         out += rstr;

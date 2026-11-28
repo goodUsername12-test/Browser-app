@@ -181,8 +181,58 @@ data class MemTypeInspect(
     val x10: String = "",
     val x100: String = "",
     val x1000: String = "",
+    val split64: String = "",
     val diagnosis: String = "",
     val suggestedType: String = ""
+)
+
+data class MemPhysicsItem(
+    val addr: String,
+    val value: String,
+    val type: String,
+    val kind: String,
+    val category: String,
+    val role: String,
+    val vecGroup: String = "",
+    val confidenceScore: Int = 50,
+    val uiOnlyLikelihood: Int = 10,
+    val evidence: String = ""
+)
+
+data class MemPhysicsVector(
+    val group: String,
+    val role: String,
+    val display: String,
+    val addrs: List<String> = emptyList()
+)
+
+data class MemPhysicsProbe(
+    val watchId: String = "",
+    val addr: String = "",
+    val role: String = "",
+    val posCorrelation: Int = 0,
+    val accelCorrelation: Int = 0,
+    val uiOnlyLikelihood: Int = 0,
+    val writable: Boolean = false,
+    val restoredByGame: Boolean = false,
+    val confidence: String = "Low",
+    val evidence: String = ""
+)
+
+data class MemProtectionReport(
+    val watchId: String = "",
+    val addr: String = "",
+    val verdict: String = "",
+    val explanation: String = "",
+    val recommendation: String = "",
+    val writable: Boolean = false,
+    val readOnly: Boolean = false,
+    val restoredImmediately: Boolean = false,
+    val mirrorCount: Int = 0,
+    val nearbyMirrors: Int = 0,
+    val suspectChecksum: Boolean = false,
+    val rewritesPerSec: Int = 0,
+    val likelyServerRestored: Boolean = false
 )
 
 data class MemSavedTable(
@@ -264,6 +314,10 @@ data class MemoryEngineUiState(
     val mirrorUiResults: List<MemScanResultItem> = emptyList(),
     val savedRecipes: List<MemCheatRecipe> = emptyList(),
     val typeInspect: MemTypeInspect? = null,
+    val physicsItems: List<MemPhysicsItem> = emptyList(),
+    val physicsVectors: List<MemPhysicsVector> = emptyList(),
+    val physicsProbe: MemPhysicsProbe? = null,
+    val protectionReport: MemProtectionReport? = null,
     val canUndoTx: Boolean = false,
     val lastTxLabel: String = "",
     val statusText: String = "Enter a number and tap First Scan",
@@ -770,6 +824,7 @@ class MemoryEngineManager @Inject constructor(
                     currentValue = m.value,
                     originalValue = m.value,
                     role = m.role,
+                    groupTag = origin?.groupTag?.ifBlank { "grp_${st.mirrorOriginAddr.hashCode().toUInt().toString(16)}" } ?: "grp_mir",
                     frozen = true,
                     frozenValue = freezeVal,
                     freezeRule = freezeRule,
@@ -830,6 +885,187 @@ class MemoryEngineManager @Inject constructor(
         setFreezeStrength(profile.defaultFreezeStrength)
     }
 
+    fun clearPhysicsProbe() {
+        _state.update { it.copy(physicsProbe = null) }
+    }
+
+    fun clearProtectionReport() {
+        _state.update { it.copy(protectionReport = null) }
+    }
+
+    fun clearPhysicsScan() {
+        _state.update { it.copy(physicsItems = emptyList(), physicsVectors = emptyList()) }
+    }
+
+    fun scanPhysics() {
+        if (_state.value.busy) return
+        _state.update { it.copy(busy = true, statusText = "Scanning physics, speed, velocity vectors & gravity...") }
+        scope.launch {
+            val raw = runPageCommand(JSONObject().apply {
+                put("op", "scanPhysics")
+                put("maxReturn", 100)
+                put("timeoutMs", 4000)
+            })
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val items = ArrayList<MemPhysicsItem>()
+                val arr = obj.optJSONArray("items")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        items.add(
+                            MemPhysicsItem(
+                                addr = o.optString("addr"),
+                                value = o.optString("val"),
+                                type = o.optString("type", "f32"),
+                                kind = o.optString("kind", "js"),
+                                category = o.optString("category"),
+                                role = o.optString("role"),
+                                vecGroup = o.optString("vecGroup"),
+                                confidenceScore = o.optInt("confidenceScore", 50),
+                                uiOnlyLikelihood = o.optInt("uiOnlyLikelihood", 10),
+                                evidence = o.optString("evidence")
+                            )
+                        )
+                    }
+                }
+                val vecs = ArrayList<MemPhysicsVector>()
+                val vArr = obj.optJSONArray("vectors")
+                if (vArr != null) {
+                    for (i in 0 until vArr.length()) {
+                        val vo = vArr.optJSONObject(i) ?: continue
+                        val aArr = vo.optJSONArray("addrs")
+                        val addrList = ArrayList<String>()
+                        if (aArr != null) for (j in 0 until aArr.length()) addrList.add(aArr.optString(j))
+                        vecs.add(
+                            MemPhysicsVector(
+                                group = vo.optString("group"),
+                                role = vo.optString("role"),
+                                display = vo.optString("display"),
+                                addrs = addrList
+                            )
+                        )
+                    }
+                }
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        physicsItems = items,
+                        physicsVectors = vecs,
+                        statusText = if (items.isEmpty()) "No physics/speed fields found yet — move in-game and retry"
+                        else "Physics scan: ${items.size} field(s), ${vecs.size} vector(s) (${obj.optLong("elapsedMs")}ms)"
+                    )
+                }
+            } else {
+                _state.update { it.copy(busy = false, statusText = obj?.optString("error") ?: "Physics scan failed") }
+            }
+        }
+    }
+
+    fun addPhysicsItemToWatch(item: MemPhysicsItem) {
+        val scanItem = MemScanResultItem(
+            addr = item.addr,
+            value = item.value,
+            type = item.type,
+            kind = item.kind,
+            role = if (item.uiOnlyLikelihood >= 70) "ui" else "game",
+            score = item.confidenceScore
+        )
+        val lbl = "${item.role}: ${item.addr.removePrefix("js:").takeLast(20)}"
+        addToWatch(scanItem, lbl)
+    }
+
+    fun probeWatchPhysics(watchId: String) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        if (entry.scope != MemScope.PAGE_WASM) {
+            _state.update { it.copy(statusText = "Physics probe runs on Page & WASM watch entries") }
+            return
+        }
+        scope.launch {
+            val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
+            val raw = runPageCommand(JSONObject().apply {
+                put("op", "probePhysics")
+                put("id", entry.addr)
+                if (tFrame != null) put("targetFrame", tFrame)
+            })
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val rep = MemPhysicsProbe(
+                    watchId = watchId,
+                    addr = entry.addr,
+                    role = obj.optString("role", "Physics Scalar"),
+                    posCorrelation = obj.optInt("posCorrelation", 0),
+                    accelCorrelation = obj.optInt("accelCorrelation", 0),
+                    uiOnlyLikelihood = obj.optInt("uiOnlyLikelihood", 0),
+                    writable = obj.optBoolean("writable", false),
+                    restoredByGame = obj.optBoolean("restoredByGame", false),
+                    confidence = obj.optString("confidence", "Low"),
+                    evidence = obj.optString("evidence")
+                )
+                _state.update {
+                    it.copy(
+                        physicsProbe = rep,
+                        statusText = "Physics: ${rep.role} (${rep.confidence} · pos ${rep.posCorrelation}%)"
+                    )
+                }
+            } else {
+                _state.update { it.copy(statusText = obj?.optString("error") ?: "Physics probe failed") }
+            }
+        }
+    }
+
+    fun analyzeWatchProtection(watchId: String) {
+        val entry = _state.value.watchList.firstOrNull { it.id == watchId } ?: return
+        scope.launch {
+            val raw = when (entry.scope) {
+                MemScope.FABLE_NATIVE -> withContext(Dispatchers.IO) {
+                    NativeMemoryScanner.analyzeProtection(entry.addr, entry.dataType)
+                }
+                MemScope.PAGE_WASM -> {
+                    val (tFrame, _) = WebsiteMemoryEngine.splitFrameAddr(entry.addr)
+                    runPageCommand(JSONObject().apply {
+                        put("op", "analyzeProtection")
+                        put("id", entry.addr)
+                        if (tFrame != null) put("targetFrame", tFrame)
+                    })
+                }
+            }
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (obj != null && obj.optBoolean("ok", false)) {
+                val rep = MemProtectionReport(
+                    watchId = watchId,
+                    addr = entry.addr,
+                    verdict = obj.optString("verdict", "unknown"),
+                    explanation = obj.optString("explanation"),
+                    recommendation = obj.optString("recommendation"),
+                    writable = obj.optBoolean("writable", false),
+                    readOnly = obj.optBoolean("readOnly", false),
+                    restoredImmediately = obj.optBoolean("restoredImmediately", false),
+                    mirrorCount = obj.optInt("mirrorCount", 0),
+                    nearbyMirrors = obj.optInt("nearbyMirrors", 0),
+                    suspectChecksum = obj.optBoolean("suspectChecksum", false),
+                    rewritesPerSec = obj.optInt("rewritesPerSec", 0),
+                    likelyServerRestored = obj.optBoolean("likelyServerRestored", false)
+                )
+                _state.update {
+                    it.copy(
+                        protectionReport = rep,
+                        statusText = "Protection: ${rep.verdict} — ${rep.explanation}"
+                    )
+                }
+            } else {
+                _state.update { it.copy(statusText = obj?.optString("error") ?: "Protection analysis failed") }
+            }
+        }
+    }
+
+    suspend fun runLiveAuditOnActiveTab(): JSONObject {
+        val raw = runPageCommand(JSONObject().apply {
+            put("op", "liveAudit")
+        })
+        return runCatching { JSONObject(raw) }.getOrDefault(JSONObject().put("ok", false).put("error", "parse_error"))
+    }
+
     fun clearTypeInspect() {
         _state.update { it.copy(typeInspect = null) }
     }
@@ -870,6 +1106,7 @@ class MemoryEngineManager @Inject constructor(
                     x10 = obj.optString("x10"),
                     x100 = obj.optString("x100"),
                     x1000 = obj.optString("x1000"),
+                    split64 = obj.optString("split64"),
                     diagnosis = obj.optString("diagnosis"),
                     suggestedType = obj.optString("suggestedType")
                 )
@@ -2461,6 +2698,7 @@ class MemoryEngineManager @Inject constructor(
                         put("id", e.addr)
                         put("rule", e.freezeRule.jsCode)
                         put("val", WebsiteMemoryEngine.normalizeNumericInput(e.frozenValue.ifBlank { e.currentValue }, e.dataType))
+                        if (e.groupTag.isNotBlank()) put("groupId", e.groupTag)
                     })
                 }
                 val raw = runPageCommand(JSONObject().apply {

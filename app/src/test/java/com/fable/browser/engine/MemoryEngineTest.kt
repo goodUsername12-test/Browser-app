@@ -238,4 +238,24 @@ class MemoryEngineTest {
         assertTrue(mergedInsp.optBoolean("ok"))
         assertEquals("3200000000", mergedInsp.optString("u32"))
     }
+
+    @Test
+    fun mergeMultiFrameHandlesPhysicsProtectionAndLiveAudit() {
+        val p1 = """{"ok":true,"elapsedMs":18,"engines":["WASM"],"vectors":[{"group":"p.vel(x,y,z)","role":"Velocity Vector","display":"x=1 y=2","addrs":["js:p.vel.x"]}],"items":[{"addr":"js:p.speed","val":"12.5","type":"f64","kind":"js","category":"move_speed","role":"Movement Speed","confidenceScore":93,"uiOnlyLikelihood":7}]}"""
+        val p2 = """{"ok":true,"elapsedMs":25,"engines":["Unity"],"vectors":[],"items":[{"addr":"@f1|wasm#0+0x300:f32","val":"-9.81","type":"f32","kind":"wasm","category":"gravity","role":"WASM Gravity Constant","confidenceScore":86,"uiOnlyLikelihood":4}]}"""
+        val mergedP = org.json.JSONObject(WebsiteMemoryEngine.mergeMultiFrameResults(listOf(p1, p2), "scanPhysics"))
+        assertTrue(mergedP.optBoolean("ok"))
+        assertEquals(2, mergedP.optInt("total"))
+        assertEquals(1, mergedP.optJSONArray("vectors")?.length())
+
+        val a1 = """{"ok":true,"engines":["HTML5"],"wasmCount":0,"bufCount":2,"workerCount":0,"sabCount":0,"queryUsed":"100","totalHits":0,"wasmHits":0,"jsHits":0,"domHits":0,"storageHits":0,"physicsCount":0,"physicsRoles":[],"topHit":"","topKind":"","topRole":"","topType":"","mirrorsCount":0,"typeInspectOk":false,"scanMs":40,"failureReason":"canvas-loading-or-no-local-state"}"""
+        val a2 = """{"ok":true,"engines":["Unity","WASM"],"wasmCount":1,"bufCount":4,"workerCount":1,"sabCount":0,"queryUsed":"100","totalHits":14,"wasmHits":10,"jsHits":4,"domHits":0,"storageHits":0,"physicsCount":3,"physicsRoles":["Gravity"],"topHit":"@f1|wasm#0+0x40:i32","topKind":"wasm","topRole":"game","topType":"i32","mirrorsCount":2,"typeInspectOk":true,"scanMs":85,"failureReason":"none"}"""
+        val mergedA = org.json.JSONObject(WebsiteMemoryEngine.mergeMultiFrameResults(listOf(a1, a2), "liveAudit"))
+        assertTrue(mergedA.optBoolean("ok"))
+        assertEquals(14, mergedA.optInt("totalHits"))
+        assertEquals(10, mergedA.optInt("wasmHits"))
+        assertEquals(3, mergedA.optInt("physicsCount"))
+        assertEquals("none", mergedA.optString("failureReason"))
+        assertTrue(mergedA.optBoolean("typeInspectOk"))
+    }
 }

@@ -41,10 +41,12 @@ import androidx.lifecycle.viewModelScope
 import com.fable.browser.data.backup.BackupException
 import com.fable.browser.data.backup.BackupManager
 import com.fable.browser.data.backup.BackupOptions
+import com.fable.browser.data.backup.PreparedBackup
 import com.fable.browser.ui.components.ListDivider
 import com.fable.browser.ui.components.SectionHeader
 import com.fable.browser.ui.components.SettingRow
 import com.fable.browser.ui.components.SwitchRow
+import com.fable.browser.util.ActivityBridge
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,12 +61,16 @@ data class BackupUiState(
     val busy: Boolean = false,
     val message: String? = null,
     val isError: Boolean = false,
-    val restartNeeded: Boolean = false
+    val restartNeeded: Boolean = false,
+    val readyToSaveBackup: PreparedBackup? = null,
+    val savePickerLaunched: Boolean = false,
+    val pendingRestoreUri: Uri? = null
 )
 
 @HiltViewModel
 class BackupViewModel @Inject constructor(
-    private val manager: BackupManager
+    private val manager: BackupManager,
+    private val activityBridge: ActivityBridge
 ) : ViewModel() {
     private val _state = MutableStateFlow(BackupUiState())
     val state: StateFlow<BackupUiState> = _state.asStateFlow()
@@ -77,26 +83,95 @@ class BackupViewModel @Inject constructor(
     }
 
     fun showError(msg: String) {
-        _state.value = BackupUiState(busy = false, message = msg, isError = true)
+        _state.value = _state.value.copy(busy = false, message = msg, isError = true)
     }
 
-    fun backup(uri: Uri, password: String) {
+    fun markPickerOpen(open: Boolean) {
+        activityBridge.markExternalPickerOpen(open)
+    }
+
+    fun markSavePickerLaunched() {
+        _state.value = _state.value.copy(savePickerLaunched = true)
+    }
+
+    fun prepareBackup(password: String) {
         if (_state.value.busy) return
-        _state.value = BackupUiState(busy = true, message = "Collecting site cookies, storage, passwords & encrypting backup...")
+        manager.discardPreparedBackup(_state.value.readyToSaveBackup)
+        _state.value = BackupUiState(
+            busy = true,
+            message = "Collecting cookies, site storage, passwords, CE tables & encrypting backup..."
+        )
         viewModelScope.launch {
             val chars = password.toCharArray()
-            val result = runCatching { manager.backup(uri, chars, _options.value) }
+            val res = runCatching { manager.prepareEncryptedBackupToCache(chars, _options.value) }
             chars.fill('\u0000')
-            _state.value = result.fold(
-                onSuccess = { BackupUiState(message = "Backup saved: ${it.summary()}") },
-                onFailure = { BackupUiState(message = errorText(it, "Backup failed"), isError = true) }
+            _state.value = res.fold(
+                onSuccess = { prepared ->
+                    BackupUiState(
+                        busy = false,
+                        message = "Encrypted ${BackupManager.formatByteSize(prepared.bytesWritten)} — choose where to save the .fable file",
+                        readyToSaveBackup = prepared
+                    )
+                },
+                onFailure = {
+                    BackupUiState(message = errorText(it, "Backup failed"), isError = true)
+                }
             )
         }
     }
 
+    fun savePreparedToUri(uri: Uri?) {
+        activityBridge.markExternalPickerOpen(false)
+        val prepared = _state.value.readyToSaveBackup
+        if (prepared == null) return
+        if (uri == null) {
+            manager.discardPreparedBackup(prepared)
+            _state.value = BackupUiState(message = "Backup save cancelled")
+            return
+        }
+        _state.value = BackupUiState(busy = true, message = "Writing & verifying .fable backup file...")
+        viewModelScope.launch {
+            val res = runCatching { manager.commitPreparedBackupToUri(prepared, uri) }
+            _state.value = res.fold(
+                onSuccess = { BackupUiState(message = "Backup saved & verified: ${it.summary()}") },
+                onFailure = { BackupUiState(message = errorText(it, "Backup save failed"), isError = true) }
+            )
+        }
+    }
+
+    fun onRestoreFilePicked(uri: Uri?) {
+        activityBridge.markExternalPickerOpen(false)
+        if (uri == null) return
+        if (_state.value.busy) return
+        _state.value = BackupUiState(busy = true, message = "Checking .fable backup file header...")
+        viewModelScope.launch {
+            val probe = runCatching { manager.inspectBackupUri(uri) }.getOrNull()
+            if (probe == null || !probe.valid) {
+                _state.value = BackupUiState(
+                    busy = false,
+                    message = probe?.error ?: "This file is not a valid Fable backup",
+                    isError = true
+                )
+            } else {
+                _state.value = BackupUiState(
+                    busy = false,
+                    message = "Valid Fable backup (${BackupManager.formatByteSize(probe.sizeBytes)}) — enter password to decrypt",
+                    pendingRestoreUri = uri
+                )
+            }
+        }
+    }
+
+    fun cancelPendingRestore() {
+        _state.value = _state.value.copy(pendingRestoreUri = null)
+    }
+
     fun restore(uri: Uri, password: String) {
         if (_state.value.busy) return
-        _state.value = BackupUiState(busy = true, message = "Decrypting backup & restoring cookies, site storage, passwords...")
+        _state.value = BackupUiState(
+            busy = true,
+            message = "Decrypting backup & restoring cookies, site storage, passwords..."
+        )
         viewModelScope.launch {
             val chars = password.toCharArray()
             val result = runCatching { manager.restore(uri, chars) }
@@ -112,8 +187,14 @@ class BackupViewModel @Inject constructor(
         _state.value = _state.value.copy(restartNeeded = false)
     }
 
+    override fun onCleared() {
+        super.onCleared()
+        manager.discardPreparedBackup(_state.value.readyToSaveBackup)
+    }
+
     private fun errorText(error: Throwable, fallback: String): String =
-        if (error is BackupException) error.message ?: fallback else "$fallback: ${error.message ?: error.javaClass.simpleName}"
+        if (error is BackupException) error.message ?: fallback
+        else "$fallback: ${error.message ?: error.javaClass.simpleName}"
 }
 
 private fun restartApp(context: Context) {
@@ -131,27 +212,44 @@ fun BackupScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val options by viewModel.options.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var pendingBackup by remember { mutableStateOf<Uri?>(null) }
-    var pendingRestore by remember { mutableStateOf<Uri?>(null) }
+    var askBackupPassword by remember { mutableStateOf(false) }
 
-    LaunchedEffect(state.message, state.busy) {
-        val msg = state.message
-        if (!state.busy && !msg.isNullOrBlank()) {
-            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+    val createLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        viewModel.savePreparedToUri(uri)
+    }
+    val openLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        viewModel.onRestoreFilePicked(uri)
+    }
+
+    LaunchedEffect(state.readyToSaveBackup, state.savePickerLaunched) {
+        if (state.readyToSaveBackup != null && !state.savePickerLaunched) {
+            viewModel.markSavePickerLaunched()
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+            viewModel.markPickerOpen(true)
+            runCatching { createLauncher.launch("fable-backup-$stamp.fable") }
+                .onFailure {
+                    viewModel.markPickerOpen(false)
+                    viewModel.savePreparedToUri(null)
+                    viewModel.showError("Cannot open file saver: ${it.message ?: it.javaClass.simpleName}")
+                }
         }
     }
 
-    val createLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
-        if (uri != null) pendingBackup = uri
-    }
-    val openLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) pendingRestore = uri
+    LaunchedEffect(state.message, state.busy) {
+        val msg = state.message
+        if (!state.busy && !msg.isNullOrBlank() && state.readyToSaveBackup == null && state.pendingRestoreUri == null) {
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+        }
     }
 
     SettingsPage(title = "Backup & restore", onBack = onBack) {
         SettingRow(
             title = "End-to-end encrypted",
-            subtitle = "AES-256-GCM encrypted backup of passwords, cookies, localStorage, sessionStorage, tabs, bookmarks, history and settings.",
+            subtitle = "AES-256-GCM streaming backup with SHA-256 verification for passwords, cookies, localStorage, sessionStorage, CE tables, tabs, bookmarks, history & settings.",
             icon = Icons.Outlined.Lock
         )
         if (state.busy) {
@@ -177,7 +275,7 @@ fun BackupScreen(
         ListDivider()
 
         SectionHeader("Include in backup")
-        SwitchRow(title = "Settings", subtitle = "All preferences, hybrid modes, super incognito proxy and identity", checked = options.settings) { v -> viewModel.updateOptions { it.copy(settings = v) } }
+        SwitchRow(title = "Settings", subtitle = "All preferences, hybrid modes, CE tables & recipes, super incognito proxy", checked = options.settings) { v -> viewModel.updateOptions { it.copy(settings = v) } }
         SwitchRow(title = "Passwords", subtitle = "Saved site logins, auto-filled on Blink & Gecko", checked = options.passwords) { v -> viewModel.updateOptions { it.copy(passwords = v) } }
         SwitchRow(title = "Bookmarks and folders", checked = options.bookmarks) { v -> viewModel.updateOptions { it.copy(bookmarks = v) } }
         SwitchRow(title = "History and searches", checked = options.history) { v -> viewModel.updateOptions { it.copy(history = v) } }
@@ -190,51 +288,50 @@ fun BackupScreen(
         SectionHeader("Actions")
         SettingRow(
             title = "Create encrypted backup",
-            subtitle = "Save a .fable file with all passwords, cookies, localStorage & settings",
+            subtitle = "Encrypts and verifies your .fable archive first, then saves it cleanly (never creates 0-byte files)",
             icon = Icons.Outlined.Backup,
             onClick = {
-                if (!state.busy) {
-                    val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
-                    runCatching { createLauncher.launch("fable-backup-$stamp.fable") }
-                        .onFailure { viewModel.showError("Cannot open file saver: ${it.message ?: it.javaClass.simpleName}") }
-                }
+                if (!state.busy) askBackupPassword = true
             }
         )
         SettingRow(
             title = "Restore from backup",
-            subtitle = "Restores cookies, localStorage, passwords, tabs, bookmarks & settings immediately",
+            subtitle = "Verifies the .fable file header first, then restores cookies, localStorage, passwords, CE tables & settings",
             icon = Icons.Outlined.Restore,
             onClick = {
                 if (!state.busy) {
+                    viewModel.markPickerOpen(true)
                     runCatching { openLauncher.launch(arrayOf("*/*")) }
-                        .onFailure { viewModel.showError("Cannot open file picker: ${it.message ?: it.javaClass.simpleName}") }
+                        .onFailure {
+                            viewModel.markPickerOpen(false)
+                            viewModel.showError("Cannot open file picker: ${it.message ?: it.javaClass.simpleName}")
+                        }
                 }
             }
         )
         ListDivider()
     }
 
-    pendingBackup?.let { uri ->
+    if (askBackupPassword) {
         BackupPasswordDialog(
             title = "Protect backup",
             confirm = true,
             onSubmit = { password ->
-                pendingBackup = null
-                viewModel.backup(uri, password)
+                askBackupPassword = false
+                viewModel.prepareBackup(password)
             },
-            onDismiss = { pendingBackup = null }
+            onDismiss = { askBackupPassword = false }
         )
     }
 
-    pendingRestore?.let { uri ->
+    state.pendingRestoreUri?.let { uri ->
         BackupPasswordDialog(
             title = "Backup password",
             confirm = false,
             onSubmit = { password ->
-                pendingRestore = null
                 viewModel.restore(uri, password)
             },
-            onDismiss = { pendingRestore = null }
+            onDismiss = { viewModel.cancelPendingRestore() }
         )
     }
 
@@ -300,7 +397,7 @@ private fun BackupPasswordDialog(
             }
         },
         confirmButton = {
-            TextButton(enabled = longEnough && matches, onClick = { onSubmit(first) }) { Text(if (confirm) "Encrypt" else "Restore") }
+            TextButton(enabled = longEnough && matches, onClick = { onSubmit(first) }) { Text(if (confirm) "Encrypt & Save" else "Restore") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )

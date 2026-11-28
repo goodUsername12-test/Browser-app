@@ -4,6 +4,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+HOOK_START_EPOCH="$(date +%s)"
 VERSION="$(cat .fable-version 2>/dev/null || echo unknown)"
 REPORT_ISSUE="${FABLE_REPORT_ISSUE:-4}"
 ART="${RUNNER_TEMP:-/tmp}/hook-artifacts"; mkdir -p "$ART"
@@ -481,6 +482,65 @@ CE_APEX_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable 
 })();
 </script></body></html>"""
 
+
+CE_TITAN_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable CE v69 TITAN Lab</title></head>
+<body>
+<span id="ui-speed-label">12.5</span>
+<input id="ro-score" type="text" value="999" readonly />
+<pre id="out">ce-titan-lab</pre>
+<script>
+(function() {
+  const qs = new URLSearchParams(location.search);
+  const tag = qs.get("tag") || "titan";
+  const wMem = new WebAssembly.Memory({ initial: 4 });
+  const dv = new DataView(wMem.buffer);
+  dv.setUint32(0x100, 0x12345678, true);
+  dv.setUint32(0x104, 7, true);
+  dv.setFloat32(0x300, -9.81, true);
+  let _ms = 12.5;
+  window.titanPlayer = {
+    pos: { x: 10.5, y: 2.0, z: -4.25 },
+    velocity: { x: 12.5, y: 0.0, z: 0.0 },
+    gravity: -9.81,
+    jumpForce: 14.2,
+    get moveSpeed() { return _ms; },
+    set moveSpeed(v) { _ms = v; this.velocity.x = v; }
+  };
+  let _guarded = 500;
+  window.protLab = {
+    syncCoins: 777666,
+    syncCoinsBackup: 777666
+  };
+  Object.defineProperty(window.protLab, "loopGuardedHp", {
+    enumerable: true, configurable: true,
+    get() { return _guarded; },
+    set(_) { _guarded = 500; }
+  });
+  window.__keepTitan = function() { return wMem.buffer.byteLength + dv.getUint32(0x100, true) + window.titanPlayer.moveSpeed; };
+
+  function checkStealth() {
+    try {
+      const noLeak = Object.getOwnPropertyNames(window).every(k => !/^(__fableMem|__fableTimeScale|_mev_|cheat|memscan)/i.test(k));
+      const natW = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
+      const natS = Function.prototype.toString.call(Storage.prototype.setItem).indexOf("[native code]") !== -1;
+      return noLeak && natW && natS;
+    } catch (_) { return false; }
+  }
+
+  let reported = false;
+  const iv = setInterval(function() {
+    if (!reported && window.protLab.syncCoins === 888999 && window.protLab.syncCoinsBackup === 888999) {
+      reported = true;
+      clearInterval(iv);
+      const q = "tag=" + encodeURIComponent(tag) + "&stealth=" + checkStealth() +
+        "&moveSpeed=" + window.titanPlayer.moveSpeed + "&syncCoins=" + window.protLab.syncCoins + "&syncBackup=" + window.protLab.syncCoinsBackup;
+      document.getElementById("out").textContent = q;
+      fetch("/ce-titan-probe?" + q).catch(() => {});
+    }
+  }, 40);
+})();
+</script></body></html>"""
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -545,6 +605,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", CE_APEX_HTML.encode())
         elif p == "/ce-apex-probe":
             print(f"CE_APEX_PROBE q={parsed.query}", flush=True)
+            self._send(200, "application/json", b'{"ok":true}')
+        elif p == "/ce-titan-lab.html":
+            self._send(200, "text/html; charset=utf-8", CE_TITAN_HTML.encode())
+        elif p == "/ce-titan-probe":
+            print(f"CE_TITAN_PROBE q={parsed.query}", flush=True)
             self._send(200, "application/json", b'{"ok":true}')
         elif p == "/mem-probe":
             print(f"MEM_PROBE q={parsed.query}", flush=True)
@@ -817,102 +882,111 @@ timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0
 sleep 5; step "speed back OFF unloaded (GeckoView)"
 
 
-log "Phase 6b: Memory Engine CE (Native C++ self-process + GeckoView WASM/JS + Blink x Gecko WASM/JS + Stealth)"
+log "Phase 6a: .fable Encrypted Backup & Restore E2E Verification"
+adb shell am start -n "$ACT" --ez fable_test_backup_selfcheck true >/dev/null 2>&1 || true
+sleep 6; step ".fable encrypted backup & restore E2E self-check"
+
+log "Phase 6b: Memory Engine CE (Native C++ + GeckoView + Blink x Gecko + Ultra + APEX + v69 TITAN + Stealth)"
 adb shell am start -n "$ACT" --ez fable_test_mem_toggle true >/dev/null 2>&1 || true
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck native >/dev/null 2>&1 || true
 sleep 3; step "memory engine native C++ self-scan & write"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/mem.html?tag=mem_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/mem.html?tag=mem_gecko' --ez fable_reuse_tab true --ez fable_close_other_tabs true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck page_gecko >/dev/null 2>&1 || true
 sleep 5; step "memory engine GeckoView WASM+JS scan & write"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/mem.html?tag=mem_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/mem.html?tag=mem_blink' --ez fable_reuse_tab true --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck page_blink >/dev/null 2>&1 || true
 sleep 5; step "memory engine Blink x Gecko WASM+JS scan & write"
 
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/xorigin-unity.html?eng=gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/xorigin-unity.html?eng=gecko' --ez fable_reuse_tab true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 3
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck xorigin_gecko --es fable_test_mem_query "4,976,216" --es fable_test_mem_write "9999999" >/dev/null 2>&1 || true
 sleep 7; step "memory engine cross-origin 48MB Unity WASM iframe (GeckoView)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/xorigin-unity.html?eng=blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/xorigin-unity.html?eng=blink' --ez fable_reuse_tab true --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 3
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck xorigin_blink --es fable_test_mem_query "4,976,216" --es fable_test_mem_write "9999999" >/dev/null 2>&1 || true
 sleep 7; step "memory engine cross-origin 48MB Unity WASM iframe (Blink x Gecko)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://veck.io' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 8
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_veck --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
-sleep 4
-
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/multi-engine-lab.html?tag=multi_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/multi-engine-lab.html?tag=multi_gecko' --ez fable_reuse_tab true --ez fable_close_other_tabs true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck multi_gecko --es fable_test_mem_mode multi_freeze --es fable_test_mem_query "777111" --es fable_test_mem_write "888222" --ei fable_test_mem_timeout_sec 25 >/dev/null 2>&1 || true
 sleep 7; step "memory engine ALL-IN-ONE multi-engine + Titanium Freeze (GeckoView)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/multi-engine-lab.html?tag=multi_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/multi-engine-lab.html?tag=multi_blink' --ez fable_reuse_tab true --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck multi_blink --es fable_test_mem_mode multi_freeze --es fable_test_mem_query "777111" --es fable_test_mem_write "888222" --ei fable_test_mem_timeout_sec 25 >/dev/null 2>&1 || true
 sleep 7; step "memory engine ALL-IN-ONE multi-engine + Titanium Freeze (Blink x Gecko)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-ultra-lab.html?tag=ultra_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-ultra-lab.html?tag=ultra_gecko' --ez fable_reuse_tab true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck ultra_gecko --es fable_test_mem_mode ultra_ce >/dev/null 2>&1 || true
 sleep 11; step "memory engine v65 ULTRA (Group+XOR+Ptr+HexWrite+Trace+Table+NextFix, GeckoView)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-ultra-lab.html?tag=ultra_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-ultra-lab.html?tag=ultra_blink' --ez fable_reuse_tab true --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck ultra_blink --es fable_test_mem_mode ultra_ce >/dev/null 2>&1 || true
 sleep 8; step "memory engine v65 ULTRA (Group+XOR+Ptr+HexWrite+Trace+Table+NextFix, Blink x Gecko)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/turbo-trail-txl' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 7
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_turbo --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
-sleep 4
-
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/ragdoll-archers' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 7
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_archers --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
-sleep 4
-
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-apex-lab.html?tag=apex_gecko' -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-apex-lab.html?tag=apex_gecko' --ez fable_reuse_tab true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck apex_gecko --es fable_test_mem_mode apex_ce >/dev/null 2>&1 || true
 sleep 11; step "memory engine v68 APEX (u32+OverflowGuard+Retype+x1000+f64rnd+UiAuth, GeckoView)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-apex-lab.html?tag=apex_blink' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-apex-lab.html?tag=apex_blink' --ez fable_reuse_tab true --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
 sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck apex_blink --es fable_test_mem_mode apex_ce >/dev/null 2>&1 || true
 sleep 9; step "memory engine v68 APEX (u32+OverflowGuard+Retype+x1000+f64rnd+UiAuth, Blink x Gecko)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/space-waves' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 7
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_waves --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
-sleep 4
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-titan-lab.html?tag=titan_gecko' --ez fable_reuse_tab true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck titan_gecko --es fable_test_mem_mode titan_ce >/dev/null 2>&1 || true
+sleep 12; step "memory engine v69 TITAN (Physics+Vectors+Probe+Protection+Split64+LinkedSync, GeckoView)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/smash-karts' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 7
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_karts --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
-sleep 4
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-titan-lab.html?tag=titan_blink' --ez fable_reuse_tab true --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck titan_blink --es fable_test_mem_mode titan_ce >/dev/null 2>&1 || true
+sleep 10; step "memory engine v69 TITAN (Physics+Vectors+Probe+Protection+Split64+LinkedSync, Blink x Gecko)"
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/crazy-flips-3d' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 7
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_flips --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
-sleep 4
+log "Phase 6c: 36 Real CrazyGames & Browser Games Live CE Value-Scanning Matrix (6 batches, single reused tab, 33-min watchdog)"
+run_crazy_batch() {
+  local bid="$1"
+  local payload="$2"
+  local elapsed=$(( $(date +%s) - HOOK_START_EPOCH ))
+  if [ "$elapsed" -gt 1980 ]; then
+    log "Watchdog: skipping $bid at ${elapsed}s to guarantee HOOK-RESULT before 40m limit"
+    return
+  fi
+  if [ -z "$(alive)" ]; then
+    timeout 60 adb shell am start -W -n "$ACT" >> "$ART/nav.txt" 2>&1 || true
+    sleep 4
+  fi
+  adb shell "am start -n '$ACT' --es fable_test_batch_id '$bid' --es fable_test_crazygames_batch '$payload' --el fable_test_game_wait_ms 5500" >/dev/null 2>&1 || true
+  local w=0
+  while [ "$w" -lt 60 ]; do
+    sleep 2
+    w=$((w + 1))
+    if adb logcat -d -s FABLE-GAME-BATCH-DONE:I 2>/dev/null | grep -q "batch=$bid "; then
+      break
+    fi
+    if [ -z "$(alive)" ]; then
+      break
+    fi
+  done
+  step "CrazyGames live CE scan batch $bid"
+}
 
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/capybara-clicker' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 7
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_capybara --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
-sleep 4
-
-timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'https://www.crazygames.com/game/shellshockersio' --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1 || true
-sleep 7
-adb shell am start -n "$ACT" --es fable_test_mem_selfcheck live_crazy_shell --es fable_test_mem_query "100" --es fable_test_mem_write "skip" >/dev/null 2>&1 || true
-sleep 4
+run_crazy_batch "b1" "shellshockersio=https://www.crazygames.com/game/shellshockersio^smash-karts=https://www.crazygames.com/game/smash-karts^ragdoll-archers=https://www.crazygames.com/game/ragdoll-archers^crazy-flips-3d=https://www.crazygames.com/game/crazy-flips-3d^deadshot-io=https://www.crazygames.com/game/deadshot-io^voxiom-io=https://www.crazygames.com/game/voxiom-io"
+run_crazy_batch "b2" "turbo-trail-txl=https://www.crazygames.com/game/turbo-trail-txl^drift-hunters=https://www.crazygames.com/game/drift-hunters^madalin-stunt-cars-2=https://www.crazygames.com/game/madalin-stunt-cars-2^moto-x3m=https://www.crazygames.com/game/moto-x3m^polytrack=https://www.crazygames.com/game/polytrack^drive-mad=https://www.crazygames.com/game/drive-mad"
+run_crazy_batch "b3" "space-waves=https://www.crazygames.com/game/space-waves^geometry-dash=https://www.crazygames.com/game/geometry-dash-online^fireboy-watergirl=https://www.crazygames.com/game/fireboy-and-watergirl-the-forest-temple^slice-master=https://www.crazygames.com/game/slice-master^helix-jump=https://www.crazygames.com/game/helix-jump^paper-io-2=https://www.crazygames.com/game/paper-io-2"
+run_crazy_batch "b4" "capybara-clicker=https://www.crazygames.com/game/capybara-clicker^planet-clicker-2=https://www.crazygames.com/game/planet-clicker-2^doge-miner=https://www.crazygames.com/game/doge-miner^idle-breakout=https://www.crazygames.com/game/idle-breakout^clicker-heroes=https://www.crazygames.com/game/clicker-heroes^babel-tower=https://www.crazygames.com/game/babel-tower"
+run_crazy_batch "b5" "bullet-force=https://www.crazygames.com/game/bullet-force-multiplayer^forward-assault=https://www.crazygames.com/game/forward-assault^hazmob-fps=https://www.crazygames.com/game/hazmob-fps-online-shooter^bloxdhop-io=https://www.crazygames.com/game/bloxdhop-io^buildnow-gg=https://www.crazygames.com/game/buildnow-gg^krunker-io=https://www.crazygames.com/game/krunker-io"
+run_crazy_batch "b6" "egg-car=https://www.crazygames.com/game/egg-car^wormate-io=https://www.crazygames.com/game/wormate-io^cut-the-rope=https://www.crazygames.com/game/cut-the-rope-experiments^2048=https://www.crazygames.com/game/2048^chess-free=https://www.crazygames.com/game/chess-free^veck-io=https://veck.io"
 
 adb shell am start -n "$ACT" --ez fable_test_mem_toggle false >/dev/null 2>&1 || true
 sleep 2
@@ -1013,10 +1087,6 @@ MEM_XORIG_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=xorigin_gecko' "$ART/logcat.txt"
 MEM_XORIG_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=xorigin_blink' "$ART/logcat.txt" | tail -n 1 || true)"
 MEM_MULTI_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=multi_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
 MEM_MULTI_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=multi_blink' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_VECK="$(grep 'FABLE-MEM-CHECK.*scope=live_veck' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_CRAZY_TURBO="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_turbo' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_CRAZY_ARCHERS="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_archers' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_CRAZY_WAVES="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_waves' "$ART/logcat.txt" | tail -n 1 || true)"
 echo "$MEM_NATIVE_LINE" | grep -q 'freezeOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-native-freeze(${MEM_NATIVE_LINE:-missing})"; }
 echo "$MEM_XORIG_GECKO" | grep -q 'engine=GeckoView total=[1-9].*hit=@f_.*wasm#.*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-gecko(${MEM_XORIG_GECKO:-missing})"; }
 echo "$MEM_XORIG_BLINK" | grep -q 'engine=Blink x Gecko total=[1-9].*hit=@f_.*wasm#.*hexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-xorigin-blink(${MEM_XORIG_BLINK:-missing})"; }
@@ -1032,16 +1102,28 @@ echo "$MEM_ULTRA_GECKO" | grep -q 'engine=GeckoView ultraOk=true' || { OVERALL_F
 echo "$MEM_ULTRA_BLINK" | grep -q 'engine=Blink x Gecko ultraOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-blink(${MEM_ULTRA_BLINK:-missing})"; }
 grep -q 'CE_ULTRA_PROBE q=tag=ultra_gecko&stealth=true&xorDec=999888&hex50=DE00ADBE' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-gecko-probe"; }
 grep -q 'CE_ULTRA_PROBE q=tag=ultra_blink&stealth=true&xorDec=999888&hex50=DE00ADBE' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-ultra-blink-probe"; }
+BACKUP_CHECK_LINE="$(grep 'FABLE-BACKUP-CHECK' "$ART/logcat.txt" | tail -n 1 || true)"
+echo "$BACKUP_CHECK_LINE" | grep -q 'backupOk=true.*roundTripOk=true emptyRej=true badRej=true wrongPwRej=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} fable-backup(${BACKUP_CHECK_LINE:-missing})"; }
+
 MEM_APEX_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=apex_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
 MEM_APEX_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=apex_blink' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_CRAZY_KARTS="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_karts' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_CRAZY_FLIPS="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_flips' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_CRAZY_CAPY="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_capybara' "$ART/logcat.txt" | tail -n 1 || true)"
-MEM_LIVE_CRAZY_SHELL="$(grep 'FABLE-MEM-CHECK.*scope=live_crazy_shell' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_TITAN_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=titan_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_TITAN_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=titan_blink' "$ART/logcat.txt" | tail -n 1 || true)"
+GAME_AUDIT_LINES="$(grep 'FABLE-GAME-AUDIT' "$ART/logcat.txt" | sed -E 's/^.*FABLE-GAME-AUDIT[^:]*:[[:space:]]*//' || true)"
+GAME_AUDIT_COUNT="$(printf '%s
+' "$GAME_AUDIT_LINES" | grep -c 'slug=' || true)"
+GAME_AUDIT_FOUND="$(printf '%s
+' "$GAME_AUDIT_LINES" | grep -E 'ok=true.*(hits=[1-9]|phys=[1-9])' | wc -l | tr -d ' ')"
+
 echo "$MEM_APEX_GECKO" | grep -q 'engine=GeckoView apexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-apex-gecko(${MEM_APEX_GECKO:-missing})"; }
 echo "$MEM_APEX_BLINK" | grep -q 'engine=Blink x Gecko apexOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-apex-blink(${MEM_APEX_BLINK:-missing})"; }
 grep -q 'CE_APEX_PROBE q=tag=apex_gecko&stealth=true&sawClamp=true&uiCoins=99887&u32Val=3200000000' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-apex-gecko-probe"; }
 grep -q 'CE_APEX_PROBE q=tag=apex_blink&stealth=true&sawClamp=true&uiCoins=99887&u32Val=3200000000' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-apex-blink-probe"; }
+echo "$MEM_TITAN_GECKO" | grep -q 'engine=GeckoView titanOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-titan-gecko(${MEM_TITAN_GECKO:-missing})"; }
+echo "$MEM_TITAN_BLINK" | grep -q 'engine=Blink x Gecko titanOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-titan-blink(${MEM_TITAN_BLINK:-missing})"; }
+grep -q 'CE_TITAN_PROBE q=tag=titan_gecko&stealth=true&moveSpeed=12.5&syncCoins=888999&syncBackup=888999' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-titan-gecko-probe"; }
+grep -q 'CE_TITAN_PROBE q=tag=titan_blink&stealth=true&moveSpeed=12.5&syncCoins=888999&syncBackup=888999' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-titan-blink-probe"; }
+[ "${GAME_AUDIT_COUNT:-0}" -ge 30 ] || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} crazygames-matrix-short(${GAME_AUDIT_COUNT:-0}/36)"; }
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
@@ -1076,16 +1158,18 @@ VERDICT="PASS"
   echo "MultiB: ${MEM_MULTI_BLINK:-(none)}"
   echo "UltraG: ${MEM_ULTRA_GECKO:-(none)}"
   echo "UltraB: ${MEM_ULTRA_BLINK:-(none)}"
-  echo "LiveVk: ${MEM_LIVE_VECK:-(none)}"
   echo "ApexG:  ${MEM_APEX_GECKO:-(none)}"
   echo "ApexB:  ${MEM_APEX_BLINK:-(none)}"
-  echo "LiveTT: ${MEM_LIVE_CRAZY_TURBO:-(none)}"
-  echo "LiveRA: ${MEM_LIVE_CRAZY_ARCHERS:-(none)}"
-  echo "LiveSW: ${MEM_LIVE_CRAZY_WAVES:-(none)}"
-  echo "LiveSK: ${MEM_LIVE_CRAZY_KARTS:-(none)}"
-  echo "LiveCF: ${MEM_LIVE_CRAZY_FLIPS:-(none)}"
-  echo "LiveCC: ${MEM_LIVE_CRAZY_CAPY:-(none)}"
-  echo "LiveSS: ${MEM_LIVE_CRAZY_SHELL:-(none)}"
+  echo "TitanG: ${MEM_TITAN_GECKO:-(none)}"
+  echo "TitanB: ${MEM_TITAN_BLINK:-(none)}"
+  echo '```'
+  echo "### .fable Encrypted Backup & Restore E2E Verification"
+  echo '```'
+  echo "Backup: ${BACKUP_CHECK_LINE:-(none)}"
+  echo '```'
+  echo "### 36 Real CrazyGames & Browser Games Live CE Scan Matrix (${GAME_AUDIT_COUNT:-0} tested, ${GAME_AUDIT_FOUND:-0} discovered live values/physics)"
+  echo '```'
+  echo "${GAME_AUDIT_LINES:-(none)}"
   echo '```'
   echo "### Website Speed Control Verification"
   echo '```'
@@ -1112,6 +1196,7 @@ VERDICT="PASS"
   echo '```'
 } > "$REPORT"
 
+head -c 58000 "$REPORT" > "$REPORT.cut" && mv "$REPORT.cut" "$REPORT"
 post "$REPORT"
 adb emu kill >/dev/null 2>&1 || true
 kill "$EMU_PID" "$SRV_PID" >/dev/null 2>&1 || true

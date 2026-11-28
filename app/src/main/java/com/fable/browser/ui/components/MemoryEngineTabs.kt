@@ -298,6 +298,10 @@ internal fun CeWatchTabContent(
     onInspectWatchTypes: (String) -> Unit,
     onRetypeWatch: (String, String, Int) -> Unit,
     onClearTypeInspect: () -> Unit,
+    onProbeWatchPhysics: (String) -> Unit = {},
+    onClearPhysicsProbe: () -> Unit = {},
+    onAnalyzeWatchProtection: (String) -> Unit = {},
+    onClearProtectionReport: () -> Unit = {},
     onToggleWatchFavorite: (String) -> Unit,
     onCycleWatchColorTag: (String) -> Unit,
     onSaveCheatRecipe: (String) -> Unit,
@@ -735,6 +739,9 @@ internal fun CeWatchTabContent(
                             modifier = Modifier.clickable(onClick = onClearTypeInspect).padding(horizontal = (4f * s).dp)
                         )
                     }
+                    if (ti.split64.isNotBlank()) {
+                        Text(text = "64-bit words: ${ti.split64}", color = Color(0xFF94A3B8), fontSize = fsTiny, fontFamily = FontFamily.Monospace)
+                    }
                     if (ti.diagnosis.isNotBlank()) {
                         Text(text = "⚠ ${ti.diagnosis}", color = Color(0xFFFBBF24), fontSize = fsTiny, fontWeight = FontWeight.SemiBold)
                     }
@@ -771,6 +778,66 @@ internal fun CeWatchTabContent(
                 }
                 Spacer(Modifier.height((4f * s).dp))
             }
+            state.physicsProbe?.let { pp ->
+                Column(
+                    verticalArrangement = Arrangement.spacedBy((3f * s).dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF0C1E2E), RoundedCornerShape((8f * s).dp))
+                        .border(1.dp, Color(0xFF22D3EE), RoundedCornerShape((8f * s).dp))
+                        .padding((6f * s).dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Physics: ${pp.role} (${pp.confidence})",
+                            color = Color(0xFF67E8F9),
+                            fontSize = fsTiny,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(text = "✕", color = Color(0xFFF87171), fontSize = fsSmall, fontWeight = FontWeight.Bold, modifier = Modifier.clickable(onClick = onClearPhysicsProbe).padding(horizontal = (4f * s).dp))
+                    }
+                    Text(
+                        text = "Pos corr: ${pp.posCorrelation}% · Accel: ${pp.accelCorrelation}% · UI-only: ${pp.uiOnlyLikelihood}%",
+                        color = Color(0xFFE2E8F0),
+                        fontSize = fsTiny,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    if (pp.evidence.isNotBlank()) {
+                        Text(text = pp.evidence, color = Color(0xFF94A3B8), fontSize = fsTiny)
+                    }
+                }
+                Spacer(Modifier.height((4f * s).dp))
+            }
+            state.protectionReport?.let { pr ->
+                val isWarn = pr.readOnly || pr.likelyServerRestored || pr.verdict == "display-only-ui"
+                Column(
+                    verticalArrangement = Arrangement.spacedBy((3f * s).dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (isWarn) Color(0xFF2E1A0B) else Color(0xFF0E241C), RoundedCornerShape((8f * s).dp))
+                        .border(1.dp, if (isWarn) Color(0xFFF59E0B) else Color(0xFF34D399), RoundedCornerShape((8f * s).dp))
+                        .padding((6f * s).dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Protection: ${pr.verdict}",
+                            color = if (isWarn) Color(0xFFFDE68A) else Color(0xFF6EE7B7),
+                            fontSize = fsTiny,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(text = "✕", color = Color(0xFFF87171), fontSize = fsSmall, fontWeight = FontWeight.Bold, modifier = Modifier.clickable(onClick = onClearProtectionReport).padding(horizontal = (4f * s).dp))
+                    }
+                    if (pr.explanation.isNotBlank()) {
+                        Text(text = pr.explanation, color = Color(0xFFE2E8F0), fontSize = fsTiny)
+                    }
+                    if (pr.recommendation.isNotBlank()) {
+                        Text(text = "Tip: ${pr.recommendation}", color = Color(0xFF93C5FD), fontSize = fsTiny)
+                    }
+                }
+                Spacer(Modifier.height((4f * s).dp))
+            }
             displayedWatches.forEach { w ->
                 CeWatchEntryCard(
                     w = w,
@@ -800,6 +867,8 @@ internal fun CeWatchTabContent(
                     onSetSafeMax = { useInf -> onSetWatchSafeMax(w.id, useInf) },
                     onInspectTypes = { onInspectWatchTypes(w.id) },
                     onQuickRetype = { sug -> onRetypeWatch(w.id, sug, 0) },
+                    onProbePhysics = { onProbeWatchPhysics(w.id) },
+                    onAnalyzeProtection = { onAnalyzeWatchProtection(w.id) },
                     onSaveRecipe = { onSaveCheatRecipe(w.id) },
                     onToggleFavorite = { onToggleWatchFavorite(w.id) },
                     onCycleColor = { onCycleWatchColorTag(w.id) },
@@ -842,6 +911,8 @@ private fun CeWatchEntryCard(
     onSetSafeMax: (Boolean) -> Unit,
     onInspectTypes: () -> Unit,
     onQuickRetype: (String) -> Unit,
+    onProbePhysics: () -> Unit = {},
+    onAnalyzeProtection: () -> Unit = {},
     onSaveRecipe: () -> Unit,
     onToggleFavorite: () -> Unit,
     onCycleColor: () -> Unit,
@@ -992,12 +1063,13 @@ private fun CeWatchEntryCard(
                         "failed" -> "FREEZE FAILED"
                         "detached" -> "DETACHED / GC'd"
                         "arming" -> "Arming $ruleTxt..."
+                        "externally_restored" -> "EXTERNALLY / SERVER RESTORED"
                         "fighting" -> "$modeTxt ($ruleTxt) · ${w.blockedWrites} blk$rpsTxt FIGHTING"
                         "enforcing" -> "$modeTxt ($ruleTxt) · ${w.blockedWrites} blk$rpsTxt"
                         else -> "$modeTxt ($ruleTxt ${w.frozenValue})"
                     }
                     val badgeColor = when (w.freezeStatus) {
-                        "failed", "detached" -> Color(0xFFF87171)
+                        "failed", "detached", "externally_restored" -> Color(0xFFF87171)
                         "arming" -> Color(0xFF94A3B8)
                         "fighting" -> Color(0xFFFBBF24)
                         "enforcing" -> Color(0xFF34D399)
@@ -1044,6 +1116,8 @@ private fun CeWatchEntryCard(
                 Triple("Find Same", Color(0xFF0369A1), onFindSame),
                 Triple("Test Real", Color(0xFF4C1D95), onTestAuthority),
                 Triple("Types", Color(0xFF0F766E), onInspectTypes),
+                Triple("Phys", Color(0xFF0E7490), onProbePhysics),
+                Triple("Diag", Color(0xFF6D28D9), onAnalyzeProtection),
                 Triple("MAX SAFE", Color(0xFF065F46), { onSetSafeMax(false) }),
                 Triple("∞ Inf", Color(0xFF7C2D12), { onSetSafeMax(true) }),
                 Triple("Recipe+", Color(0xFF1E293B), onSaveRecipe)

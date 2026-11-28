@@ -41,6 +41,10 @@ class ActivityBridge @Inject constructor(
     var externalPickerOpen: Boolean = false
         private set
 
+    fun markExternalPickerOpen(open: Boolean) {
+        externalPickerOpen = open
+    }
+
     fun activity(): ComponentActivity? = activityRef?.get()
 
     fun context(): Context = activityRef?.get() ?: appContext

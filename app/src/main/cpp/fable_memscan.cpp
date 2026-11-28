@@ -953,6 +953,18 @@ void diff_unknown_snapshots_locked(const std::vector<UnknownRegionSnap>& snaps, 
     }
 }
 
+static bool is_all_zero_block(const std::uint8_t* ptr, std::size_t len) {
+    const std::size_t words = len / 8;
+    const auto* w = reinterpret_cast<const std::uint64_t*>(ptr);
+    for (std::size_t i = 0; i < words; ++i) {
+        if (w[i] != 0) return false;
+    }
+    for (std::size_t i = words * 8; i < len; ++i) {
+        if (ptr[i] != 0) return false;
+    }
+    return true;
+}
+
 std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1, const std::string& s2,
                                 std::size_t max_return, int timeout_ms = 15000) {
     g_cancel_scan.store(false, std::memory_order_release);
@@ -1081,6 +1093,10 @@ std::string mem_first_scan_impl(int dtype, int scan_type, const std::string& s1,
                 continue;
             }
             const std::size_t valid = static_cast<std::size_t>(got);
+            if (scan_type == SC_EXACT && dtype != DT_STRING && dtype != DT_AOB && std::fabs(v1) > 1e-6 && is_all_zero_block(chunk.data(), valid)) {
+                cursor += valid;
+                continue;
+            }
 
             if (scan_type == SC_GROUP) {
                 const auto& t0 = gq.terms[0];
@@ -2532,7 +2548,114 @@ std::string mem_inspect_types_impl(std::uint64_t addr, int cur_dtype) {
     out += ",\"x10\":\"" + std::string(x10s) + "\"";
     out += ",\"x100\":\"" + std::string(x100s) + "\"";
     out += ",\"x1000\":\"" + std::string(x1000s) + "\"";
+    std::string split64_str;
+    if (got >= 8) {
+        std::uint32_t lo32 = 0, hi32 = 0;
+        std::memcpy(&lo32, b, 4);
+        std::memcpy(&hi32, b + 4, 4);
+        split64_str = "hi=" + std::to_string(hi32) + " | lo=" + std::to_string(lo32);
+        if (diag.empty() && (cur_dtype == DT_INT32 || cur_dtype == DT_UINT32) && hi32 > 0 && hi32 < 65536) {
+            diag = "Possible 64-bit integer (u64 = " + std::to_string(v_u64) + ", hi32=" + std::to_string(hi32) + ")";
+            sug = "i64";
+        }
+    }
+    out += ",\"split64\":\"" + split64_str + "\"";
     out += ",\"diagnosis\":\"" + diag + "\",\"suggestedType\":\"" + sug + "\"}";
+    return out;
+}
+
+std::string mem_analyze_protection_impl(std::uint64_t addr, int dtype) {
+    const std::size_t sz = type_size(dtype, 0);
+    if (sz == 0 || sz > 8) return "{\"ok\":false,\"error\":\"Protection analyzer requires numeric type\"}";
+    std::string perms = "----";
+    bool in_maps = false;
+    {
+        FILE* fp = std::fopen("/proc/self/maps", "r");
+        if (fp) {
+            char line[512];
+            while (std::fgets(line, sizeof(line), fp)) {
+                unsigned long long a = 0, b = 0;
+                char pbuf[8] = {0};
+                if (std::sscanf(line, "%llx-%llx %4s", &a, &b, pbuf) == 3) {
+                    if (addr >= static_cast<std::uint64_t>(a) && addr + sz <= static_cast<std::uint64_t>(b)) {
+                        in_maps = true;
+                        perms = pbuf;
+                        break;
+                    }
+                }
+            }
+            std::fclose(fp);
+        }
+    }
+    const bool perm_w = perms.size() >= 2 && perms[1] == 'w';
+    const bool perm_r = perms.size() >= 1 && perms[0] == 'r';
+    if (!in_maps || !perm_r) {
+        return "{\"ok\":true,\"perms\":\"" + perms + "\",\"writable\":false,\"readOnly\":true,\"restoredImmediately\":false,\"restoredDelayed\":false,\"nearbyMirrors\":0,\"verdict\":\"unmapped-or-protected\",\"explanation\":\"Address is outside readable process mappings\"}";
+    }
+    SafeMemIo io(perm_w);
+    if (!io.valid()) return "{\"ok\":false,\"error\":\"Cannot open self memory\"}";
+    std::uint8_t orig[8] = {0};
+    if (io.read_at(addr, orig, sz) != static_cast<ssize_t>(sz)) {
+        return "{\"ok\":true,\"perms\":\"" + perms + "\",\"writable\":false,\"readOnly\":true,\"restoredImmediately\":false,\"restoredDelayed\":false,\"nearbyMirrors\":0,\"verdict\":\"unreadable\",\"explanation\":\"Memory page refused read\"}";
+    }
+    int nearby_mirrors = 0;
+    const std::uint64_t win_start = (addr >= 128) ? (addr - 128) : 0;
+    std::uint8_t win_buf[264] = {0};
+    const ssize_t wgot = io.read_at(win_start, win_buf, 256);
+    if (wgot >= static_cast<ssize_t>(sz)) {
+        const std::size_t step = (sz >= 4) ? 4 : sz;
+        for (std::size_t i = 0; i + sz <= static_cast<std::size_t>(wgot); i += step) {
+            if (win_start + i == addr) continue;
+            if (std::memcmp(win_buf + i, orig, sz) == 0) nearby_mirrors++;
+        }
+    }
+    if (!perm_w) {
+        return "{\"ok\":true,\"perms\":\"" + perms + "\",\"writable\":false,\"readOnly\":true,\"restoredImmediately\":false,\"restoredDelayed\":false,\"nearbyMirrors\":" + std::to_string(nearby_mirrors) + ",\"verdict\":\"read-only\",\"explanation\":\"Mapping is read-only (" + perms + "); Fable respects OS memory permissions\"}";
+    }
+    const double cur_v = decode_numeric(load_raw_u64(orig, dtype), dtype);
+    std::uint8_t probe[64] = {0};
+    std::size_t psz = sz;
+    const bool encoded = std::isfinite(cur_v) && encode_numeric_val_bytes(dtype, cur_v + 1.0, probe, psz);
+    bool writable = false;
+    bool restored_imm = false;
+    bool restored_del = false;
+    if (encoded) {
+        writable = (io.write_at(addr, probe, sz) == static_cast<ssize_t>(sz));
+        if (writable) {
+            std::uint8_t rb1[8] = {0}, rb2[8] = {0};
+            if (io.read_at(addr, rb1, sz) == static_cast<ssize_t>(sz) && std::memcmp(rb1, orig, sz) == 0) {
+                restored_imm = true;
+            }
+            ::usleep(25000);
+            if (!restored_imm && io.read_at(addr, rb2, sz) == static_cast<ssize_t>(sz) && std::memcmp(rb2, orig, sz) == 0) {
+                restored_del = true;
+            }
+            io.write_at(addr, orig, sz);
+        }
+    }
+    std::string verdict = "writable-stable";
+    std::string expl = "Writable private memory; value stayed modified cleanly";
+    if (!writable) {
+        verdict = "read-only";
+        expl = "OS refused write to this mapping";
+    } else if (restored_imm) {
+        verdict = "rewritten-immediately";
+        expl = "Another thread or loop overwrote the value immediately";
+    } else if (restored_del) {
+        verdict = "rewritten-by-local-loop";
+        expl = "Value reverted within 25ms — local update loop or mirror sync suspected";
+    } else if (nearby_mirrors > 0) {
+        verdict = "linked-copies-suspected";
+        expl = "Writable, with " + std::to_string(nearby_mirrors) + " nearby identical copy/copies in +-128B struct";
+    }
+    std::string out = "{\"ok\":true,\"perms\":\"" + perms + "\"";
+    out += ",\"writable\":" + std::string(writable ? "true" : "false");
+    out += ",\"readOnly\":" + std::string((!writable) ? "true" : "false");
+    out += ",\"restoredImmediately\":" + std::string(restored_imm ? "true" : "false");
+    out += ",\"restoredDelayed\":" + std::string(restored_del ? "true" : "false");
+    out += ",\"nearbyMirrors\":" + std::to_string(nearby_mirrors);
+    out += ",\"verdict\":\"" + verdict + "\"";
+    out += ",\"explanation\":\"" + expl + "\"}";
     return out;
 }
 
@@ -2779,6 +2902,12 @@ Java_com_fable_browser_engine_NativeMemoryScanner_nativeTestAuthority(JNIEnv* en
 JNIEXPORT jstring JNICALL
 Java_com_fable_browser_engine_NativeMemoryScanner_nativeInspectTypes(JNIEnv* env, jclass, jlong addr, jint dtype) {
     const std::string res = mem_inspect_types_impl(static_cast<std::uint64_t>(addr), dtype);
+    return env->NewStringUTF(res.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_fable_browser_engine_NativeMemoryScanner_nativeAnalyzeProtection(JNIEnv* env, jclass, jlong addr, jint dtype) {
+    const std::string res = mem_analyze_protection_impl(static_cast<std::uint64_t>(addr), dtype);
     return env->NewStringUTF(res.c_str());
 }
 

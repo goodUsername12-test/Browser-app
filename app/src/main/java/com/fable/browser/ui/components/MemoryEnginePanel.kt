@@ -66,6 +66,7 @@ import com.fable.browser.engine.MemFreezeRule
 import com.fable.browser.engine.MemFreezeStrength
 import com.fable.browser.engine.MemPerfProfile
 import com.fable.browser.engine.MemScanResultItem
+import com.fable.browser.engine.MemPhysicsItem
 import com.fable.browser.engine.MemScanType
 import com.fable.browser.engine.MemScope
 import com.fable.browser.engine.MemStructField
@@ -153,6 +154,13 @@ fun MemoryEnginePanel(
     onInspectWatchTypes: (String) -> Unit = {},
     onRetypeWatch: (String, String, Int) -> Unit = { _, _, _ -> },
     onClearTypeInspect: () -> Unit = {},
+    onScanPhysics: () -> Unit = {},
+    onClearPhysicsScan: () -> Unit = {},
+    onAddPhysicsItemToWatch: (MemPhysicsItem) -> Unit = {},
+    onProbeWatchPhysics: (String) -> Unit = {},
+    onClearPhysicsProbe: () -> Unit = {},
+    onAnalyzeWatchProtection: (String) -> Unit = {},
+    onClearProtectionReport: () -> Unit = {},
     onToggleWatchFavorite: (String) -> Unit = {},
     onCycleWatchColorTag: (String) -> Unit = {},
     onSaveCheatRecipe: (String) -> Unit = {},
@@ -772,6 +780,18 @@ fun MemoryEnginePanel(
                                     onClick = { editingScanAddr = null; showBulkScanEdit = false; sourceFilter = "all"; onResetScan() },
                                     modifier = Modifier.weight(0.7f)
                                 )
+                                if (state.scope == MemScope.PAGE_WASM) {
+                                    CeButton(
+                                        text = "Phys",
+                                        bg = Color(0xFF0E7490),
+                                        fg = Color.White,
+                                        fontSize = fsSmall,
+                                        minHeight = minBtnH,
+                                        enabled = !previewMode,
+                                        onClick = { focusManager.clearFocus(); onScanPhysics() },
+                                        modifier = Modifier.weight(0.75f)
+                                    )
+                                }
                             }
                         }
 
@@ -874,6 +894,66 @@ fun MemoryEnginePanel(
                                     }
                                 }
                             }
+                        }
+
+                        if (state.physicsItems.isNotEmpty() || state.physicsVectors.isNotEmpty()) {
+                            Spacer(Modifier.height((4f * s).dp))
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy((3f * s).dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF0B1F2E), RoundedCornerShape((8f * s).dp))
+                                    .border(1.dp, Color(0xFF22D3EE), RoundedCornerShape((8f * s).dp))
+                                    .padding((6f * s).dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "Physics & Speed (${state.physicsItems.size} fields · ${state.physicsVectors.size} vecs)",
+                                        color = Color(0xFF67E8F9),
+                                        fontSize = fsTiny,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = "✕",
+                                        color = Color(0xFFF87171),
+                                        fontSize = fsSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.clickable(onClick = onClearPhysicsScan).padding(horizontal = (4f * s).dp)
+                                    )
+                                }
+                                state.physicsVectors.take(4).forEach { vec ->
+                                    Text(
+                                        text = "Vec ${vec.role}: ${vec.display}",
+                                        color = Color(0xFFA5F3FC),
+                                        fontSize = fsTiny,
+                                        fontFamily = FontFamily.Monospace,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                state.physicsItems.take(10).forEach { pi ->
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy((4f * s).dp), modifier = Modifier.fillMaxWidth()) {
+                                        Text(
+                                            text = "${pi.role} = ${pi.value} (${pi.confidenceScore}%)",
+                                            color = Color.White,
+                                            fontSize = fsTiny,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape((5f * s).dp),
+                                            color = Color(0xFF065F46),
+                                            modifier = Modifier.clickable(enabled = !previewMode) { onAddPhysicsItemToWatch(pi) }
+                                        ) {
+                                            Text(text = "+W", color = Color(0xFFA7F3D0), fontSize = fsTiny, modifier = Modifier.padding(horizontal = (5f * s).dp, vertical = (2f * s).dp))
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height((4f * s).dp))
                         }
 
                         if (state.results.isNotEmpty()) {
@@ -1291,6 +1371,10 @@ fun MemoryEnginePanel(
                             onInspectWatchTypes = onInspectWatchTypes,
                             onRetypeWatch = onRetypeWatch,
                             onClearTypeInspect = onClearTypeInspect,
+                            onProbeWatchPhysics = onProbeWatchPhysics,
+                            onClearPhysicsProbe = onClearPhysicsProbe,
+                            onAnalyzeWatchProtection = onAnalyzeWatchProtection,
+                            onClearProtectionReport = onClearProtectionReport,
                             onToggleWatchFavorite = onToggleWatchFavorite,
                             onCycleWatchColorTag = onCycleWatchColorTag,
                             onSaveCheatRecipe = onSaveCheatRecipe,
@@ -1569,6 +1653,13 @@ fun DraggableMemoryEnginePanel(
     onInspectWatchTypes: (String) -> Unit = {},
     onRetypeWatch: (String, String, Int) -> Unit = { _, _, _ -> },
     onClearTypeInspect: () -> Unit = {},
+    onScanPhysics: () -> Unit = {},
+    onClearPhysicsScan: () -> Unit = {},
+    onAddPhysicsItemToWatch: (MemPhysicsItem) -> Unit = {},
+    onProbeWatchPhysics: (String) -> Unit = {},
+    onClearPhysicsProbe: () -> Unit = {},
+    onAnalyzeWatchProtection: (String) -> Unit = {},
+    onClearProtectionReport: () -> Unit = {},
     onToggleWatchFavorite: (String) -> Unit = {},
     onCycleWatchColorTag: (String) -> Unit = {},
     onSaveCheatRecipe: (String) -> Unit = {},
@@ -1713,6 +1804,13 @@ fun DraggableMemoryEnginePanel(
             onInspectWatchTypes = onInspectWatchTypes,
             onRetypeWatch = onRetypeWatch,
             onClearTypeInspect = onClearTypeInspect,
+            onScanPhysics = onScanPhysics,
+            onClearPhysicsScan = onClearPhysicsScan,
+            onAddPhysicsItemToWatch = onAddPhysicsItemToWatch,
+            onProbeWatchPhysics = onProbeWatchPhysics,
+            onClearPhysicsProbe = onClearPhysicsProbe,
+            onAnalyzeWatchProtection = onAnalyzeWatchProtection,
+            onClearProtectionReport = onClearProtectionReport,
             onToggleWatchFavorite = onToggleWatchFavorite,
             onCycleWatchColorTag = onCycleWatchColorTag,
             onSaveCheatRecipe = onSaveCheatRecipe,

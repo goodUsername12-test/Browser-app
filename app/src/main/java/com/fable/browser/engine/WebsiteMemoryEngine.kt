@@ -213,9 +213,132 @@ object WebsiteMemoryEngine {
             return JSONObject().put("ok", true).toString()
         }
         if (op == "write" || op == "hexDump" || op == "writeHex" || op == "setFreeze" ||
-            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach" || op == "findMirrors" || op == "captureIdentity" || op == "reattachIdentity" || op == "testAuthority" || op == "setSafeMax" || op == "takeSnapshot" || op == "inspectTypes" || op == "retype") {
+            op == "peekStruct" || op == "pointerScan" || op == "setTrace" || op == "reattach" || op == "findMirrors" || op == "captureIdentity" || op == "reattachIdentity" || op == "testAuthority" || op == "setSafeMax" || op == "takeSnapshot" || op == "inspectTypes" || op == "retype" || op == "probePhysics" || op == "analyzeProtection") {
             val hit = parsed.firstOrNull { it.optBoolean("ok", false) } ?: parsed[0]
             return hit.toString()
+        }
+        if (op == "scanPhysics") {
+            val allPhys = ArrayList<JSONObject>()
+            val allVecs = JSONArray()
+            val enginesSet = LinkedHashSet<String>()
+            var anyOk = false
+            var maxMs = 0L
+            for (o in parsed) {
+                if (!o.optBoolean("ok", false)) continue
+                anyOk = true
+                maxMs = maxOf(maxMs, o.optLong("elapsedMs", 0L))
+                val engs = o.optJSONArray("engines")
+                if (engs != null) for (ei in 0 until engs.length()) {
+                    val en = engs.optString(ei)
+                    if (en.isNotBlank()) enginesSet.add(en)
+                }
+                val arr = o.optJSONArray("items")
+                if (arr != null) for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let(allPhys::add)
+                }
+                val vArr = o.optJSONArray("vectors")
+                if (vArr != null) for (i in 0 until vArr.length()) {
+                    if (allVecs.length() < 40) allVecs.put(vArr.get(i))
+                }
+            }
+            if (!anyOk) return parsed[0].toString()
+            allPhys.sortByDescending { it.optInt("confidenceScore", 50) }
+            val outArr = JSONArray()
+            for (i in 0 until minOf(allPhys.size, maxReturn.coerceIn(1, 200))) outArr.put(allPhys[i])
+            return JSONObject()
+                .put("ok", true)
+                .put("total", allPhys.size)
+                .put("elapsedMs", maxMs)
+                .put("frameCount", parsed.count { it.optBoolean("ok", false) })
+                .put("engines", JSONArray(enginesSet.toList()))
+                .put("vectors", allVecs)
+                .put("items", outArr)
+                .toString()
+        }
+        if (op == "liveAudit") {
+            var anyOk = false
+            var totalHits = 0
+            var wasmHits = 0
+            var jsHits = 0
+            var domHits = 0
+            var storageHits = 0
+            var physicsCount = 0
+            var wasmCount = 0
+            var bufCount = 0
+            var workerCount = 0
+            var sabCount = 0
+            var mirrorsCount = 0
+            var typeInspectOk = false
+            var maxScanMs = 0L
+            var topHit = ""
+            var topKind = ""
+            var topRole = ""
+            var topType = ""
+            var queryUsed = ""
+            var failureReason = ""
+            val enginesSet = LinkedHashSet<String>()
+            val rolesSet = LinkedHashSet<String>()
+            for (o in parsed) {
+                if (!o.optBoolean("ok", false)) continue
+                anyOk = true
+                wasmCount += o.optInt("wasmCount", 0)
+                bufCount += o.optInt("bufCount", 0)
+                workerCount += o.optInt("workerCount", 0)
+                sabCount += o.optInt("sabCount", 0)
+                totalHits += o.optInt("totalHits", 0)
+                wasmHits += o.optInt("wasmHits", 0)
+                jsHits += o.optInt("jsHits", 0)
+                domHits += o.optInt("domHits", 0)
+                storageHits += o.optInt("storageHits", 0)
+                physicsCount += o.optInt("physicsCount", 0)
+                mirrorsCount = maxOf(mirrorsCount, o.optInt("mirrorsCount", 0))
+                if (o.optBoolean("typeInspectOk", false)) typeInspectOk = true
+                maxScanMs = maxOf(maxScanMs, o.optLong("scanMs", 0L))
+                if (queryUsed.isEmpty()) queryUsed = o.optString("queryUsed")
+                val candTop = o.optString("topHit")
+                if (candTop.isNotBlank() && (topHit.isEmpty() || o.optString("topKind") == "wasm")) {
+                    topHit = candTop
+                    topKind = o.optString("topKind")
+                    topRole = o.optString("topRole")
+                    topType = o.optString("topType")
+                }
+                if (failureReason.isEmpty()) failureReason = o.optString("failureReason")
+                val engs = o.optJSONArray("engines")
+                if (engs != null) for (ei in 0 until engs.length()) {
+                    val en = engs.optString(ei); if (en.isNotBlank()) enginesSet.add(en)
+                }
+                val rls = o.optJSONArray("physicsRoles")
+                if (rls != null) for (ri in 0 until rls.length()) {
+                    val rl = rls.optString(ri); if (rl.isNotBlank()) rolesSet.add(rl)
+                }
+            }
+            if (!anyOk) return parsed[0].toString()
+            if (totalHits > 0 || physicsCount > 0) failureReason = "none"
+            return JSONObject()
+                .put("ok", true)
+                .put("frameCount", parsed.count { it.optBoolean("ok", false) })
+                .put("engines", JSONArray(enginesSet.toList()))
+                .put("wasmCount", wasmCount)
+                .put("bufCount", bufCount)
+                .put("workerCount", workerCount)
+                .put("sabCount", sabCount)
+                .put("queryUsed", queryUsed)
+                .put("totalHits", totalHits)
+                .put("wasmHits", wasmHits)
+                .put("jsHits", jsHits)
+                .put("domHits", domHits)
+                .put("storageHits", storageHits)
+                .put("physicsCount", physicsCount)
+                .put("physicsRoles", JSONArray(rolesSet.toList()))
+                .put("topHit", topHit)
+                .put("topKind", topKind)
+                .put("topRole", topRole)
+                .put("topType", topType)
+                .put("mirrorsCount", mirrorsCount)
+                .put("typeInspectOk", typeInspectOk)
+                .put("scanMs", maxScanMs)
+                .put("failureReason", failureReason.ifBlank { "no-discoverable-local-values" })
+                .toString()
         }
         if (op == "regions") {
             var totalKb = 0L
@@ -367,6 +490,7 @@ object WebsiteMemoryEngine {
         sb.append("\n").append(JS_PART_7)
         sb.append("\n").append(JS_PART_8)
         sb.append("\n").append(JS_PART_9)
+        sb.append("\n").append(JS_PART_10)
         return sb.toString()
     }
 
@@ -1193,10 +1317,17 @@ out.diagnosis = "Signed i8 negative! Unsigned u8 = " + dv.getUint8(h.off);
 out.suggestedType = "u8";
 }
 }
+out.split64 = "";
 if (rem >= 8) {
+var lo32 = dv.getUint32(h.off, true);
+var hi32 = dv.getUint32(h.off + 4, true);
+out.split64 = "hi=" + hi32 + " | lo=" + lo32;
 var f64v = dv.getFloat64(h.off, true);
 out.f64 = Number.isFinite(f64v) ? formatVal(f64v, "f64") : String(f64v);
-if (!out.diagnosis && (h.dt === "i32" || h.dt === "u32") && Number.isFinite(f64v) && Math.abs(f64v) >= 0.01 && Math.abs(f64v) <= 1e12 && Math.abs(dv.getInt32(h.off, true)) > 100000000) {
+if (!out.diagnosis && (h.dt === "i32" || h.dt === "u32") && hi32 > 0 && hi32 < 65536) {
+out.diagnosis = "Split 64-bit integer (u64 = " + out.u64 + ", hi32=" + hi32 + ")";
+out.suggestedType = "i64";
+} else if (!out.diagnosis && (h.dt === "i32" || h.dt === "u32") && Number.isFinite(f64v) && Math.abs(f64v) >= 0.01 && Math.abs(f64v) <= 1e12 && Math.abs(dv.getInt32(h.off, true)) > 100000000) {
 out.diagnosis = "Looks like 64-bit Double (f64 = " + out.f64 + ")";
 out.suggestedType = "f64";
 }
@@ -1629,7 +1760,7 @@ try { cur = obj[h.key]; } catch (_) {}
 var cs = cleanNumStr(valStr);
 var isInfReq = String(valStr).trim().toLowerCase() === "infinity";
 var nextJsVal = (typeof cur === "bigint" && typeof BigInt === "function" && cs !== "")
-? (isInfReq ? BigInt("999999999999999999999999999999") : (!Number.isNaN(Number(cs)) ? BigInt(Math.trunc(Number(cs))) : cur))
+? (isInfReq ? BigInt("999999999999999999999999999999") : (function(){ var b = parseBigIntExact(cs, false); return b !== null ? b : cur; })())
 : (isInfReq ? Infinity
 : ((typeof cur === "number" || (h.dt !== "str" && !Number.isNaN(Number(cs)) && cs !== ""))
 ? Number(cs)
@@ -1937,16 +2068,21 @@ fe.status = "detached";
 return;
 }
 if (diffB) {
+var gapMs = fe.lastRevertMs > 0 ? (now - fe.lastRevertMs) : 0;
+if (gapMs >= 250 && gapMs <= 15000 && fe.ratePerSec <= 4) fe.delayedReverts = (fe.delayedReverts || 0) + 1;
+else if (fe.ratePerSec >= 8) fe.delayedReverts = 0;
+fe.lastRevertMs = now;
 if (writeHitValue(h, fe.valStr, true)) {
 fe.blocked++;
 fe.recentBlocked++;
 anyFightingBinary = true;
+if (fe.groupId) syncFrozenGroupPeers(fe.groupId, fe.localId);
 } else {
 fe.status = "detached";
 return;
 }
 }
-fe.status = fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked");
+fe.status = fe.delayedReverts >= 5 ? "externally_restored" : (fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked"));
 if (fe.status === "fighting") anyFightingBinary = true;
 return;
 }
@@ -1966,17 +2102,22 @@ return;
 }
 var ev = ruleEval(rd.val, fe);
 if (ev.violated) {
+var gapMs2 = fe.lastRevertMs > 0 ? (now - fe.lastRevertMs) : 0;
+if (gapMs2 >= 250 && gapMs2 <= 15000 && fe.ratePerSec <= 4) fe.delayedReverts = (fe.delayedReverts || 0) + 1;
+else if (fe.ratePerSec >= 8) fe.delayedReverts = 0;
+fe.lastRevertMs = now;
 if (writeHitValue(h, String(ev.nextVal), true)) {
 fe.blocked++;
 fe.recentBlocked++;
 if (isStorage && fe.trapInstalled) fe.mode = "trap+poll";
 if (!isStorage) anyFightingBinary = true;
+if (fe.groupId) syncFrozenGroupPeers(fe.groupId, fe.localId);
 } else {
 fe.status = "detached";
 return;
 }
 }
-fe.status = fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked");
+fe.status = fe.delayedReverts >= 5 ? "externally_restored" : (fe.ratePerSec >= 10 ? "fighting" : (fe.blocked > 0 ? "enforcing" : "locked"));
 if (!isStorage && fe.status === "fighting") anyFightingBinary = true;
 });
 return anyFightingBinary;
@@ -2262,11 +2403,12 @@ configurable: true
 Object.defineProperty(entry.origObj, entry.rec.key, restoreDesc);
 } catch (_) {}
 }
-function installFreezeEntry(localId, valStr, ruleStr) {
+function installFreezeEntry(localId, valStr, ruleStr, groupIdStr) {
 var rec = watchRefs.get(localId);
 if (!rec) return { ok: false, error: "Entry not found in frame" };
 var existing = frozenMap.get(localId);
 if (existing) {
+if (typeof groupIdStr === "string") existing.groupId = groupIdStr;
 configureFreezeRuleValues(existing, rec, valStr, ruleStr);
 if (existing.rule === "eq") {
 if (!writeHitValue(rec, valStr, true)) return { ok: false, error: "Write failed (detached)" };
@@ -2313,8 +2455,13 @@ origGet: null,
 origSet: null,
 origObj: null,
 targetBytes: null,
+groupId: "",
+lastRevertMs: 0,
+delayedReverts: 0,
+lastHoldMs: origDateNow(),
 status: "locked"
 };
+if (typeof groupIdStr === "string") fe.groupId = groupIdStr;
 configureFreezeRuleValues(fe, rec, valStr, ruleStr);
 if (fe.rule === "eq" || fe.rule === "unlimited_max") {
 if (!writeHitValue(rec, fe.valStr, true)) return { ok: false, error: "Write failed (detached)" };
@@ -2714,9 +2861,22 @@ i64Hi = scratchI32[1];
 }
 var f32a = f32CrossZero ? new Float32Array(buf, byteOff, len4) : null;
 var lastIdx = len4 - 1;
+var canSkipZeroPages = (Math.abs(v1) > 0.05 && !f32CrossZero && !f64CrossZero && len4 >= 2048);
 var wNext = len4 > 0 ? i32a[0] : 0;
 for (var idx = 0; idx < len4 && out.length < cap; idx++) {
 if ((idx & 262143) === 0 && deadlineMs && Date.now() >= deadlineMs) { if (stateFlags) stateFlags.timedOut = true; return; }
+if (canSkipZeroPages && (idx & 1023) === 0 && idx + 1024 < len4 && wNext === 0) {
+var nz = 0;
+for (var zi = idx; zi < idx + 1024; zi += 4) {
+nz = i32a[zi] | i32a[zi + 1] | i32a[zi + 2] | i32a[zi + 3];
+if (nz !== 0) break;
+}
+if (nz === 0) {
+idx += 1021;
+wNext = i32a[idx + 1];
+continue;
+}
+}
 var w = wNext;
 wNext = idx < lastIdx ? i32a[idx + 1] : 0;
 if (fitsI32 && w === target32) {
@@ -3374,7 +3534,7 @@ out.push({ id: "dom:" + dTag + "[" + attr.name + "]", kind: "dom", elRef: mkRef(
 }
 }
 if (dt !== "aob") {
-var hudEls = doc.querySelectorAll("[id*='coin'],[id*='gold'],[id*='score'],[id*='money'],[id*='cash'],[id*='gem'],[id*='hp'],[id*='health'],[id*='ammo'],[id*='level'],[id*='point'],[class*='coin'],[class*='score'],[class*='gold'],[class*='money'],[class*='counter']");
+var hudEls = doc.querySelectorAll("[id*='coin'],[id*='gold'],[id*='score'],[id*='money'],[id*='cash'],[id*='gem'],[id*='hp'],[id*='health'],[id*='ammo'],[id*='level'],[id*='point'],[class*='coin'],[class*='score'],[class*='gold'],[class*='money'],[class*='counter'],[id*='speed'],[id*='vel'],[id*='grav'],[id*='jump'],[class*='speed'],[class*='hud'],[class*='stat']");
 for (var hi = 0; hi < hudEls.length && hi < 80 && out.length < cap; hi++) {
 var hel = hudEls[hi];
 if (!hel || seenEl.has(hel) || hel.children.length > 0) continue;
@@ -4187,7 +4347,7 @@ currentScale: recIT.scale || 0, currentVal: rdIT.ok ? formatVal(rdIT.val, recIT.
 hex: diag.hex, i8: diag.i8, u8: diag.u8, i16: diag.i16, u16: diag.u16,
 i32: diag.i32, u32: diag.u32, i64: diag.i64, u64: diag.u64,
 f32: diag.f32, f64: diag.f64, x10: diag.x10, x100: diag.x100, x1000: diag.x1000,
-diagnosis: diag.diagnosis, suggestedType: diag.suggestedType, suggestedScale: diag.suggestedScale
+split64: diag.split64 || "", diagnosis: diag.diagnosis, suggestedType: diag.suggestedType, suggestedScale: diag.suggestedScale
 };
 }
 var curV = rdIT.ok ? rdIT.val : "";
@@ -4327,7 +4487,7 @@ var nl = Math.max(0, Math.min(2, Math.round(cmd.strength)));
 if (nl !== freezeStrength) { freezeStrength = nl; if (frozenMap.size > 0) { stopFreezeLoops(); startFreezeLoops(); } }
 }
 if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
-var fr = installFreezeEntry(stripOwnFramePrefix(cmd.id), cmd.val, cmd.rule || "eq");
+var fr = installFreezeEntry(stripOwnFramePrefix(cmd.id), cmd.val, cmd.rule || "eq", String(cmd.groupId || ""));
 fr.frameId = FRAME_ID;
 return fr;
 }
@@ -4343,7 +4503,7 @@ var failedIds = [];
 for (var fbi = 0; fbi < entriesF.length; fbi++) {
 var ef = entriesF[fbi];
 if (!ef || !isForThisFrame(ef.id)) continue;
-var rF = installFreezeEntry(stripOwnFramePrefix(ef.id), ef.val, ef.rule || "eq");
+var rF = installFreezeEntry(stripOwnFramePrefix(ef.id), ef.val, ef.rule || "eq", String(ef.groupId || cmd.groupId || ""));
 if (rF.ok) {
 locked++;
 lockedIds.push(ef.id);
@@ -4912,6 +5072,10 @@ regs.push({ start: qualifyId("ta#" + tai), end: "0x" + tLen.toString(16).toUpper
 }
 return { ok: true, frameId: FRAME_ID, count: regs.length, totalKb: totalKb, workerCount: liveWorkerCount(), engines: detectEngines(), regions: regs };
 }
+if (cmd.op === "scanPhysics") return handleScanPhysics(cmd);
+if (cmd.op === "probePhysics") return handleProbePhysics(cmd);
+if (cmd.op === "analyzeProtection") return handleAnalyzeProtection(cmd);
+if (cmd.op === "liveAudit") return handleLiveAudit(cmd);
 return { ok: false, error: "Unknown op" };
 } catch (e) {
 return { ok: false, error: String(e && e.message ? e.message : e) };
@@ -4998,6 +5162,483 @@ d.box.ok = true;
 d.box.out = handleCmd(d);
 }
 }, false);
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_10 = """
+function syncFrozenGroupPeers(groupId, skipLocalId) {
+if (!groupId) return;
+frozenMap.forEach(function(peerFe, peerId) {
+if (peerId === skipLocalId || peerFe.groupId !== groupId || !peerFe.rec) return;
+try {
+if (peerFe.rule === "eq") {
+var dPeer = (peerFe.rec.kind === "wasm" || peerFe.rec.kind === "ta" || peerFe.rec.kind === "ab") && peerFe.targetBytes
+? binaryBytesDiffer(peerFe.rec, peerFe.targetBytes) : true;
+if (dPeer) writeHitValue(peerFe.rec, peerFe.valStr, true);
+}
+} catch (_) {}
+});
+}
+var PHYS_MOVE_RE = /(^|_)(move|walk|run|sprint|max|base|player|hero|car|bike|ship|fly|swim|climb|dash|boost|roll)?_?(speed|maxspeed|maxvel|thrust|pace)(mul|mult|factor|cap|limit)?${'$'}/i;
+var PHYS_VEL_RE = /(^|_)(vel|velocity|linvel|linearvel|vx|vy|vz|velx|vely|velz|dx|dy|dz|speedx|speedy|speedz)${'$'}/i;
+var PHYS_POS_RE = /(^|_)(pos|position|posx|posy|posz|coord|transform|location)${'$'}/i;
+var PHYS_GRAV_RE = /(^|_)(grav|gravity|gravityscale|fallspeed|maxfall|terminalvel|downforce)${'$'}/i;
+var PHYS_JUMP_RE = /(^|_)(jump|jumpforce|jumpspeed|jumpvel|jumppower|jumpheight|hopforce|impulse)${'$'}/i;
+var PHYS_ACCEL_RE = /(^|_)(accel|acceleration|decel|friction|drag|damping|aircontrol|steer|steering|turnspeed|rotspeed|torque|grip|traction)${'$'}/i;
+var PHYS_TIME_RE = /(^|_)(timescale|dt|deltatime|fixeddt|fixeddeltatime|simspeed|gamespeed|animspeed|playbackrate|timestep)${'$'}/i;
+var PHYS_UI_RE = /(ui|hud|label|text|display|slider|tooltip|meter|gauge|bar|dom)/i;
+function classifyPhysicsKey(keyName, fullPath) {
+var k = String(keyName || "");
+var p = String(fullPath || "");
+var isUi = PHYS_UI_RE.test(p) || PHYS_UI_RE.test(k);
+if (PHYS_GRAV_RE.test(k)) return { cat: "gravity", role: "Gravity", score: isUi ? 35 : 94, uiLike: isUi ? 80 : 6 };
+if (PHYS_JUMP_RE.test(k)) return { cat: "jump", role: "Jump Force", score: isUi ? 35 : 92, uiLike: isUi ? 80 : 6 };
+if (PHYS_VEL_RE.test(k)) return { cat: "velocity", role: "Velocity", score: isUi ? 30 : 91, uiLike: isUi ? 78 : 8 };
+if (PHYS_MOVE_RE.test(k)) return { cat: "move_speed", role: isUi ? "UI Speed Value" : "Movement Speed", score: isUi ? 32 : 93, uiLike: isUi ? 82 : 7 };
+if (PHYS_ACCEL_RE.test(k)) return { cat: "accel_drag", role: "Accel / Friction", score: isUi ? 30 : 88, uiLike: isUi ? 78 : 10 };
+if (PHYS_TIME_RE.test(k)) return { cat: "time_scale", role: /anim|playback/i.test(k) ? "Animation Speed" : "Time Scale", score: isUi ? 30 : 86, uiLike: isUi ? 75 : 12 };
+if (PHYS_POS_RE.test(k)) return { cat: "position", role: "Position", score: isUi ? 25 : 80, uiLike: isUi ? 80 : 10 };
+return null;
+}
+function handleScanPhysics(cmd) {
+var t0 = Date.now();
+var deadline = t0 + Math.max(800, Math.min(8000, Number(cmd.timeoutMs) || 3500));
+var maxRet = Math.max(10, Math.min(200, Number(cmd.maxReturn) || 80));
+var items = [];
+var vectors = [];
+var seenIds = new Set();
+var visited = new WeakSet();
+var queue = [{ obj: window, path: "window", depth: 0 }];
+try { seedEngineAndFrameworkRoots(window, queue, visited); } catch (_) {}
+var qHead = 0, visitedCnt = 0;
+while (qHead < queue.length && visitedCnt < 16000 && items.length < maxRet * 2) {
+if ((visitedCnt & 511) === 0 && Date.now() >= deadline) break;
+var cur = queue[qHead++];
+var obj = cur.obj;
+if (!obj || (typeof obj !== "object" && typeof obj !== "function")) continue;
+try { if (visited.has(obj)) continue; visited.add(obj); } catch (_) { continue; }
+visitedCnt++;
+if (cur.depth > 0 && isSkippedBuiltinObject(obj)) continue;
+var keys = [];
+try { keys = cur.depth <= 2 ? Object.getOwnPropertyNames(obj) : Object.keys(obj); } catch (_) { continue; }
+// Vector detection on objects containing {x, y[, z]} or {vx, vy[, vz]}
+if (cur.depth > 0 && keys.length <= 24) {
+try {
+var hasXY = typeof obj.x === "number" && typeof obj.y === "number" && Number.isFinite(obj.x) && Number.isFinite(obj.y);
+var hasVXY = typeof obj.vx === "number" && typeof obj.vy === "number" && Number.isFinite(obj.vx) && Number.isFinite(obj.vy);
+var pLower = cur.path.toLowerCase();
+var isPhysVecParent = /(vel|velocity|pos|position|speed|accel|force|grav|move|player|hero|body|rigid|ship|car)/i.test(pLower);
+if ((hasXY && isPhysVecParent) || hasVXY) {
+var axes = hasVXY ? (typeof obj.vz === "number" ? ["vx", "vy", "vz"] : ["vx", "vy"]) : (typeof obj.z === "number" ? ["x", "y", "z"] : ["x", "y"]);
+var vecRole = (hasVXY || /vel|speed/i.test(pLower)) ? "Velocity Vector" : (/accel|force/i.test(pLower) ? "Accel Vector" : (/grav/i.test(pLower) ? "Gravity Vector" : "Position Vector"));
+var vecLabel = cur.path + "(" + axes.join(",") + ")";
+var compIds = [];
+var valsStr = [];
+for (var ai = 0; ai < axes.length; ai++) {
+var ak = axes[ai];
+var av = obj[ak];
+if (typeof av !== "number" || !Number.isFinite(av)) continue;
+var cid = "js:" + cur.path + "." + ak;
+var cdt = Number.isInteger(av) ? "i32" : "f64";
+if (!watchRefs.has(cid)) watchRefs.set(cid, { id: cid, kind: "js", objRef: mkRef(obj), key: ak, dt: cdt, prev: av });
+compIds.push(qualifyId(cid));
+valsStr.push(ak + "=" + formatVal(av, cdt));
+if (!seenIds.has(cid) && items.length < maxRet * 2) {
+seenIds.add(cid);
+items.push({
+addr: qualifyId(cid), val: formatVal(av, cdt), type: cdt, kind: "js",
+category: hasVXY || /vel/i.test(pLower) ? "velocity" : "position",
+role: vecRole + " (" + ak + ")", vecGroup: vecLabel,
+confidenceScore: 92, uiOnlyLikelihood: 6,
+evidence: "Grouped " + axes.length + "D vector: " + valsStr.join(", ")
+});
+}
+}
+if (compIds.length >= 2 && vectors.length < 30) {
+vectors.push({ group: vecLabel, role: vecRole, display: valsStr.join("  "), addrs: compIds });
+}
+}
+} catch (_) {}
+}
+for (var ki = 0; ki < Math.min(keys.length, 220) && items.length < maxRet * 2; ki++) {
+var k = keys[ki];
+if (SKIP_KEYS.has(k) || INTERNAL_KEY_RE.test(k) || SENSITIVE_KEY_RE.test(k)) continue;
+if (k.length > 2 && k[0] === "o" && k[1] === "n" && k[2] >= "a" && k[2] <= "z") continue;
+var v;
+try { v = obj[k]; } catch (_) { continue; }
+var fullP = cur.depth === 0 ? k : (cur.path + "." + k);
+if (typeof v === "number" && Number.isFinite(v)) {
+var cls = classifyPhysicsKey(k, fullP);
+if (cls) {
+var lid = "js:" + fullP;
+if (!seenIds.has(lid)) {
+seenIds.add(lid);
+var dtp = Number.isInteger(v) ? "i32" : "f64";
+if (!watchRefs.has(lid)) watchRefs.set(lid, { id: lid, kind: "js", objRef: mkRef(obj), key: k, dt: dtp, prev: v });
+items.push({
+addr: qualifyId(lid), val: formatVal(v, dtp), type: dtp, kind: "js",
+category: cls.cat, role: cls.role, vecGroup: "",
+confidenceScore: cls.score, uiOnlyLikelihood: cls.uiLike,
+evidence: "Matched physics field " + k + " = " + formatVal(v, dtp)
+});
+}
+}
+} else if (v && typeof v === "object" && cur.depth < 8 && !SKIP_SUBTREE_KEYS.has(k)) {
+try { if (!visited.has(v)) queue.push({ obj: v, path: fullP, depth: cur.depth + 1 }); } catch (_) {}
+}
+}
+}
+// Bounded WASM float32 scan for standard physics gravity constants (-9.81, -9.8, -19.62, -20.0, 9.81) + nearby speed/velocity struct fields
+var memsPh = liveWasmEntries();
+var gravTargets = [-9.81, -9.8, -19.62, 9.81];
+for (var mIdx = 0; mIdx < memsPh.length && items.length < maxRet * 2 && Date.now() < deadline; mIdx++) {
+var mbPh = memsPh[mIdx].mem.buffer;
+var scanLim = Math.min(mbPh.byteLength, 4 * 1024 * 1024) >>> 2;
+var f32Ph = new Float32Array(mbPh, 0, scanLim);
+for (var fi = 0; fi < scanLim && items.length < maxRet * 2; fi++) {
+if ((fi & 65535) === 0 && Date.now() >= deadline) break;
+var fv = f32Ph[fi];
+if (!Number.isFinite(fv) || fv === 0) continue;
+var isGrav = false;
+for (var gi = 0; gi < gravTargets.length; gi++) {
+if (Math.abs(fv - gravTargets[gi]) <= 0.008) { isGrav = true; break; }
+}
+if (isGrav) {
+var offB = fi << 2;
+var wid = "wasm#" + memsPh[mIdx].id + "+0x" + offB.toString(16).toUpperCase() + ":f32";
+if (!seenIds.has(wid)) {
+seenIds.add(wid);
+if (!watchRefs.has(wid)) {
+watchRefs.set(wid, { id: wid, kind: "wasm", bufIdx: memsPh[mIdx].id, memRef: memsPh[mIdx].ref, abRef: null, off: offB, dt: "f32", len: 4, prev: fv, scale: 0 });
+}
+items.push({
+addr: qualifyId(wid), val: formatVal(fv, "f32"), type: "f32", kind: "wasm",
+category: "gravity", role: "WASM Gravity Constant", vecGroup: "",
+confidenceScore: 86, uiOnlyLikelihood: 4,
+evidence: "WASM f32 physics gravity signature (" + formatVal(fv, "f32") + ")"
+});
+}
+}
+}
+}
+items.sort(function(a, b) { return b.confidenceScore - a.confidenceScore; });
+return {
+ok: true, frameId: FRAME_ID, total: items.length, elapsedMs: Date.now() - t0,
+engines: detectEngines(), vectors: vectors, items: items.slice(0, maxRet)
+};
+}
+function handleProbePhysics(cmd) {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var loc = stripOwnFramePrefix(cmd.id);
+var rec = watchRefs.get(loc);
+if (!rec) return { ok: false, error: "Entry not found in frame" };
+var rd0 = readHitCurrent(rec);
+if (!rd0.ok || typeof rd0.val !== "number" || !Number.isFinite(rd0.val)) {
+return { ok: false, error: "Physics probe requires a live numeric value" };
+}
+var origVal = rd0.val;
+var cl = classifyHitAuthority(rec);
+var leafKey = rec.kind === "js" ? String(rec.key || "") : loc;
+var pCls = classifyPhysicsKey(leafKey, loc);
+var uiLike = (rec.kind === "dom" || cl.role === "ui") ? 92 : (pCls ? pCls.uiLike : 25);
+var posCorr = 0, accelCorr = 0;
+var siblingSnaps = [];
+if (rec.kind === "js" && rec.objRef) {
+var pObj = rec.objRef.deref();
+if (pObj) {
+try {
+var ks = Object.keys(pObj).slice(0, 32);
+for (var i = 0; i < ks.length; i++) {
+var k = ks[i];
+if (k === rec.key) continue;
+var sv = pObj[k];
+if (typeof sv === "number" && Number.isFinite(sv)) {
+siblingSnaps.push({ obj: pObj, key: k, before: sv });
+} else if (sv && typeof sv === "object") {
+["x", "y", "z", "vx", "vy", "vz", "speed"].forEach(function(ak) {
+try { if (typeof sv[ak] === "number" && Number.isFinite(sv[ak])) siblingSnaps.push({ obj: sv, key: ak, before: sv[ak], sub: k }); } catch (_) {}
+});
+}
+}
+} catch (_) {}
+}
+}
+var delta = Math.abs(origVal) < 0.5 ? 1.5 : (origVal * 0.25);
+var probeVal = origVal + delta;
+var writable = writeHitValue(rec, String(probeVal), true);
+var rd1 = readHitCurrent(rec);
+var accepted = writable && rd1.ok && typeof rd1.val === "number" && Math.abs(rd1.val - probeVal) <= Math.max(0.05, Math.abs(delta) * 0.15);
+var restoredImm = writable && rd1.ok && typeof rd1.val === "number" && Math.abs(rd1.val - origVal) <= 0.01;
+var coupledPos = 0, coupledAccel = 0, coupledUi = 0;
+for (var si = 0; si < siblingSnaps.length; si++) {
+try {
+var nv = siblingSnaps[si].obj[siblingSnaps[si].key];
+if (typeof nv === "number" && Math.abs(nv - siblingSnaps[si].before) > 1e-5) {
+var sk = String(siblingSnaps[si].sub || siblingSnaps[si].key);
+if (/pos|x|y|z|vel|speed/i.test(sk)) coupledPos++;
+else if (/accel|grav|jump|drag/i.test(sk)) coupledAccel++;
+else if (PHYS_UI_RE.test(sk)) coupledUi++;
+}
+} catch (_) {}
+}
+// Also check kinematic sibling structure even without immediate setter side-effect
+var hasPosSib = siblingSnaps.some(function(x) { return /^(x|y|z|pos|posx|posy|posz)${'$'}/i.test(x.key) || /pos/i.test(String(x.sub || "")); });
+var hasVelSib = siblingSnaps.some(function(x) { return /^(vx|vy|vz|vel|velx|vely|velz|speed)${'$'}/i.test(x.key) || /vel/i.test(String(x.sub || "")); });
+var hasAccelSib = siblingSnaps.some(function(x) { return /accel|grav|jump|drag|friction/i.test(x.key); });
+if (writable) writeHitValue(rec, String(origVal), true);
+if (coupledPos > 0) posCorr = 94;
+else if (pCls && (pCls.cat === "move_speed" || pCls.cat === "velocity") && (hasPosSib || hasVelSib)) posCorr = 88;
+else if (pCls && pCls.cat === "position" && hasVelSib) posCorr = 90;
+else if (pCls && (pCls.cat === "gravity" || pCls.cat === "jump")) posCorr = 76;
+else if (rec.kind === "wasm" && rec.dt === "f32") posCorr = 68;
+else posCorr = uiLike >= 70 ? 8 : 42;
+if (coupledAccel > 0) accelCorr = 92;
+else if (pCls && (pCls.cat === "accel_drag" || pCls.cat === "gravity" || pCls.cat === "jump")) accelCorr = 86;
+else if (hasAccelSib) accelCorr = 54;
+else accelCorr = 18;
+if (coupledPos > 0) uiLike = Math.min(uiLike, 5);
+if (rec.kind === "dom" && cl.role === "ui" && coupledPos === 0) { uiLike = 95; posCorr = 4; accelCorr = 2; }
+var roleOut = uiLike >= 75 ? "UI-Only Value" : (pCls ? pCls.role : (rec.dt === "f32" || rec.dt === "f64" ? "Physics Float" : "Gameplay Scalar"));
+var conf = !writable ? "Low" : (uiLike >= 75 ? "Low" : ((posCorr >= 80 || accelCorr >= 80) ? "High" : (posCorr >= 55 ? "Medium" : "Low")));
+var evParts = [];
+if (uiLike >= 75) evParts.push("UI-only display value (does not drive movement)");
+else {
+evParts.push("Pos corr " + posCorr + "%, Accel corr " + accelCorr + "%");
+if (coupledPos > 0) evParts.push("coupled to " + coupledPos + " kinematic field(s)");
+else if (hasPosSib || hasVelSib) evParts.push("shares player physics object with pos/vel");
+}
+if (restoredImm) evParts.push("reverted immediately by game");
+return {
+ok: true, frameId: FRAME_ID, addr: cmd.id, role: roleOut,
+posCorrelation: posCorr, accelCorrelation: accelCorr, uiOnlyLikelihood: uiLike,
+writable: writable, accepted: accepted, restoredByGame: restoredImm,
+confidence: conf, evidence: evParts.join(" · ")
+};
+}
+function handleAnalyzeProtection(cmd) {
+if (!isForThisFrame(cmd.id)) return { ok: false, skippedFrame: true };
+var loc = stripOwnFramePrefix(cmd.id);
+var rec = watchRefs.get(loc);
+if (!rec) return { ok: false, error: "Entry not found in frame" };
+var rd0 = readHitCurrent(rec);
+if (!rd0.ok) return { ok: false, error: "Target unreadable or detached" };
+var origVal = rd0.val;
+var cl = classifyHitAuthority(rec);
+var fe = frozenMap.get(loc);
+var rewritesPerSec = fe ? (fe.ratePerSec || 0) : 0;
+var likelyServer = fe ? (fe.status === "externally_restored" || (fe.delayedReverts || 0) >= 5) : false;
+var readOnly = false;
+var roReason = "";
+if (rec.kind === "js" && rec.objRef) {
+var o = rec.objRef.deref();
+if (o) {
+try {
+if (Object.isFrozen(o)) { readOnly = true; roReason = "Object.freeze() locked container"; }
+var ch = findPropertyDescriptorChain(o, rec.key);
+if (ch && ch.desc) {
+if ("value" in ch.desc && ch.desc.writable === false) { readOnly = true; roReason = "Property descriptor writable=false"; }
+else if (typeof ch.desc.get === "function" && typeof ch.desc.set !== "function") { readOnly = true; roReason = "Getter-only computed property (no setter)"; }
+}
+} catch (_) {}
+}
+} else if (rec.kind === "dom" && rec.elRef) {
+var el = rec.elRef.deref();
+if (el && (el.readOnly || el.disabled)) { readOnly = true; roReason = "DOM input is readOnly/disabled"; }
+}
+var mirrorCount = 0;
+var nearbyMirrors = 0;
+var suspectChecksum = false;
+var isNum = typeof origVal === "number" && Number.isFinite(origVal);
+if (isNum) {
+watchRefs.forEach(function(pr, pid) {
+if (pid === loc) return;
+var prd = readHitCurrent(pr);
+if (prd.ok && typeof prd.val === "number" && Math.abs(prd.val - origVal) <= 0.01) mirrorCount++;
+});
+if (rec.kind === "js" && rec.objRef) {
+var po = rec.objRef.deref();
+if (po) {
+try {
+var pks = Object.keys(po);
+for (var i = 0; i < pks.length && i < 64; i++) {
+var pk = pks[i];
+if (pk === rec.key) continue;
+var pv = po[pk];
+if (typeof pv === "number" && Math.abs(pv - origVal) <= 0.01) nearbyMirrors++;
+if (/backup|shadow|checksum|hash|verify|guard|enc|xor|prev|mirror/i.test(pk)) suspectChecksum = true;
+}
+} catch (_) {}
+}
+} else if (rec.kind === "wasm" || rec.kind === "ab" || rec.kind === "ta") {
+var bi = getBufferForHit(rec);
+if (bi && rec.off >= 0 && rec.off + 4 <= bi.byteLen) {
+var dvA = new DataView(bi.buf, bi.byteOff, bi.byteLen);
+var s0 = Math.max(0, (rec.off - 64) & ~3);
+var e0 = Math.min(bi.byteLen - 4, rec.off + 64);
+for (var ofA = s0; ofA <= e0; ofA += 4) {
+if (ofA === rec.off) continue;
+if (Math.abs(dvA.getInt32(ofA, true) - origVal) <= 0.01) nearbyMirrors++;
+}
+}
+}
+}
+var writable = false;
+var restoredImm = false;
+var propGame = 0;
+if (!readOnly) {
+var probeV = isNum ? (origVal + 1) : (String(origVal) + "_p");
+var peerSnap = [];
+if (isNum) {
+watchRefs.forEach(function(pr2, pid2) {
+if (pid2 === loc || peerSnap.length >= 16) return;
+var prd2 = readHitCurrent(pr2);
+if (prd2.ok && typeof prd2.val === "number" && Math.abs(prd2.val - origVal) <= 0.01) {
+peerSnap.push({ rec: pr2, role: classifyHitAuthority(pr2).role });
+}
+});
+}
+writable = writeHitValue(rec, String(probeV), true);
+var rd1 = readHitCurrent(rec);
+if (writable && rd1.ok) {
+restoredImm = isNum ? (Math.abs(Number(rd1.val) - origVal) <= 0.01) : (String(rd1.val) === String(origVal));
+for (var ppi = 0; ppi < peerSnap.length; ppi++) {
+var pNow = readHitCurrent(peerSnap[ppi].rec);
+if (pNow.ok && typeof pNow.val === "number" && Math.abs(pNow.val - probeV) <= 0.01 && peerSnap[ppi].role !== "ui") propGame++;
+}
+writeHitValue(rec, String(origVal), true);
+}
+}
+var verdict = "writable-stable";
+var explanation = "Writable local game value; accepts changes cleanly";
+var recommendation = "Edit directly or lock with Freeze";
+if (readOnly || !writable) {
+verdict = "read-only";
+explanation = roReason || "Target rejected write (read-only)";
+recommendation = "Trace backing variable or scan WASM/TypedArrays instead";
+} else if (likelyServer) {
+verdict = "likely-server-restored";
+explanation = "Value holds briefly then reverts externally (server/authoritative sync)";
+recommendation = "Local edits are visual only; server controls this value";
+} else if (restoredImm || rewritesPerSec >= 8) {
+verdict = "rewritten-by-local-loop";
+explanation = restoredImm ? "Value reverted immediately after probe (setter guard or local loop)" : ("Local game loop rewriting at " + rewritesPerSec + "/s");
+recommendation = (nearbyMirrors > 0 || mirrorCount > 0) ? "Use Find Same -> Set+Link & Lock All to sync all local copies" : "Use Adaptive Freeze (MAX) or Find Same to locate upstream source";
+} else if ((cl.role === "ui" || cl.role === "ui_state") && propGame > 0) {
+verdict = "ui-authoritative";
+explanation = "UI control directly propagates into gameplay state (" + propGame + " linked target)";
+recommendation = "Safe to edit or freeze this UI value directly";
+} else if (cl.role === "ui") {
+verdict = "display-only-ui";
+explanation = "Display-only UI text with no gameplay propagation";
+recommendation = "Tap Find Same to locate the real underlying gameplay variable";
+} else if (nearbyMirrors > 0 || suspectChecksum || mirrorCount > 0) {
+verdict = "linked-copies-suspected";
+explanation = "Found " + (nearbyMirrors + mirrorCount) + " matching local copy/copies" + (suspectChecksum ? " + backup/shadow key nearby" : "");
+recommendation = "Use Find Same -> Set+Link + Lock All so linked copies stay synchronized";
+}
+return {
+ok: true, frameId: FRAME_ID, addr: cmd.id, verdict: verdict,
+explanation: explanation, recommendation: recommendation,
+writable: writable, readOnly: readOnly || !writable,
+restoredImmediately: restoredImm, mirrorCount: mirrorCount,
+nearbyMirrors: nearbyMirrors, suspectChecksum: suspectChecksum,
+rewritesPerSec: rewritesPerSec, isUiOnly: verdict === "display-only-ui",
+likelyServerRestored: likelyServer
+};
+}
+function extractVisibleNumericHints() {
+var found = [];
+var seen = new Set();
+try {
+var nodes = document.querySelectorAll("input,span,div,p,b,strong,td,button,label");
+var lim = Math.min(nodes.length, 400);
+for (var i = 0; i < lim && found.length < 3; i++) {
+var el = nodes[i];
+if (el.children && el.children.length > 0 && el.tagName !== "INPUT") continue;
+var txt = (el.tagName === "INPUT" ? String(el.value || "") : String(el.textContent || "")).trim();
+if (!txt || txt.length > 16) continue;
+var m = /^-?\d+(?:[.,]\d+)?${'$'}/.exec(txt.replace(/,/g, ""));
+if (!m) continue;
+var n = Number(m[0]);
+if (Number.isFinite(n) && n !== 0 && Math.abs(n) <= 1e9 && !seen.has(n)) {
+seen.add(n);
+found.push(String(n));
+}
+}
+} catch (_) {}
+return found;
+}
+function handleLiveAudit(cmd) {
+var t0 = Date.now();
+var eng = detectEngines();
+var mems = liveWasmEntries();
+var seenB = new WeakSet();
+var sabCnt = 0;
+for (var i = 0; i < mems.length; i++) {
+seenB.add(mems[i].mem.buffer);
+if (isSharedBuf(mems[i].mem.buffer)) sabCnt++;
+}
+var rawB = liveRawBuffers(seenB);
+for (var j = 0; j < rawB.length; j++) if (isSharedBuf(rawB[j])) sabCnt++;
+var queries = extractVisibleNumericHints();
+if (queries.indexOf("100") === -1) queries.push("100");
+if (queries.indexOf("1") === -1) queries.push("1");
+var bestRes = null;
+var usedQ = queries[0] || "100";
+for (var qi = 0; qi < Math.min(queries.length, 3); qi++) {
+var q = queries[qi];
+var sr = handleCmd({ op: "firstScan", dtype: "auto", scanType: "exact", val1: q, maxReturn: 60, timeoutMs: 2200, hideUi: false });
+if (sr && sr.ok && sr.total > 0) {
+bestRes = sr;
+usedQ = q;
+break;
+}
+if (!bestRes) bestRes = sr;
+}
+var physRes = handleScanPhysics({ maxReturn: 25, timeoutMs: 1200 });
+var items = (bestRes && Array.isArray(bestRes.items)) ? bestRes.items : [];
+var wasmHits = 0, jsHits = 0, domHits = 0, storageHits = 0;
+for (var k = 0; k < items.length; k++) {
+var kk = items[k].kind;
+if (kk === "wasm" || kk === "ab" || kk === "ta") wasmHits++;
+else if (kk === "js" || kk === "map") jsHits++;
+else if (kk === "dom") domHits++;
+else storageHits++;
+}
+var topItem = items.length > 0 ? items[0] : null;
+var typeInspectOk = false;
+var mirrorsCount = 0;
+if (topItem && topItem.addr) {
+var ti = handleCmd({ op: "inspectTypes", id: topItem.addr });
+typeInspectOk = !!(ti && ti.ok);
+var mir = handleCmd({ op: "findMirrors", id: topItem.addr });
+if (mir && mir.ok) mirrorsCount = (mir.count || 0) + (mir.uiCount || 0);
+}
+var pRoles = [];
+if (physRes && Array.isArray(physRes.items)) {
+for (var pi = 0; pi < physRes.items.length && pRoles.length < 4; pi++) {
+var rl = physRes.items[pi].role;
+if (rl && pRoles.indexOf(rl) === -1) pRoles.push(rl);
+}
+}
+var failReason = "none";
+if ((!bestRes || bestRes.total === 0) && (!physRes || physRes.total === 0)) {
+if (mems.length === 0 && rawB.length === 0) failReason = "canvas-loading-or-no-local-state";
+else failReason = "wasm-present-no-probe-match";
+}
+hits = []; undoStack = []; unknownSnaps = null;
+return {
+ok: true, frameId: FRAME_ID, engines: eng,
+wasmCount: mems.length, bufCount: abRegistry.length + taRegistry.length,
+workerCount: liveWorkerCount(), sabCount: sabCnt,
+queryUsed: usedQ, totalHits: bestRes ? (bestRes.total || 0) : 0,
+wasmHits: wasmHits, jsHits: jsHits, domHits: domHits, storageHits: storageHits,
+physicsCount: physRes ? (physRes.total || 0) : 0, physicsRoles: pRoles,
+topHit: topItem ? topItem.addr : "", topKind: topItem ? topItem.kind : "",
+topRole: topItem ? (topItem.role || "") : "", topType: topItem ? (topItem.type || "") : "",
+mirrorsCount: mirrorsCount, typeInspectOk: typeInspectOk,
+scanMs: Date.now() - t0, failureReason: failReason
+};
+}
 try { window.dispatchEvent(new Event(CH + "_ok")); } catch (_) {}
 })();
 """.trimStart('\n').trimEnd('\n')

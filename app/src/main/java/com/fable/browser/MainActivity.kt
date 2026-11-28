@@ -54,6 +54,7 @@ class MainActivity : FragmentActivity() {
     @Inject lateinit var settingsStore: SettingsStore
     @Inject lateinit var cacheCleaner: CacheCleaner
     @Inject lateinit var memoryEngineManager: com.fable.browser.engine.MemoryEngineManager
+    @Inject lateinit var backupManager: com.fable.browser.data.backup.BackupManager
 
     private var displayListener: DisplayManager.DisplayListener? = null
     @Volatile private var currentHighRefresh: Boolean = true
@@ -316,6 +317,15 @@ class MainActivity : FragmentActivity() {
                     tabManager.openSuperTab(url)
                 } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_incognito", false)) {
                     tabManager.openTab(url, incognito = true)
+                } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_reuse_tab", false)) {
+                    val wantHybrid = intent.getBooleanExtra("fable_hybrid", false)
+                    val cur = tabManager.activeTab?.takeIf { !it.isIncognito } ?: tabManager.openTab(incognito = false)
+                    if (intent.getBooleanExtra("fable_close_other_tabs", false)) {
+                        tabManager.tabs.value.filter { it.id != cur.id }.forEach { tabManager.closeTab(it.id) }
+                    }
+                    cur.manualHybridOverride = true
+                    tabManager.setHybridBlinkMode(cur, wantHybrid)
+                    tabManager.load(cur, url)
                 } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_hybrid", false)) {
                     val tab = tabManager.openTab(incognito = false)
                     tab.manualHybridOverride = true
@@ -363,6 +373,95 @@ class MainActivity : FragmentActivity() {
                             settingsStore.setTimeScaleMultiplierTenths(tenths)
                             settingsStore.setTimeScaleEnabled(on)
                             android.util.Log.i("FABLE-SPEED-TEST", "set enabled=$on tenths=$tenths")
+                        }
+                    }
+                    intent.getBooleanExtra("fable_test_backup_selfcheck", false) -> {
+                        lifecycleScope.launch {
+                            val outFile = File(cacheDir, "ci_test_backup.fable")
+                            val emptyFile = File(cacheDir, "ci_test_empty.fable")
+                            val badFile = File(cacheDir, "ci_test_bad.fable")
+                            runCatching { outFile.delete(); emptyFile.delete(); badFile.delete() }
+                            val opts = com.fable.browser.data.backup.BackupOptions(siteData = false)
+                            val resBk = runCatching {
+                                backupManager.backupToFile(outFile, "fable1234".toCharArray(), opts)
+                            }
+                            val bytes = if (outFile.isFile) outFile.length() else 0L
+                            val headerOk = com.fable.browser.data.backup.BackupManager.probeFileHeader(outFile).valid
+                            val resRest = if (resBk.isSuccess && bytes > 100L) {
+                                runCatching { backupManager.restoreFromFile(outFile, "fable1234".toCharArray()) }
+                            } else Result.failure(Exception("skip"))
+
+                            emptyFile.writeBytes(ByteArray(0))
+                            val emptyProbe = com.fable.browser.data.backup.BackupManager.probeFileHeader(emptyFile)
+                            val emptyRej = !emptyProbe.valid && (emptyProbe.error ?: "").contains("0 bytes")
+
+                            badFile.writeBytes(ByteArray(96) { 0x55 })
+                            val badProbe = com.fable.browser.data.backup.BackupManager.probeFileHeader(badFile)
+                            val badRej = !badProbe.valid && (badProbe.error ?: "").contains("FABLEBK1")
+
+                            val wrongPwRes = runCatching { backupManager.restoreFromFile(outFile, "wrong999".toCharArray()) }
+                            val wrongPwRej = wrongPwRes.isFailure && (wrongPwRes.exceptionOrNull()?.message ?: "").contains("Wrong password", ignoreCase = true)
+
+                            val backupOk = resBk.isSuccess && bytes > 100L && headerOk && resRest.isSuccess && emptyRej && badRej && wrongPwRej
+                            android.util.Log.i(
+                                "FABLE-BACKUP-CHECK",
+                                "backupOk=$backupOk bytes=$bytes headerOk=$headerOk roundTripOk=${resRest.isSuccess} emptyRej=$emptyRej badRej=$badRej wrongPwRej=$wrongPwRej err=${resBk.exceptionOrNull()?.message ?: resRest.exceptionOrNull()?.message ?: "none"}"
+                            )
+                            runCatching { outFile.delete(); emptyFile.delete(); badFile.delete() }
+                        }
+                    }
+                    intent.hasExtra("fable_test_crazygames_batch") -> {
+                        val batchId = intent.getStringExtra("fable_test_batch_id") ?: "b1"
+                        val rawList = intent.getStringExtra("fable_test_crazygames_batch").orEmpty()
+                        val waitMs = intent.getLongExtra("fable_test_game_wait_ms", 6500L).coerceIn(3000L, 12000L)
+                        lifecycleScope.launch {
+                            val pairs = rawList.split('^', '|').mapNotNull { entry ->
+                                val idx = entry.indexOf('=')
+                                if (idx <= 0) null else entry.substring(0, idx).trim() to entry.substring(idx + 1).trim()
+                            }
+                            memoryEngineManager.setEngineActive(true)
+                            memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
+                            val curTab = tabManager.activeTab?.takeIf { !it.isIncognito } ?: tabManager.openTab(incognito = false)
+                            tabManager.tabs.value.filter { it.id != curTab.id }.forEach { tabManager.closeTab(it.id) }
+                            curTab.manualHybridOverride = true
+                            tabManager.setHybridBlinkMode(curTab, true)
+                            var passCnt = 0
+                            for ((idx, pair) in pairs.withIndex()) {
+                                val (slug, gameUrl) = pair
+                                memoryEngineManager.unfreezeAll()
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.resetScan()
+                                tabManager.load(curTab, gameUrl)
+                                kotlinx.coroutines.delay(waitMs)
+                                val audit = memoryEngineManager.runLiveAuditOnActiveTab()
+                                val ok = audit.optBoolean("ok", false)
+                                val tot = audit.optInt("totalHits", 0)
+                                val wh = audit.optInt("wasmHits", 0)
+                                val jh = audit.optInt("jsHits", 0)
+                                val dh = audit.optInt("domHits", 0)
+                                val ph = audit.optInt("physicsCount", 0)
+                                val mir = audit.optInt("mirrorsCount", 0)
+                                val tiOk = audit.optBoolean("typeInspectOk", false)
+                                val wc = audit.optInt("wasmCount", 0)
+                                val bc = audit.optInt("bufCount", 0)
+                                val wkc = audit.optInt("workerCount", 0)
+                                val fc = audit.optInt("frameCount", 1)
+                                val msScan = audit.optLong("scanMs", 0L)
+                                val qUsed = audit.optString("queryUsed", "")
+                                val reason = audit.optString("failureReason", "unknown")
+                                val engArr = audit.optJSONArray("engines")
+                                val engList = buildList {
+                                    if (engArr != null) for (ei in 0 until engArr.length()) add(engArr.optString(ei))
+                                }.joinToString("+").ifBlank { "web" }
+                                val heapMb = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / (1024 * 1024)
+                                if (ok && (tot > 0 || ph > 0)) passCnt++
+                                android.util.Log.i(
+                                    "FABLE-GAME-AUDIT",
+                                    "batch=$batchId i=${idx + 1}/${pairs.size} slug=$slug ok=$ok hits=$tot wasmH=$wh jsH=$jh domH=$dh phys=$ph mir=$mir tiOk=$tiOk wasm=$wc buf=$bc wk=$wkc f=$fc q=$qUsed eng=$engList ms=$msScan heapMb=$heapMb reason=$reason"
+                                )
+                            }
+                            memoryEngineManager.resetScan()
+                            android.util.Log.i("FABLE-GAME-BATCH-DONE", "batch=$batchId total=${pairs.size} foundValues=$passCnt")
                         }
                     }
                     intent.hasExtra("fable_test_mem_toggle") -> {
@@ -565,7 +664,9 @@ class MainActivity : FragmentActivity() {
                                         buf.putInt(0, (3200000000L and 0xFFFFFFFFL).toInt())
                                         val inspRaw = com.fable.browser.engine.NativeMemoryScanner.inspectTypes(firstAddr, com.fable.browser.engine.MemDataType.INT32)
                                         val inspObj = runCatching { org.json.JSONObject(inspRaw) }.getOrNull()
-                                        apexNatOk = clampHeld && inspObj?.optString("u32") == "3200000000" && inspObj.optString("suggestedType") == "u32"
+                                        val protRaw = com.fable.browser.engine.NativeMemoryScanner.analyzeProtection(firstAddr, com.fable.browser.engine.MemDataType.INT32)
+                                        val protObj = runCatching { org.json.JSONObject(protRaw) }.getOrNull()
+                                        apexNatOk = clampHeld && inspObj?.optString("u32") == "3200000000" && inspObj.optString("suggestedType") == "u32" && protObj?.optBoolean("writable", false) == true
                                     }
                                     com.fable.browser.engine.NativeMemoryScanner.setFreezeStrength(1)
                                     runCatching { org.json.JSONObject(mirRaw).optBoolean("ok", false) && org.json.JSONObject(authRaw).optBoolean("writable", false) && apexNatOk }.getOrDefault(false)
@@ -777,6 +878,136 @@ class MainActivity : FragmentActivity() {
                                 android.util.Log.i(
                                     "FABLE-MEM-CHECK",
                                     "scope=$scopeName engine=$engLblA apexOk=$apexOk u32Ok=$u32Ok overflowGuardOk=$overflowGuardOk retypeOk=$retypeOk x1000Ok=$x1000Ok f64RndOk=$f64RndOk uiAuthOk=$uiAuthOk fakeUiOk=$fakeUiOk"
+                                )
+                            } else if (intent.getStringExtra("fable_test_mem_mode") == "titan_ce") {
+                                suspend fun waitScanDoneT() {
+                                    var wc = 0
+                                    while (wc < 45) {
+                                        kotlinx.coroutines.delay(120)
+                                        wc++
+                                        if (!memoryEngineManager.state.value.busy && wc >= 2) break
+                                    }
+                                }
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.clearPhysicsScan()
+                                memoryEngineManager.clearPhysicsProbe()
+                                memoryEngineManager.clearProtectionReport()
+                                memoryEngineManager.setScanTimeoutSec(20)
+                                memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
+
+                                // 1. Physics & Speed Scanner + 3D Vector Grouping + WASM Gravity
+                                memoryEngineManager.scanPhysics()
+                                waitScanDoneT()
+                                val stP = memoryEngineManager.state.value
+                                val physScanOk = stP.physicsItems.any { it.addr.contains("moveSpeed") } &&
+                                    stP.physicsItems.any { it.kind == "wasm" && it.addr.contains("0x300") } &&
+                                    stP.physicsVectors.any { it.group.contains("velocity(x,y,z)") }
+
+                                // 2. Physics Effect Prober (real moveSpeed vs UI-only speed label)
+                                var physProbeRealOk = false
+                                var physProbeUiOk = false
+                                val msItem = stP.physicsItems.firstOrNull { it.addr.contains("moveSpeed") }
+                                if (msItem != null) {
+                                    memoryEngineManager.addPhysicsItemToWatch(msItem)
+                                    val wMs = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wMs != null) {
+                                        memoryEngineManager.probeWatchPhysics(wMs.id)
+                                        kotlinx.coroutines.delay(450)
+                                        val pr = memoryEngineManager.state.value.physicsProbe
+                                        physProbeRealOk = pr != null && pr.posCorrelation >= 85 && pr.confidence == "High"
+                                    }
+                                }
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
+                                memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.EXACT)
+                                memoryEngineManager.firstScan("12.5")
+                                waitScanDoneT()
+                                val uiSp = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("dom:#ui-speed-label") }
+                                if (uiSp != null) {
+                                    memoryEngineManager.addToWatch(uiSp, "UiSpeed")
+                                    val wUiSp = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wUiSp != null) {
+                                        memoryEngineManager.probeWatchPhysics(wUiSp.id)
+                                        kotlinx.coroutines.delay(450)
+                                        val prUi = memoryEngineManager.state.value.physicsProbe
+                                        physProbeUiOk = prUi != null && prUi.role == "UI-Only Value" && prUi.uiOnlyLikelihood >= 85
+                                    }
+                                }
+
+                                // 3. Value Protection Analyzer (local-loop revert + read-only + linked-copies)
+                                var protLoopOk = false
+                                var protRoOk = false
+                                var protLinkedOk = false
+                                memoryEngineManager.firstScan("500")
+                                waitScanDoneT()
+                                val lpHit = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("loopGuardedHp") }
+                                if (lpHit != null) {
+                                    memoryEngineManager.addToWatch(lpHit, "LoopHp")
+                                    val wLp = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wLp != null) {
+                                        memoryEngineManager.analyzeWatchProtection(wLp.id)
+                                        kotlinx.coroutines.delay(450)
+                                        protLoopOk = memoryEngineManager.state.value.protectionReport?.verdict == "rewritten-by-local-loop"
+                                    }
+                                }
+                                memoryEngineManager.firstScan("999")
+                                waitScanDoneT()
+                                val roHit = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("dom:#ro-score") }
+                                if (roHit != null) {
+                                    memoryEngineManager.addToWatch(roHit, "RoScore")
+                                    val wRo = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wRo != null) {
+                                        memoryEngineManager.analyzeWatchProtection(wRo.id)
+                                        kotlinx.coroutines.delay(450)
+                                        protRoOk = memoryEngineManager.state.value.protectionReport?.verdict == "read-only"
+                                    }
+                                }
+                                memoryEngineManager.firstScan("777666")
+                                waitScanDoneT()
+                                val scHit = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("protLab.syncCoins") && !it.addr.contains("Backup") }
+                                if (scHit != null) {
+                                    memoryEngineManager.addToWatch(scHit, "SyncCoins")
+                                    val wSc = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wSc != null) {
+                                        memoryEngineManager.analyzeWatchProtection(wSc.id)
+                                        kotlinx.coroutines.delay(450)
+                                        val pRep = memoryEngineManager.state.value.protectionReport
+                                        protLinkedOk = pRep != null && pRep.verdict == "linked-copies-suspected" && pRep.nearbyMirrors >= 1
+                                        // Find Same + Set+Link -> updates BOTH syncCoins and syncCoinsBackup to 888999 -> triggers /ce-titan-probe!
+                                        memoryEngineManager.findMirrorsForWatch(wSc.id)
+                                        kotlinx.coroutines.delay(550)
+                                        memoryEngineManager.setAllMirrorsValue("888999", linkAsGroup = true, includeUi = false)
+                                        kotlinx.coroutines.delay(500)
+                                    }
+                                }
+
+                                // 4. Split-64 hi32|lo32 diagnosis
+                                var split64Ok = false
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.INT32)
+                                memoryEngineManager.firstScan("305419896")
+                                waitScanDoneT()
+                                val spHit = memoryEngineManager.state.value.results.firstOrNull { it.addr.contains("0x100:i32") }
+                                if (spHit != null) {
+                                    memoryEngineManager.addToWatch(spHit, "Split64")
+                                    val wSp = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wSp != null) {
+                                        memoryEngineManager.inspectWatchTypes(wSp.id)
+                                        kotlinx.coroutines.delay(400)
+                                        val ti = memoryEngineManager.state.value.typeInspect
+                                        split64Ok = ti != null && ti.split64 == "hi=7 | lo=305419896" && ti.suggestedType == "i64"
+                                    }
+                                }
+
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.clearPhysicsScan()
+                                memoryEngineManager.clearPhysicsProbe()
+                                memoryEngineManager.clearProtectionReport()
+                                memoryEngineManager.clearTypeInspect()
+                                memoryEngineManager.resetScan()
+                                val engLblT = memoryEngineManager.state.value.activeEngineLabel
+                                val titanOk = physScanOk && physProbeRealOk && physProbeUiOk && protLoopOk && protRoOk && protLinkedOk && split64Ok
+                                android.util.Log.i(
+                                    "FABLE-MEM-CHECK",
+                                    "scope=$scopeName engine=$engLblT titanOk=$titanOk physScanOk=$physScanOk physProbeRealOk=$physProbeRealOk physProbeUiOk=$physProbeUiOk protLoopOk=$protLoopOk protRoOk=$protRoOk protLinkedOk=$protLinkedOk split64Ok=$split64Ok"
                                 )
                             } else {
                                 val queryVal = intent.getStringExtra("fable_test_mem_query")?.takeIf { it.isNotBlank() } ?: "133700"

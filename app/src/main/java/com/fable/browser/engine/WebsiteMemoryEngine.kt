@@ -260,9 +260,16 @@ object WebsiteMemoryEngine {
             var totalHits = 0
             var wasmHits = 0
             var jsHits = 0
+            var html5Hits = 0
             var domHits = 0
             var storageHits = 0
+            var b64Hits = 0
+            var idbHits = 0
+            var canvasTexts = 0
             var physicsCount = 0
+            var authVerdict = ""
+            var authWritable = false
+            var authAccepted = false
             var wasmCount = 0
             var bufCount = 0
             var workerCount = 0
@@ -288,9 +295,17 @@ object WebsiteMemoryEngine {
                 totalHits += o.optInt("totalHits", 0)
                 wasmHits += o.optInt("wasmHits", 0)
                 jsHits += o.optInt("jsHits", 0)
+                html5Hits += o.optInt("html5Hits", 0)
                 domHits += o.optInt("domHits", 0)
                 storageHits += o.optInt("storageHits", 0)
+                b64Hits += o.optInt("b64Hits", 0)
+                idbHits += o.optInt("idbHits", 0)
+                canvasTexts += o.optInt("canvasTexts", 0)
                 physicsCount += o.optInt("physicsCount", 0)
+                if (o.optBoolean("authWritable", false)) authWritable = true
+                if (o.optBoolean("authAccepted", false)) authAccepted = true
+                val av = o.optString("authVerdict")
+                if (av.isNotBlank() && (authVerdict.isEmpty() || o.optBoolean("authAccepted", false))) authVerdict = av
                 mirrorsCount = maxOf(mirrorsCount, o.optInt("mirrorsCount", 0))
                 if (o.optBoolean("typeInspectOk", false)) typeInspectOk = true
                 maxScanMs = maxOf(maxScanMs, o.optLong("scanMs", 0L))
@@ -326,9 +341,16 @@ object WebsiteMemoryEngine {
                 .put("totalHits", totalHits)
                 .put("wasmHits", wasmHits)
                 .put("jsHits", jsHits)
+                .put("html5Hits", html5Hits)
                 .put("domHits", domHits)
                 .put("storageHits", storageHits)
+                .put("b64Hits", b64Hits)
+                .put("idbHits", idbHits)
+                .put("canvasTexts", canvasTexts)
                 .put("physicsCount", physicsCount)
+                .put("authVerdict", authVerdict)
+                .put("authWritable", authWritable)
+                .put("authAccepted", authAccepted)
                 .put("physicsRoles", JSONArray(rolesSet.toList()))
                 .put("topHit", topHit)
                 .put("topKind", topKind)
@@ -491,6 +513,7 @@ object WebsiteMemoryEngine {
         sb.append("\n").append(JS_PART_8)
         sb.append("\n").append(JS_PART_9)
         sb.append("\n").append(JS_PART_10)
+        sb.append("\n").append(JS_PART_11)
         return sb.toString()
     }
 
@@ -973,6 +996,67 @@ return outSub;
 }, origTaSub, "subarray");
 }
 } catch (_) {}
+} catch (_) {}
+var canvasHudNums = [];
+var canvasHudSet = new Set();
+function recordCanvasText(rawTxt) {
+try {
+if (typeof rawTxt !== "string" || !rawTxt || rawTxt.length > 64) return;
+var ms = rawTxt.match(/-?\d+(?:[.,]\d+)?/g);
+if (!ms) return;
+for (var ci = 0; ci < ms.length && ci < 4; ci++) {
+var cleaned = ms[ci].replace(/,/g, "");
+var n = Number(cleaned);
+if (!Number.isFinite(n) || n === 0 || Math.abs(n) > 1e12) continue;
+var key = String(n);
+if (!canvasHudSet.has(key)) {
+if (canvasHudNums.length >= 64) { var rm = canvasHudNums.shift(); canvasHudSet.delete(rm); }
+canvasHudNums.push(key);
+canvasHudSet.add(key);
+}
+}
+} catch (_) {}
+}
+try {
+if (typeof CanvasRenderingContext2D === "function" && CanvasRenderingContext2D.prototype) {
+if (typeof CanvasRenderingContext2D.prototype.fillText === "function") {
+var origFillText = CanvasRenderingContext2D.prototype.fillText;
+CanvasRenderingContext2D.prototype.fillText = mask(function fillText(text) {
+recordCanvasText(String(text));
+return origFillText.apply(this, arguments);
+}, origFillText, "fillText");
+}
+if (typeof CanvasRenderingContext2D.prototype.strokeText === "function") {
+var origStrokeText = CanvasRenderingContext2D.prototype.strokeText;
+CanvasRenderingContext2D.prototype.strokeText = mask(function strokeText(text) {
+recordCanvasText(String(text));
+return origStrokeText.apply(this, arguments);
+}, origStrokeText, "strokeText");
+}
+}
+} catch (_) {}
+var idbSaveCache = [];
+function recordIdbValue(storeName, keyVal, valObj) {
+try {
+if (valObj === null || valObj === undefined) return;
+if (typeof valObj === "number" || typeof valObj === "object") {
+if (idbSaveCache.length >= 48) idbSaveCache.shift();
+idbSaveCache.push({ store: String(storeName || "idb"), key: String(keyVal || ""), ref: typeof valObj === "object" ? mkRef(valObj) : null, prim: typeof valObj === "number" ? valObj : null });
+}
+} catch (_) {}
+}
+try {
+if (typeof IDBObjectStore === "function" && IDBObjectStore.prototype) {
+["put", "add"].forEach(function(mName) {
+if (typeof IDBObjectStore.prototype[mName] === "function") {
+var origIdbM = IDBObjectStore.prototype[mName];
+IDBObjectStore.prototype[mName] = mask(function() {
+try { recordIdbValue(this && this.name, arguments[1], arguments[0]); } catch (_) {}
+return origIdbM.apply(this, arguments);
+}, origIdbM, mName);
+}
+});
+}
 } catch (_) {}
 function liveWasmEntries() {
 var live = [];
@@ -1496,6 +1580,25 @@ if (raw === null) return { ok: false, val: "<removed>" };
 var num = Number(cleanNumStr(raw));
 return { ok: true, val: (h.dt !== "str" && raw.trim() !== "" && Number.isFinite(num)) ? num : raw };
 }
+if (h.kind === "lsb64" || h.kind === "ssb64") {
+var stB = h.kind === "lsb64" ? window.localStorage : window.sessionStorage;
+var rawB = stB.getItem(h.key);
+if (rawB === null) return { ok: false, val: "<removed>" };
+var decB = decodeB64JsonSafe(rawB);
+if (!decB) return { ok: false, val: "<bad b64>" };
+var gotB = getJsonPathVal(decB.obj, h.jpath);
+if (!gotB.ok) return { ok: false, val: "<removed>" };
+return { ok: true, val: gotB.val };
+}
+if (h.kind === "idb") {
+if (h.objRef) {
+var io = h.objRef.deref();
+if (!io) return { ok: false, val: "<gc>" };
+var gotI = getJsonPathVal(io, h.jpath);
+return gotI.ok ? { ok: true, val: gotI.val } : { ok: false, val: "<removed>" };
+}
+return { ok: true, val: h.prev };
+}
 if (h.kind === "lsjson" || h.kind === "ssjson") {
 var stJ = h.kind === "lsjson" ? window.localStorage : window.sessionStorage;
 var rawJ = stJ.getItem(h.key);
@@ -1825,6 +1928,22 @@ if (storageProtoHook && storageProtoHook.origSetItem) storageProtoHook.origSetIt
 else st.setItem(h.key, String(valStr));
 return true;
 }
+if (h.kind === "lsb64" || h.kind === "ssb64") {
+var stBw = h.kind === "lsb64" ? window.localStorage : window.sessionStorage;
+var rawBw = stBw.getItem(h.key);
+if (rawBw === null) return false;
+var decBw = decodeB64JsonSafe(rawBw);
+if (!decBw) return false;
+var csBw = cleanNumStr(valStr);
+var curBw = getJsonPathVal(decBw.obj, h.jpath);
+var nextBw = (typeof curBw.val === "number" || (h.dt !== "str" && csBw !== "" && !Number.isNaN(Number(csBw)))) ? Number(csBw) : String(valStr);
+if (!setJsonPathVal(decBw.obj, h.jpath, nextBw)) return false;
+var encBw = encodeB64JsonSafe(decBw.obj, decBw.urlSafe);
+if (!encBw) return false;
+if (storageProtoHook && storageProtoHook.origSetItem) storageProtoHook.origSetItem.call(stBw, h.key, encBw);
+else stBw.setItem(h.key, encBw);
+return true;
+}
 if (h.kind === "lsjson" || h.kind === "ssjson") {
 var tagJ = h.kind === "lsjson" ? "ls" : "ss";
 var stJ = tagJ === "ls" ? window.localStorage : window.sessionStorage;
@@ -2033,7 +2152,7 @@ fe.status = "detached";
 }
 return;
 }
-var isStorage = (h.kind === "ls" || h.kind === "ss" || h.kind === "lsjson" || h.kind === "ssjson");
+var isStorage = (h.kind === "ls" || h.kind === "ss" || h.kind === "lsjson" || h.kind === "ssjson" || h.kind === "lsb64" || h.kind === "ssb64");
 if (fe.trapInstalled && !isStorage) {
 if (fe.origGet && fe.origSet && fe.origObj) {
 try {
@@ -3084,6 +3203,15 @@ if (win.System) enqueue(win.System, "System");
 enqueue(win.Laya, "Laya");
 enqueue(win.egret, "egret");
 enqueue(win.createjs, "createjs");
+enqueue(win.gdjs, "gdjs");
+enqueue(win.gm, "gm");
+enqueue(win.g_pBuiltIn, "g_pBuiltIn");
+enqueue(win.ig, "ig");
+enqueue(win.me, "me");
+enqueue(win.c3_runtimeInterface, "c3_runtime");
+enqueue(win.runtime, "runtime");
+try { if (typeof win.cr_getC2Runtime === "function") enqueue(win.cr_getC2Runtime(), "c2_runtime"); } catch (_) {}
+seedHtml5FrameworkState(win, enqueue);
 enqueue(win.THREE, "THREE");
 enqueue(win.spine, "spine");
 enqueue(win.ig, "ig");
@@ -3477,9 +3605,16 @@ out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "f64", prev: num });
 out.push({ id: tag + ":" + k, kind: tag, key: k, dt: "str", prev: raw });
 }
 }
+if (trimmed.length >= 12 && trimmed.length <= 48000 && dt !== "aob" && trimmed[0] !== "{" && trimmed[0] !== "[" && /^[A-Za-z0-9+/=_-]+${'$'}/.test(trimmed)) {
+var b64Dec = decodeB64JsonSafe(trimmed);
+if (b64Dec && b64Dec.obj && typeof b64Dec.obj === "object") {
+scanJsonTreeForHits(b64Dec.obj, tag + "b64", tag + ":b64:" + k, k, dt, sc, v1, v2, s1, out, cap);
+}
+}
 }
 } catch (_) {}
 }
+scanIdbCacheForHits(dt, sc, v1, v2, s1, out, cap);
 }
 function scanDomUiState(dt, sc, v1, v2, s1, out, cap) {
 try {
@@ -3555,6 +3690,7 @@ out.push({ id: "dom:" + hTag + ".text", kind: "dom", elRef: mkRef(hel), domProp:
 }
 }
 }
+scanHtml5ExtendedDom(doc, seenEl, dt, sc, v1, v2, s1, out, cap);
 } catch (_) {}
 }
 function captureUnknownSnapshots(dt, deadlineMs, stateFlags) {
@@ -5268,18 +5404,20 @@ try { v = obj[k]; } catch (_) { continue; }
 var fullP = cur.depth === 0 ? k : (cur.path + "." + k);
 if (typeof v === "number" && Number.isFinite(v)) {
 var cls = classifyPhysicsKey(k, fullP);
-if (cls) {
+if (cls && !isWebsiteChromePath(fullP)) {
 var lid = "js:" + fullP;
 if (!seenIds.has(lid)) {
 seenIds.add(lid);
 var dtp = Number.isInteger(v) ? "i32" : "f64";
 if (!watchRefs.has(lid)) watchRefs.set(lid, { id: lid, kind: "js", objRef: mkRef(obj), key: k, dt: dtp, prev: v });
-items.push({
+var pEntry = {
 addr: qualifyId(lid), val: formatVal(v, dtp), type: dtp, kind: "js",
 category: cls.cat, role: cls.role, vecGroup: "",
 confidenceScore: cls.score, uiOnlyLikelihood: cls.uiLike,
+tier: cls.uiLike >= 65 ? "ui_clue" : "physics_candidate",
 evidence: "Matched physics field " + k + " = " + formatVal(v, dtp)
-});
+};
+if (cls.uiLike < 65) items.push(pEntry);
 }
 }
 } else if (v && typeof v === "object" && cur.depth < 8 && !SKIP_SUBTREE_KEYS.has(k)) {
@@ -5579,14 +5717,19 @@ if (isSharedBuf(mems[i].mem.buffer)) sabCnt++;
 }
 var rawB = liveRawBuffers(seenB);
 for (var j = 0; j < rawB.length; j++) if (isSharedBuf(rawB[j])) sabCnt++;
-var queries = extractVisibleNumericHints();
+var queries = [];
+for (var ci = 0; ci < canvasHudNums.length && queries.length < 2; ci++) queries.push(canvasHudNums[ci]);
+var domHints = extractVisibleNumericHints();
+for (var di = 0; di < domHints.length && queries.length < 4; di++) {
+if (queries.indexOf(domHints[di]) === -1) queries.push(domHints[di]);
+}
 if (queries.indexOf("100") === -1) queries.push("100");
 if (queries.indexOf("1") === -1) queries.push("1");
 var bestRes = null;
 var usedQ = queries[0] || "100";
-for (var qi = 0; qi < Math.min(queries.length, 3); qi++) {
+for (var qi = 0; qi < Math.min(queries.length, 4); qi++) {
 var q = queries[qi];
-var sr = handleCmd({ op: "firstScan", dtype: "auto", scanType: "exact", val1: q, maxReturn: 60, timeoutMs: 2200, hideUi: false });
+var sr = handleCmd({ op: "firstScan", dtype: "auto", scanType: "exact", val1: q, maxReturn: 80, timeoutMs: 1800, hideUi: false });
 if (sr && sr.ok && sr.total > 0) {
 bestRes = sr;
 usedQ = q;
@@ -5594,24 +5737,40 @@ break;
 }
 if (!bestRes) bestRes = sr;
 }
-var physRes = handleScanPhysics({ maxReturn: 25, timeoutMs: 1200 });
+var physRes = handleScanPhysics({ maxReturn: 25, timeoutMs: 900 });
 var items = (bestRes && Array.isArray(bestRes.items)) ? bestRes.items : [];
-var wasmHits = 0, jsHits = 0, domHits = 0, storageHits = 0;
+var wasmHits = 0, jsHits = 0, domHits = 0, storageHits = 0, b64Hits = 0, idbHits = 0;
 for (var k = 0; k < items.length; k++) {
 var kk = items[k].kind;
 if (kk === "wasm" || kk === "ab" || kk === "ta") wasmHits++;
 else if (kk === "js" || kk === "map") jsHits++;
 else if (kk === "dom") domHits++;
+else if (kk === "lsb64" || kk === "ssb64") { storageHits++; b64Hits++; }
+else if (kk === "idb") { storageHits++; idbHits++; }
 else storageHits++;
 }
-var topItem = items.length > 0 ? items[0] : null;
+var html5Hits = domHits + storageHits + (canvasHudNums.length > 0 ? 1 : 0);
+var topItem = null;
+for (var ti0 = 0; ti0 < items.length; ti0++) {
+if (items[ti0].role !== "ui") { topItem = items[ti0]; break; }
+}
+if (!topItem && items.length > 0) topItem = items[0];
 var typeInspectOk = false;
 var mirrorsCount = 0;
+var authVerdict = "";
+var authWritable = false;
+var authAccepted = false;
 if (topItem && topItem.addr) {
 var ti = handleCmd({ op: "inspectTypes", id: topItem.addr });
 typeInspectOk = !!(ti && ti.ok);
 var mir = handleCmd({ op: "findMirrors", id: topItem.addr });
 if (mir && mir.ok) mirrorsCount = (mir.count || 0) + (mir.uiCount || 0);
+var au = handleCmd({ op: "testAuthority", id: topItem.addr });
+if (au && au.ok) {
+authVerdict = String(au.verdict || "");
+authWritable = !!au.writable;
+authAccepted = !!au.accepted;
+}
 }
 var pRoles = [];
 if (physRes && Array.isArray(physRes.items)) {
@@ -5620,24 +5779,206 @@ var rl = physRes.items[pi].role;
 if (rl && pRoles.indexOf(rl) === -1) pRoles.push(rl);
 }
 }
+var hasCanvas = false;
+try { hasCanvas = !!(document && document.querySelector && document.querySelector("canvas")); } catch (_) {}
 var failReason = "none";
 if ((!bestRes || bestRes.total === 0) && (!physRes || physRes.total === 0)) {
-if (mems.length === 0 && rawB.length === 0) failReason = "canvas-loading-or-no-local-state";
-else failReason = "wasm-present-no-probe-match";
+if (mems.length > 0) failReason = "wasm-loaded-awaiting-play";
+else if (hasCanvas) failReason = "canvas-loaded-awaiting-play";
+else failReason = "iframe-cross-origin-or-loading";
+} else if (authVerdict === "display-only-ui") {
+failReason = "found-display-only-ui";
+} else if (authVerdict === "externally-restored") {
+failReason = "found-externally-restored";
+} else if (authVerdict === "read-only") {
+failReason = "found-read-only";
 }
 hits = []; undoStack = []; unknownSnaps = null;
 return {
 ok: true, frameId: FRAME_ID, engines: eng,
 wasmCount: mems.length, bufCount: abRegistry.length + taRegistry.length,
-workerCount: liveWorkerCount(), sabCount: sabCnt,
+workerCount: liveWorkerCount(), sabCount: sabCnt, canvasTexts: canvasHudNums.length,
 queryUsed: usedQ, totalHits: bestRes ? (bestRes.total || 0) : 0,
-wasmHits: wasmHits, jsHits: jsHits, domHits: domHits, storageHits: storageHits,
+wasmHits: wasmHits, jsHits: jsHits, html5Hits: html5Hits, domHits: domHits,
+storageHits: storageHits, b64Hits: b64Hits, idbHits: idbHits,
 physicsCount: physRes ? (physRes.total || 0) : 0, physicsRoles: pRoles,
 topHit: topItem ? topItem.addr : "", topKind: topItem ? topItem.kind : "",
 topRole: topItem ? (topItem.role || "") : "", topType: topItem ? (topItem.type || "") : "",
 mirrorsCount: mirrorsCount, typeInspectOk: typeInspectOk,
+authVerdict: authVerdict, authWritable: authWritable, authAccepted: authAccepted,
 scanMs: Date.now() - t0, failureReason: failReason
 };
+}
+""".trimStart('\n').trimEnd('\n')
+
+    private val JS_PART_11 = """
+function decodeB64JsonSafe(rawStr) {
+try {
+if (typeof atob !== "function") return null;
+var urlSafe = rawStr.indexOf("-") !== -1 || rawStr.indexOf("_") !== -1;
+var norm = urlSafe ? rawStr.replace(/-/g, "+").replace(/_/g, "/") : rawStr;
+while ((norm.length & 3) !== 0) norm += "=";
+var dec = atob(norm);
+if (!dec || (dec[0] !== "{" && dec[0] !== "[")) return null;
+var obj = JSON.parse(dec);
+if (!obj || typeof obj !== "object") return null;
+return { obj: obj, urlSafe: urlSafe };
+} catch (_) { return null; }
+}
+function encodeB64JsonSafe(obj, urlSafe) {
+try {
+if (typeof btoa !== "function") return null;
+var raw = btoa(JSON.stringify(obj));
+return urlSafe ? raw.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+${'$'}/, "") : raw;
+} catch (_) { return null; }
+}
+function scanJsonTreeForHits(rootObj, kindName, idPrefix, keyName, dt, sc, v1, v2, s1, out, cap) {
+var jq = [{ node: rootObj, jp: [] }];
+var jv = 0;
+while (jq.length > 0 && jv < 600 && out.length < cap) {
+var jc = jq.shift(); jv++;
+var jn = jc.node;
+var isA = Array.isArray(jn);
+var jks = isA ? null : Object.keys(jn);
+var jlen = isA ? Math.min(jn.length, 150) : Math.min(jks.length, 150);
+for (var ji = 0; ji < jlen && out.length < cap; ji++) {
+var jk = isA ? ji : jks[ji];
+if (typeof jk === "string" && (SENSITIVE_KEY_RE.test(jk) || INTERNAL_KEY_RE.test(jk))) continue;
+var jval = jn[jk];
+var nextJp = jc.jp.concat([jk]);
+if (typeof jval === "number" && Number.isFinite(jval)) {
+if (dt !== "str" && matchNum(jval, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: idPrefix + "${'$'}." + nextJp.join("."), kind: kindName, key: keyName, jpath: nextJp, dt: Number.isInteger(jval) ? "i32" : "f64", prev: jval });
+}
+} else if (typeof jval === "string" && (dt === "str" || dt === "auto") && s1 && jval.indexOf(s1) !== -1 && jval.length <= 256) {
+out.push({ id: idPrefix + "${'$'}." + nextJp.join("."), kind: kindName, key: keyName, jpath: nextJp, dt: "str", prev: jval });
+} else if (jval && typeof jval === "object" && nextJp.length < 6) {
+jq.push({ node: jval, jp: nextJp });
+}
+}
+}
+}
+function scanIdbCacheForHits(dt, sc, v1, v2, s1, out, cap) {
+if (!idbSaveCache.length || dt === "aob") return;
+for (var i = 0; i < idbSaveCache.length && out.length < cap; i++) {
+var entry = idbSaveCache[i];
+var idBase = "idb:" + entry.store + "/" + (entry.key || ("#" + i));
+if (entry.ref) {
+var obj = entry.ref.deref();
+if (!obj) continue;
+var jq = [{ node: obj, jp: [] }];
+var jv = 0;
+while (jq.length > 0 && jv < 200 && out.length < cap) {
+var jc = jq.shift(); jv++;
+var jn = jc.node;
+var ks = Array.isArray(jn) ? null : Object.keys(jn);
+var len = Array.isArray(jn) ? Math.min(jn.length, 80) : Math.min(ks.length, 80);
+for (var j = 0; j < len && out.length < cap; j++) {
+var k = Array.isArray(jn) ? j : ks[j];
+var v = jn[k];
+var np = jc.jp.concat([k]);
+if (typeof v === "number" && Number.isFinite(v) && dt !== "str" && matchNum(v, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: idBase + "${'$'}." + np.join("."), kind: "idb", objRef: entry.ref, jpath: np, dt: Number.isInteger(v) ? "i32" : "f64", prev: v });
+} else if (v && typeof v === "object" && np.length < 4) {
+jq.push({ node: v, jp: np });
+}
+}
+}
+} else if (typeof entry.prim === "number" && dt !== "str" && matchNum(entry.prim, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: idBase, kind: "idb", objRef: null, jpath: [], dt: Number.isInteger(entry.prim) ? "i32" : "f64", prev: entry.prim });
+}
+}
+}
+function scanHtml5ExtendedDom(rootDoc, seenEl, dt, sc, v1, v2, s1, out, cap) {
+if (!rootDoc || dt === "aob" || out.length >= cap) return;
+function scanRoot(root, prefix, depth) {
+if (!root || typeof root.querySelectorAll !== "function" || depth > 4 || out.length >= cap) return;
+try {
+// 1. HTML5 <progress>, <meter>, [aria-valuenow]
+var meters = root.querySelectorAll("progress,meter,[aria-valuenow]");
+for (var mi = 0; mi < meters.length && mi < 60 && out.length < cap; mi++) {
+var mel = meters[mi];
+if (!mel || seenEl.has(mel)) continue;
+seenEl.add(mel);
+var mTag = prefix + (mel.id ? ("#" + mel.id) : (mel.tagName.toLowerCase() + "#m" + mi));
+var isAria = mel.hasAttribute && mel.hasAttribute("aria-valuenow");
+var rawM = isAria ? (mel.getAttribute("aria-valuenow") || "") : String(mel.value !== undefined ? mel.value : (mel.getAttribute ? (mel.getAttribute("value") || "") : ""));
+var cm = cleanNumStr(rawM);
+var nm = Number(cm);
+if (cm.trim() !== "" && Number.isFinite(nm) && dt !== "str" && matchNum(nm, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: "dom:" + mTag + (isAria ? "[aria-valuenow]" : ".value"), kind: "dom", elRef: mkRef(mel), domProp: isAria ? "" : "value", domAttr: isAria ? "aria-valuenow" : "", dt: Number.isInteger(nm) ? "i32" : "f64", prev: nm, uiInteractive: true });
+}
+}
+// 2. HTML5 SVG <text> / <tspan> numeric HUD elements
+var svgs = root.querySelectorAll("svg text, svg tspan");
+for (var si = 0; si < svgs.length && si < 80 && out.length < cap; si++) {
+var sel = svgs[si];
+if (!sel || seenEl.has(sel)) continue;
+seenEl.add(sel);
+var stxt = String(sel.textContent || "").trim();
+if (!stxt || stxt.length > 32) continue;
+var sTag = prefix + (sel.id ? ("#" + sel.id) : ("svg#" + si));
+var cs = cleanNumStr(stxt);
+var ns = Number(cs);
+if (dt === "str") {
+if (s1 && stxt.indexOf(s1) !== -1) out.push({ id: "dom:" + sTag + ".text", kind: "dom", elRef: mkRef(sel), domProp: "textContent", domAttr: "", dt: "str", prev: stxt, uiInteractive: false });
+} else if (cs.trim() !== "" && Number.isFinite(ns) && matchNum(ns, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: "dom:" + sTag + ".text", kind: "dom", elRef: mkRef(sel), domProp: "textContent", domAttr: "", dt: Number.isInteger(ns) ? "i32" : "f64", prev: ns, uiInteractive: false });
+}
+}
+// 3. Open Shadow DOM traversal (for WebComponent HTML5 games)
+var allEls = root.querySelectorAll("*");
+var limAll = Math.min(allEls.length, 300);
+for (var ai = 0; ai < limAll && out.length < cap; ai++) {
+var ael = allEls[ai];
+if (ael && ael.shadowRoot) {
+var shPref = prefix + (ael.id ? ("#" + ael.id) : ("sh" + ai)) + "::shadow/";
+// Also scan inputs inside shadow root!
+var shInputs = ael.shadowRoot.querySelectorAll("input,textarea,[contenteditable='true']");
+for (var shi = 0; shi < shInputs.length && shi < 40 && out.length < cap; shi++) {
+var shin = shInputs[shi];
+if (!shin || seenEl.has(shin)) continue;
+seenEl.add(shin);
+var shRaw = String(shin.value !== undefined ? shin.value : (shin.textContent || ""));
+var shTag = shPref + (shin.id ? ("#" + shin.id) : ("inp" + shi));
+var shC = cleanNumStr(shRaw);
+var shN = Number(shC);
+if (shC.trim() !== "" && Number.isFinite(shN) && dt !== "str" && matchNum(shN, 0, false, dt === "auto" ? "f64" : dt, sc, v1, v2)) {
+out.push({ id: "dom:" + shTag + ".value", kind: "dom", elRef: mkRef(shin), domProp: "value", domAttr: "", dt: Number.isInteger(shN) ? "i32" : "f64", prev: shN, uiInteractive: true });
+}
+}
+scanRoot(ael.shadowRoot, shPref, depth + 1);
+}
+}
+} catch (_) {}
+}
+scanRoot(rootDoc, "", 0);
+}
+function seedHtml5FrameworkState(win, enqueue) {
+try {
+var doc = win.document;
+if (!doc || typeof doc.querySelectorAll !== "function") return;
+var roots = doc.querySelectorAll("#root,#app,#game,#game-container,canvas");
+for (var i = 0; i < roots.length && i < 8; i++) {
+var el = roots[i];
+if (!el) continue;
+if (el.__vue__) enqueue(el.__vue__, "vue#" + i);
+if (el.__vue_app__) enqueue(el.__vue_app__, "vueApp#" + i);
+if (el.__vueParentComponent) enqueue(el.__vueParentComponent, "vueComp#" + i);
+var ks = Object.keys(el);
+for (var j = 0; j < ks.length && j < 20; j++) {
+var k = ks[j];
+if (k.indexOf("__reactFiber") === 0 || k.indexOf("__reactProps") === 0 || k.indexOf("__reactContainer") === 0) {
+enqueue(el[k], "react#" + i + "." + k.slice(0, 12));
+}
+}
+}
+} catch (_) {}
+}
+function isWebsiteChromePath(fullPath) {
+var p = String(fullPath || "").toLowerCase();
+return /^(window\.)?(screen|navigator|location|history|performance|visualviewport|document|style|inner|outer|scroll|page[xy]|client|offset|crazygames|pokisdk|gtag|analytics|adsbygoogle|gpt|pbjs)/i.test(p) ||
+/(header|navbar|footer|sidebar|cookiebanner|consent|adunit|tooltip|dropdown|modal|carousel)/i.test(p);
 }
 try { window.dispatchEvent(new Event(CH + "_ok")); } catch (_) {}
 })();

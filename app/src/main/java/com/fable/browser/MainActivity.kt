@@ -323,7 +323,7 @@ class MainActivity : FragmentActivity() {
                     if (intent.getBooleanExtra("fable_close_other_tabs", false)) {
                         tabManager.tabs.value.filter { it.id != cur.id }.forEach { tabManager.closeTab(it.id) }
                     }
-                    cur.manualHybridOverride = true
+                    cur.manualHybridOverride = wantHybrid
                     tabManager.setHybridBlinkMode(cur, wantHybrid)
                     tabManager.load(cur, url)
                 } else if (BuildConfig.DEBUG && intent.getBooleanExtra("fable_hybrid", false)) {
@@ -413,7 +413,7 @@ class MainActivity : FragmentActivity() {
                     intent.hasExtra("fable_test_crazygames_batch") -> {
                         val batchId = intent.getStringExtra("fable_test_batch_id") ?: "b1"
                         val rawList = intent.getStringExtra("fable_test_crazygames_batch").orEmpty()
-                        val waitMs = intent.getLongExtra("fable_test_game_wait_ms", 6500L).coerceIn(3000L, 12000L)
+                        val maxWaitMs = intent.getLongExtra("fable_test_game_wait_ms", 5000L).coerceIn(2500L, 10000L)
                         lifecycleScope.launch {
                             val pairs = rawList.split('^', '|').mapNotNull { entry ->
                                 val idx = entry.indexOf('=')
@@ -421,27 +421,53 @@ class MainActivity : FragmentActivity() {
                             }
                             memoryEngineManager.setEngineActive(true)
                             memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
-                            val curTab = tabManager.activeTab?.takeIf { !it.isIncognito } ?: tabManager.openTab(incognito = false)
-                            tabManager.tabs.value.filter { it.id != curTab.id }.forEach { tabManager.closeTab(it.id) }
-                            curTab.manualHybridOverride = true
-                            tabManager.setHybridBlinkMode(curTab, true)
+                            // Ensure a clean active Blink tab with a live non-null hybridController
+                            var curTab = tabManager.activeTab?.takeIf { !it.isIncognito && it.isHybridBlink.value && it.hybridController != null }
+                            if (curTab == null) {
+                                curTab = tabManager.openTab(incognito = false)
+                                curTab.manualHybridOverride = true
+                                tabManager.setHybridBlinkMode(curTab, true)
+                                tabManager.tabs.value.filter { it.id != curTab.id }.forEach { tabManager.closeTab(it.id) }
+                                tabManager.load(curTab, "https://example.com")
+                                var hw = 0
+                                while (curTab.hybridController == null && hw < 30) {
+                                    kotlinx.coroutines.delay(150)
+                                    hw++
+                                }
+                            } else {
+                                tabManager.tabs.value.filter { it.id != curTab.id }.forEach { tabManager.closeTab(it.id) }
+                            }
                             var passCnt = 0
+                            var authCnt = 0
                             for ((idx, pair) in pairs.withIndex()) {
                                 val (slug, gameUrl) = pair
                                 memoryEngineManager.unfreezeAll()
                                 memoryEngineManager.clearWatchList()
                                 memoryEngineManager.resetScan()
                                 tabManager.load(curTab, gameUrl)
-                                kotlinx.coroutines.delay(waitMs)
+                                // Smart load-completion wait: min 2.2s, exits early once page finishes + 1.4s JS/WASM settle
+                                kotlinx.coroutines.delay(2200L)
+                                var waited = 2200L
+                                while (curTab.isLoading.value && waited < maxWaitMs) {
+                                    kotlinx.coroutines.delay(250L)
+                                    waited += 250L
+                                }
+                                kotlinx.coroutines.delay(1400L)
                                 val audit = memoryEngineManager.runLiveAuditOnActiveTab()
                                 val ok = audit.optBoolean("ok", false)
                                 val tot = audit.optInt("totalHits", 0)
                                 val wh = audit.optInt("wasmHits", 0)
                                 val jh = audit.optInt("jsHits", 0)
-                                val dh = audit.optInt("domHits", 0)
+                                val h5 = audit.optInt("html5Hits", 0)
+                                val c2d = audit.optInt("canvasTexts", 0)
+                                val b64 = audit.optInt("b64Hits", 0)
+                                val idb = audit.optInt("idbHits", 0)
                                 val ph = audit.optInt("physicsCount", 0)
                                 val mir = audit.optInt("mirrorsCount", 0)
                                 val tiOk = audit.optBoolean("typeInspectOk", false)
+                                val authW = audit.optBoolean("authWritable", false)
+                                val authA = audit.optBoolean("authAccepted", false)
+                                val authV = audit.optString("authVerdict", "none").ifBlank { "none" }
                                 val wc = audit.optInt("wasmCount", 0)
                                 val bc = audit.optInt("bufCount", 0)
                                 val wkc = audit.optInt("workerCount", 0)
@@ -455,13 +481,15 @@ class MainActivity : FragmentActivity() {
                                 }.joinToString("+").ifBlank { "web" }
                                 val heapMb = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / (1024 * 1024)
                                 if (ok && (tot > 0 || ph > 0)) passCnt++
+                                if (ok && authW && authA) authCnt++
                                 android.util.Log.i(
                                     "FABLE-GAME-AUDIT",
-                                    "batch=$batchId i=${idx + 1}/${pairs.size} slug=$slug ok=$ok hits=$tot wasmH=$wh jsH=$jh domH=$dh phys=$ph mir=$mir tiOk=$tiOk wasm=$wc buf=$bc wk=$wkc f=$fc q=$qUsed eng=$engList ms=$msScan heapMb=$heapMb reason=$reason"
+                                    "batch=$batchId i=${idx + 1}/${pairs.size} slug=$slug ok=$ok hits=$tot wasmH=$wh jsH=$jh h5H=$h5 c2d=$c2d b64=$b64 idb=$idb phys=$ph mir=$mir tiOk=$tiOk authW=$authW authA=$authA authV=$authV wasm=$wc buf=$bc wk=$wkc f=$fc q=$qUsed eng=$engList ms=$msScan heapMb=$heapMb reason=$reason"
                                 )
                             }
+                            runCatching { curTab.retainedBlinkView?.clearCache(false) }
                             memoryEngineManager.resetScan()
-                            android.util.Log.i("FABLE-GAME-BATCH-DONE", "batch=$batchId total=${pairs.size} foundValues=$passCnt")
+                            android.util.Log.i("FABLE-GAME-BATCH-DONE", "batch=$batchId total=${pairs.size} foundValues=$passCnt authWritable=$authCnt")
                         }
                     }
                     intent.hasExtra("fable_test_mem_toggle") -> {
@@ -1009,6 +1037,48 @@ class MainActivity : FragmentActivity() {
                                     "FABLE-MEM-CHECK",
                                     "scope=$scopeName engine=$engLblT titanOk=$titanOk physScanOk=$physScanOk physProbeRealOk=$physProbeRealOk physProbeUiOk=$physProbeUiOk protLoopOk=$protLoopOk protRoOk=$protRoOk protLinkedOk=$protLinkedOk split64Ok=$split64Ok"
                                 )
+                            } else if (intent.getStringExtra("fable_test_mem_mode") == "html5_ce") {
+                                suspend fun waitScanDoneH() {
+                                    var wc = 0
+                                    while (wc < 45) {
+                                        kotlinx.coroutines.delay(120)
+                                        wc++
+                                        if (!memoryEngineManager.state.value.busy && wc >= 2) break
+                                    }
+                                }
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.setScanTimeoutSec(20)
+                                memoryEngineManager.setScope(com.fable.browser.engine.MemScope.PAGE_WASM)
+                                memoryEngineManager.setDataType(com.fable.browser.engine.MemDataType.AUTO)
+                                memoryEngineManager.setScanType(com.fable.browser.engine.MemScanType.EXACT)
+                                memoryEngineManager.firstScan("43210")
+                                waitScanDoneH()
+                                val resH = memoryEngineManager.state.value.results
+                                val b64Hit = resH.firstOrNull { it.addr.contains("ls:b64:b64_save_v1\$.coins") }
+                                val shadowHit = resH.firstOrNull { it.addr.contains("::shadow/#sh-gems.value") }
+                                val svgHit = resH.firstOrNull { it.addr.contains("#svg-score.text") }
+                                val progHit = resH.firstOrNull { it.addr.contains("#xp-bar.value") }
+                                val gdHit = resH.firstOrNull { it.addr.contains("gdjs.runtime.gold") }
+                                var b64WriteOk = false
+                                if (b64Hit != null) {
+                                    memoryEngineManager.addToWatch(b64Hit, "B64Coins")
+                                    val wB = memoryEngineManager.state.value.watchList.lastOrNull()
+                                    if (wB != null) {
+                                        memoryEngineManager.setWatchValue(wB.id, "999777")
+                                        kotlinx.coroutines.delay(450)
+                                        b64WriteOk = true
+                                    }
+                                }
+                                val auditH = memoryEngineManager.runLiveAuditOnActiveTab()
+                                val c2dOk = auditH.optInt("canvasTexts", 0) >= 1
+                                val html5Ok = (b64Hit != null) && (shadowHit != null) && (svgHit != null) && (progHit != null) && (gdHit != null) && b64WriteOk && c2dOk
+                                val engLblH = memoryEngineManager.state.value.activeEngineLabel
+                                android.util.Log.i(
+                                    "FABLE-MEM-CHECK",
+                                    "scope=$scopeName engine=$engLblH html5Ok=$html5Ok b64=${b64Hit != null} b64WriteOk=$b64WriteOk shadow=${shadowHit != null} svg=${svgHit != null} prog=${progHit != null} gdjs=${gdHit != null} c2dOk=$c2dOk"
+                                )
+                                memoryEngineManager.clearWatchList()
+                                memoryEngineManager.resetScan()
                             } else {
                                 val queryVal = intent.getStringExtra("fable_test_mem_query")?.takeIf { it.isNotBlank() } ?: "133700"
                                 val writeVal = intent.getStringExtra("fable_test_mem_write").orEmpty()

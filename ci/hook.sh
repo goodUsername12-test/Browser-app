@@ -541,6 +541,62 @@ CE_TITAN_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable
 })();
 </script></body></html>"""
 
+
+CE_HTML5_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Fable CE v70 HTML5 Lab</title></head>
+<body>
+<canvas id="c2d-hud" width="240" height="60"></canvas>
+<div id="shadow-host"></div>
+<svg width="160" height="40"><text id="svg-score" x="8" y="24">43210</text></svg>
+<progress id="xp-bar" value="43210" max="100000"></progress>
+<pre id="out">ce-html5-lab</pre>
+<script>
+(function() {
+  const qs = new URLSearchParams(location.search);
+  const tag = qs.get("tag") || "html5";
+  try {
+    const c = document.getElementById("c2d-hud");
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#111"; ctx.fillRect(0, 0, 240, 60);
+    ctx.fillStyle = "#0f0"; ctx.font = "20px monospace";
+    ctx.fillText("Score: 43210", 10, 35);
+  } catch (_) {}
+  try {
+    const host = document.getElementById("shadow-host");
+    const sr = host.attachShadow({ mode: "open" });
+    sr.innerHTML = '<input id="sh-gems" type="text" value="43210" />';
+  } catch (_) {}
+  try {
+    localStorage.setItem("b64_save_v1", btoa(JSON.stringify({ coins: 43210, level: 9 })));
+  } catch (_) {}
+  window.gdjs = { runtime: { gold: 43210 } };
+
+  function checkStealth() {
+    try {
+      const noLeak = Object.getOwnPropertyNames(window).every(k => !/^(__fableMem|__fableTimeScale|_mev_|cheat|memscan)/i.test(k));
+      const natW = Function.prototype.toString.call(WebAssembly.Memory).indexOf("[native code]") !== -1;
+      const natC = Function.prototype.toString.call(CanvasRenderingContext2D.prototype.fillText).indexOf("[native code]") !== -1;
+      return noLeak && natW && natC;
+    } catch (_) { return false; }
+  }
+
+  let reported = false;
+  const iv = setInterval(function() {
+    if (reported) return;
+    try {
+      const raw = localStorage.getItem("b64_save_v1") || "";
+      const dec = JSON.parse(atob(raw));
+      if (dec && dec.coins === 999777 && dec.level === 9) {
+        reported = true;
+        clearInterval(iv);
+        const q = "tag=" + encodeURIComponent(tag) + "&stealth=" + checkStealth() + "&b64Coins=" + dec.coins + "&level=" + dec.level;
+        document.getElementById("out").textContent = q;
+        fetch("/ce-html5-probe?" + q).catch(() => {});
+      }
+    } catch (_) {}
+  }, 60);
+})();
+</script></body></html>"""
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -610,6 +666,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", CE_TITAN_HTML.encode())
         elif p == "/ce-titan-probe":
             print(f"CE_TITAN_PROBE q={parsed.query}", flush=True)
+            self._send(200, "application/json", b'{"ok":true}')
+        elif p == "/ce-html5-lab.html":
+            self._send(200, "text/html; charset=utf-8", CE_HTML5_HTML.encode())
+        elif p == "/ce-html5-probe":
+            print(f"CE_HTML5_PROBE q={parsed.query}", flush=True)
             self._send(200, "application/json", b'{"ok":true}')
         elif p == "/mem-probe":
             print(f"MEM_PROBE q={parsed.query}", flush=True)
@@ -712,7 +773,11 @@ adb shell settings put global animator_duration_scale 0 || true
 adb shell input keyevent 82 || true
 adb reverse tcp:18080 tcp:18080 || true
 adb reverse tcp:18081 tcp:18081 || true
-sleep 6
+for _bw in 1 2 3 4 5; do
+  adb shell pm path android >/dev/null 2>&1 && break
+  sleep 2
+done
+sleep 10
 
 if ! timeout 240 adb install -r -g "$APK_X86_DBG" > "$ART/install.log" 2>&1; then
   { echo "HOOK-RESULT $VERSION FAILED: adb install"; cat "$ART/install.log"; } > "$REPORT"
@@ -953,12 +1018,22 @@ sleep 2
 adb shell am start -n "$ACT" --es fable_test_mem_selfcheck titan_blink --es fable_test_mem_mode titan_ce >/dev/null 2>&1 || true
 sleep 10; step "memory engine v69 TITAN (Physics+Vectors+Probe+Protection+Split64+LinkedSync, Blink x Gecko)"
 
-log "Phase 6c: 36 Real CrazyGames & Browser Games Live CE Value-Scanning Matrix (6 batches, single reused tab, 33-min watchdog)"
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-html5-lab.html?tag=html5_gecko' --ez fable_reuse_tab true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck html5_gecko --es fable_test_mem_mode html5_ce >/dev/null 2>&1 || true
+sleep 8; step "memory engine v70 HTML5 (Canvas2D+Base64Save+ShadowDOM+SVG+Progress+GDevelop, GeckoView)"
+
+timeout 90 adb shell "am start -W -a android.intent.action.VIEW -d 'http://127.0.0.1:18080/ce-html5-lab.html?tag=html5_blink' --ez fable_reuse_tab true --ez fable_hybrid true -n '$ACT'" >> "$ART/nav.txt" 2>&1
+sleep 2
+adb shell am start -n "$ACT" --es fable_test_mem_selfcheck html5_blink --es fable_test_mem_mode html5_ce >/dev/null 2>&1 || true
+sleep 8; step "memory engine v70 HTML5 (Canvas2D+Base64Save+ShadowDOM+SVG+Progress+GDevelop, Blink x Gecko)"
+
+log "Phase 6c: 97 Real CrazyGames & Browser Games Live CE Value-Scanning Matrix (8 batches x 12, 34-min watchdog)"
 run_crazy_batch() {
   local bid="$1"
   local payload="$2"
   local elapsed=$(( $(date +%s) - HOOK_START_EPOCH ))
-  if [ "$elapsed" -gt 1980 ]; then
+  if [ "$elapsed" -gt 2040 ]; then
     log "Watchdog: skipping $bid at ${elapsed}s to guarantee HOOK-RESULT before 40m limit"
     return
   fi
@@ -966,9 +1041,9 @@ run_crazy_batch() {
     timeout 60 adb shell am start -W -n "$ACT" >> "$ART/nav.txt" 2>&1 || true
     sleep 4
   fi
-  adb shell "am start -n '$ACT' --es fable_test_batch_id '$bid' --es fable_test_crazygames_batch '$payload' --el fable_test_game_wait_ms 5500" >/dev/null 2>&1 || true
+  adb shell "am start -n '$ACT' --es fable_test_batch_id '$bid' --es fable_test_crazygames_batch '$payload' --el fable_test_game_wait_ms 4800" >/dev/null 2>&1 || true
   local w=0
-  while [ "$w" -lt 60 ]; do
+  while [ "$w" -lt 85 ]; do
     sleep 2
     w=$((w + 1))
     if adb logcat -d -s FABLE-GAME-BATCH-DONE:I 2>/dev/null | grep -q "batch=$bid "; then
@@ -981,12 +1056,14 @@ run_crazy_batch() {
   step "CrazyGames live CE scan batch $bid"
 }
 
-run_crazy_batch "b1" "shellshockersio=https://www.crazygames.com/game/shellshockersio^smash-karts=https://www.crazygames.com/game/smash-karts^ragdoll-archers=https://www.crazygames.com/game/ragdoll-archers^crazy-flips-3d=https://www.crazygames.com/game/crazy-flips-3d^deadshot-io=https://www.crazygames.com/game/deadshot-io^voxiom-io=https://www.crazygames.com/game/voxiom-io"
-run_crazy_batch "b2" "turbo-trail-txl=https://www.crazygames.com/game/turbo-trail-txl^drift-hunters=https://www.crazygames.com/game/drift-hunters^madalin-stunt-cars-2=https://www.crazygames.com/game/madalin-stunt-cars-2^moto-x3m=https://www.crazygames.com/game/moto-x3m^polytrack=https://www.crazygames.com/game/polytrack^drive-mad=https://www.crazygames.com/game/drive-mad"
-run_crazy_batch "b3" "space-waves=https://www.crazygames.com/game/space-waves^geometry-dash=https://www.crazygames.com/game/geometry-dash-online^fireboy-watergirl=https://www.crazygames.com/game/fireboy-and-watergirl-the-forest-temple^slice-master=https://www.crazygames.com/game/slice-master^helix-jump=https://www.crazygames.com/game/helix-jump^paper-io-2=https://www.crazygames.com/game/paper-io-2"
-run_crazy_batch "b4" "capybara-clicker=https://www.crazygames.com/game/capybara-clicker^planet-clicker-2=https://www.crazygames.com/game/planet-clicker-2^doge-miner=https://www.crazygames.com/game/doge-miner^idle-breakout=https://www.crazygames.com/game/idle-breakout^clicker-heroes=https://www.crazygames.com/game/clicker-heroes^babel-tower=https://www.crazygames.com/game/babel-tower"
-run_crazy_batch "b5" "bullet-force=https://www.crazygames.com/game/bullet-force-multiplayer^forward-assault=https://www.crazygames.com/game/forward-assault^hazmob-fps=https://www.crazygames.com/game/hazmob-fps-online-shooter^bloxdhop-io=https://www.crazygames.com/game/bloxdhop-io^buildnow-gg=https://www.crazygames.com/game/buildnow-gg^krunker-io=https://www.crazygames.com/game/krunker-io"
-run_crazy_batch "b6" "egg-car=https://www.crazygames.com/game/egg-car^wormate-io=https://www.crazygames.com/game/wormate-io^cut-the-rope=https://www.crazygames.com/game/cut-the-rope-experiments^2048=https://www.crazygames.com/game/2048^chess-free=https://www.crazygames.com/game/chess-free^veck-io=https://veck.io"
+run_crazy_batch "b1" "shellshockersio=https://www.crazygames.com/game/shellshockersio^smash-karts=https://www.crazygames.com/game/smash-karts^ragdoll-archers=https://www.crazygames.com/game/ragdoll-archers^crazy-flips-3d=https://www.crazygames.com/game/crazy-flips-3d^deadshot-io=https://www.crazygames.com/game/deadshot-io^voxiom-io=https://www.crazygames.com/game/voxiom-io^bullet-force=https://www.crazygames.com/game/bullet-force-multiplayer^forward-assault=https://www.crazygames.com/game/forward-assault^hazmob-fps=https://www.crazygames.com/game/hazmob-fps-online-shooter^bloxdhop-io=https://www.crazygames.com/game/bloxdhop-io^buildnow-gg=https://www.crazygames.com/game/buildnow-gg^krunker-io=https://www.crazygames.com/game/krunker-io"
+run_crazy_batch "b2" "turbo-trail-txl=https://www.crazygames.com/game/turbo-trail-txl^drift-hunters=https://www.crazygames.com/game/drift-hunters^madalin-stunt-cars-2=https://www.crazygames.com/game/madalin-stunt-cars-2^moto-x3m=https://www.crazygames.com/game/moto-x3m^polytrack=https://www.crazygames.com/game/polytrack^drive-mad=https://www.crazygames.com/game/drive-mad^racing-limits=https://www.crazygames.com/game/racing-limits^egg-car=https://www.crazygames.com/game/egg-car^drift-boss=https://www.crazygames.com/game/drift-boss^escape-road=https://www.crazygames.com/game/escape-road^highway-racer=https://www.crazygames.com/game/highway-racer^mr-racer-car-racing=https://www.crazygames.com/game/mr-racer-car-racing"
+run_crazy_batch "b3" "space-waves=https://www.crazygames.com/game/space-waves^geometry-dash=https://www.crazygames.com/game/geometry-dash-online^fireboy-watergirl=https://www.crazygames.com/game/fireboy-and-watergirl-the-forest-temple^slice-master=https://www.crazygames.com/game/slice-master^helix-jump=https://www.crazygames.com/game/helix-jump^paper-io-2=https://www.crazygames.com/game/paper-io-2^hole-io=https://www.crazygames.com/game/hole-io^slither-io=https://www.crazygames.com/game/slither-io^wormate-io=https://www.crazygames.com/game/wormate-io^run-3=https://www.crazygames.com/game/run-3^slope=https://www.crazygames.com/game/slope^tunnel-rush=https://www.crazygames.com/game/tunnel-rush"
+run_crazy_batch "b4" "capybara-clicker=https://www.crazygames.com/game/capybara-clicker^planet-clicker-2=https://www.crazygames.com/game/planet-clicker-2^doge-miner=https://www.crazygames.com/game/doge-miner^idle-breakout=https://www.crazygames.com/game/idle-breakout^clicker-heroes=https://www.crazygames.com/game/clicker-heroes^babel-tower=https://www.crazygames.com/game/babel-tower^idle-dice=https://www.crazygames.com/game/idle-dice^room-clicker=https://www.crazygames.com/game/room-clicker^mine-clicker=https://www.crazygames.com/game/mine-clicker^candy-clicker-2=https://www.crazygames.com/game/candy-clicker-2^adventure-capitalist=https://www.crazygames.com/game/adventure-capitalist^grindcraft=https://www.crazygames.com/game/grindcraft"
+run_crazy_batch "b5" "2048=https://www.crazygames.com/game/2048^chess-free=https://www.crazygames.com/game/chess-free^cut-the-rope=https://www.crazygames.com/game/cut-the-rope-experiments^mahjongg-solitaire=https://www.crazygames.com/game/mahjongg-solitaire^sudoku=https://www.crazygames.com/game/sudoku^minesweeper=https://www.crazygames.com/game/minesweeper^tetris=https://www.crazygames.com/game/tetris^word-wipe=https://www.crazygames.com/game/word-wipe^block-puzzle=https://www.crazygames.com/game/block-puzzle^unblock-it=https://www.crazygames.com/game/unblock-it^water-sort-puzzle=https://www.crazygames.com/game/water-sort-puzzle^connect-4=https://www.crazygames.com/game/4-in-a-row"
+run_crazy_batch "b6" "basketball-stars=https://www.crazygames.com/game/basketball-stars-2019^basket-random=https://www.crazygames.com/game/basket-random^soccer-random=https://www.crazygames.com/game/soccer-random^boxing-random=https://www.crazygames.com/game/boxing-random^8-ball-billiards=https://www.crazygames.com/game/8-ball-billiards-classic^table-tennis-world-tour=https://www.crazygames.com/game/table-tennis-world-tour^archery-world-tour=https://www.crazygames.com/game/archery-world-tour^mini-golf-club=https://www.crazygames.com/game/mini-golf-club^football-legends=https://www.crazygames.com/game/football-legends-2021^penalty-shooters-2=https://www.crazygames.com/game/penalty-shooters-2^volleyball-random=https://www.crazygames.com/game/volleyball-random^retro-bowl=https://www.crazygames.com/game/retro-bowl"
+run_crazy_batch "b7" "stickman-hook=https://www.crazygames.com/game/stickman-hook^rooftop-snipers=https://www.crazygames.com/game/rooftop-snipers^getaway-shootout=https://www.crazygames.com/game/getaway-shootout^happy-wheels=https://www.crazygames.com/game/happy-wheels^short-life-2=https://www.crazygames.com/game/short-life-2^vex-7=https://www.crazygames.com/game/vex-7^vex-8=https://www.crazygames.com/game/vex-8^ovo=https://www.crazygames.com/game/ovo^red-ball-4=https://www.crazygames.com/game/red-ball-4^snail-bob=https://www.crazygames.com/game/snail-bob^bob-the-robber=https://www.crazygames.com/game/bob-the-robber^wheely-8=https://www.crazygames.com/game/wheely-8"
+run_crazy_batch "b8" "1v1-lol=https://www.crazygames.com/game/1v1-lol^ev-io=https://www.crazygames.com/game/ev-io^kirka-io=https://www.crazygames.com/game/kirka-io^kour-io=https://www.crazygames.com/game/kour-io^venge-io=https://www.crazygames.com/game/venge-io^diep-io=https://www.crazygames.com/game/diep-io^agar-io=https://www.crazygames.com/game/agar-io^territorial-io=https://www.crazygames.com/game/territorial-io^florr-io=https://www.crazygames.com/game/florr-io^wings-io=https://www.crazygames.com/game/wings-io^little-alchemy-2=https://www.crazygames.com/game/little-alchemy-2^veck-io=https://veck.io"
 
 adb shell am start -n "$ACT" --ez fable_test_mem_toggle false >/dev/null 2>&1 || true
 sleep 2
@@ -1123,7 +1200,53 @@ echo "$MEM_TITAN_GECKO" | grep -q 'engine=GeckoView titanOk=true' || { OVERALL_F
 echo "$MEM_TITAN_BLINK" | grep -q 'engine=Blink x Gecko titanOk=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-titan-blink(${MEM_TITAN_BLINK:-missing})"; }
 grep -q 'CE_TITAN_PROBE q=tag=titan_gecko&stealth=true&moveSpeed=12.5&syncCoins=888999&syncBackup=888999' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-titan-gecko-probe"; }
 grep -q 'CE_TITAN_PROBE q=tag=titan_blink&stealth=true&moveSpeed=12.5&syncCoins=888999&syncBackup=888999' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-titan-blink-probe"; }
-[ "${GAME_AUDIT_COUNT:-0}" -ge 30 ] || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} crazygames-matrix-short(${GAME_AUDIT_COUNT:-0}/36)"; }
+MEM_HTML5_GECKO="$(grep 'FABLE-MEM-CHECK.*scope=html5_gecko' "$ART/logcat.txt" | tail -n 1 || true)"
+MEM_HTML5_BLINK="$(grep 'FABLE-MEM-CHECK.*scope=html5_blink' "$ART/logcat.txt" | tail -n 1 || true)"
+echo "$MEM_HTML5_GECKO" | grep -q 'engine=GeckoView html5Ok=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-html5-gecko(${MEM_HTML5_GECKO:-missing})"; }
+echo "$MEM_HTML5_BLINK" | grep -q 'engine=Blink x Gecko html5Ok=true' || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-html5-blink(${MEM_HTML5_BLINK:-missing})"; }
+grep -q 'CE_HTML5_PROBE q=tag=html5_gecko&stealth=true&b64Coins=999777&level=9' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-html5-gecko-probe"; }
+grep -q 'CE_HTML5_PROBE q=tag=html5_blink&stealth=true&b64Coins=999777&level=9' "$ART/server.log" || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} mem-html5-blink-probe"; }
+[ "${GAME_AUDIT_COUNT:-0}" -ge 80 ] || { OVERALL_FAIL=1; FAIL_REASONS="${FAIL_REASONS} crazygames-matrix-short(${GAME_AUDIT_COUNT:-0}/96)"; }
+GAME_AUDIT_SUMMARY="$(python3 - "$ART/logcat.txt" <<'PYGA'
+import re, sys, statistics
+from collections import Counter
+lines = [l for l in open(sys.argv[1], errors="ignore") if "FABLE-GAME-AUDIT" in l]
+rows = []
+for l in lines:
+    kv = dict(re.findall(r'(\w+)=([^\s]+)', l.split("FABLE-GAME-AUDIT", 1)[1]))
+    if "slug" in kv:
+        rows.append(kv)
+if not rows:
+    print("No games audited")
+    sys.exit(0)
+ok_cnt = sum(1 for r in rows if r.get("ok") == "true")
+found_cnt = sum(1 for r in rows if r.get("ok") == "true" and (int(r.get("hits", 0)) > 0 or int(r.get("phys", 0)) > 0))
+auth_cnt = sum(1 for r in rows if r.get("authW") == "true" and r.get("authA") == "true")
+ti_cnt = sum(1 for r in rows if r.get("tiOk") == "true")
+tot_hits = sum(int(r.get("hits", 0)) for r in rows)
+tot_wasm = sum(int(r.get("wasmH", 0)) for r in rows)
+tot_js = sum(int(r.get("jsH", 0)) for r in rows)
+tot_h5 = sum(int(r.get("h5H", 0)) for r in rows)
+tot_c2d = sum(int(r.get("c2d", 0)) for r in rows)
+tot_b64 = sum(int(r.get("b64", 0)) for r in rows)
+tot_phys = sum(int(r.get("phys", 0)) for r in rows)
+ms_list = [int(r.get("ms", 0)) for r in rows if r.get("ok") == "true"]
+avg_ms = int(statistics.mean(ms_list)) if ms_list else 0
+p50_ms = int(statistics.median(ms_list)) if ms_list else 0
+p95_ms = int(sorted(ms_list)[min(len(ms_list)-1, int(len(ms_list)*0.95))]) if ms_list else 0
+peak_heap = max((int(r.get("heapMb", 0)) for r in rows), default=0)
+reasons = Counter(r.get("reason", "unknown") for r in rows)
+engs = Counter()
+for r in rows:
+    for e in r.get("eng", "web").split("+"):
+        engs[e] += 1
+print(f"SUMMARY: tested={len(rows)} ok={ok_cnt} foundValuesOrPhys={found_cnt} authWritableAccepted={auth_cnt} typeInspectOk={ti_cnt} peakHeapMb={peak_heap}")
+print(f"HITS: total={tot_hits} wasm={tot_wasm} js={tot_js} html5={tot_h5} canvas2dTxt={tot_c2d} b64={tot_b64} physics={tot_phys}")
+print(f"SPEED: avgMs={avg_ms} p50Ms={p50_ms} p95Ms={p95_ms}")
+print("ENGINES: " + ", ".join(f"{k}:{v}" for k, v in engs.most_common(12)))
+print("WEAKNESSES: " + ", ".join(f"{k}:{v}" for k, v in reasons.most_common(10)))
+PYGA
+)"
 
 VERDICT="PASS"
 [ "$OVERALL_FAIL" -ne 0 ] && VERDICT="FAIL (${FAIL_REASONS# })"
@@ -1162,14 +1285,18 @@ VERDICT="PASS"
   echo "ApexB:  ${MEM_APEX_BLINK:-(none)}"
   echo "TitanG: ${MEM_TITAN_GECKO:-(none)}"
   echo "TitanB: ${MEM_TITAN_BLINK:-(none)}"
+  echo "Html5G: ${MEM_HTML5_GECKO:-(none)}"
+  echo "Html5B: ${MEM_HTML5_BLINK:-(none)}"
   echo '```'
   echo "### .fable Encrypted Backup & Restore E2E Verification"
   echo '```'
   echo "Backup: ${BACKUP_CHECK_LINE:-(none)}"
   echo '```'
-  echo "### 36 Real CrazyGames & Browser Games Live CE Scan Matrix (${GAME_AUDIT_COUNT:-0} tested, ${GAME_AUDIT_FOUND:-0} discovered live values/physics)"
+  echo "### 96 Real CrazyGames + Veck.io Live CE Scan Matrix (${GAME_AUDIT_COUNT:-0} tested, ${GAME_AUDIT_FOUND:-0} discovered live values/physics)"
   echo '```'
-  echo "${GAME_AUDIT_LINES:-(none)}"
+  echo "${GAME_AUDIT_SUMMARY:-(none)}"
+  echo "--- per-game rows ---"
+  echo "${GAME_AUDIT_LINES:-(none)}" | head -n 100
   echo '```'
   echo "### Website Speed Control Verification"
   echo '```'

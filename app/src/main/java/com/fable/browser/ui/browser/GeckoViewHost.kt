@@ -497,12 +497,14 @@ private class CombinedEngineContainer(context: Context) : FrameLayout(context) {
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     fun ensureBlinkView(tab: BrowserTab): WebView {
         val currentAttached = blinkView
-        if (currentAttached != null && boundTab === tab && currentAttached.parent === this) {
+        if (currentAttached != null && boundTab === tab && currentAttached.parent === this &&
+            tab.retainedBlinkView === currentAttached && tab.hybridController != null) {
             HighRefreshRateEnforcer.applyToViewTree(currentAttached)
             return currentAttached
         }
         if (currentAttached != null && currentAttached.parent === this) {
             removeView(currentAttached)
+            if (blinkView === currentAttached) blinkView = null
         }
         boundTab = tab
 

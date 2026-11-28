@@ -456,6 +456,7 @@ class MainActivity : FragmentActivity() {
                                 val audit = memoryEngineManager.runLiveAuditOnActiveTab()
                                 val ok = audit.optBoolean("ok", false)
                                 val tot = audit.optInt("totalHits", 0)
+                                val ifh = audit.optInt("iframeHits", 0)
                                 val wh = audit.optInt("wasmHits", 0)
                                 val jh = audit.optInt("jsHits", 0)
                                 val h5 = audit.optInt("html5Hits", 0)
@@ -484,7 +485,7 @@ class MainActivity : FragmentActivity() {
                                 if (ok && authW && authA) authCnt++
                                 android.util.Log.i(
                                     "FABLE-GAME-AUDIT",
-                                    "batch=$batchId i=${idx + 1}/${pairs.size} slug=$slug ok=$ok hits=$tot wasmH=$wh jsH=$jh h5H=$h5 c2d=$c2d b64=$b64 idb=$idb phys=$ph mir=$mir tiOk=$tiOk authW=$authW authA=$authA authV=$authV wasm=$wc buf=$bc wk=$wkc f=$fc q=$qUsed eng=$engList ms=$msScan heapMb=$heapMb reason=$reason"
+                                    "batch=$batchId i=${idx + 1}/${pairs.size} slug=$slug ok=$ok hits=$tot ifH=$ifh wasmH=$wh jsH=$jh h5H=$h5 c2d=$c2d b64=$b64 idb=$idb phys=$ph mir=$mir tiOk=$tiOk authW=$authW authA=$authA authV=$authV wasm=$wc buf=$bc wk=$wkc f=$fc q=$qUsed eng=$engList ms=$msScan heapMb=$heapMb reason=$reason"
                                 )
                             }
                             runCatching { curTab.retainedBlinkView?.clearCache(false) }
@@ -503,6 +504,15 @@ class MainActivity : FragmentActivity() {
                     intent.hasExtra("fable_test_mem_selfcheck") -> {
                         val scopeName = intent.getStringExtra("fable_test_mem_selfcheck").orEmpty()
                         lifecycleScope.launch {
+                            if (scopeName != "native") {
+                                var bw = 0
+                                while (bw < 25) {
+                                    val tNow = tabManager.activeTab
+                                    if (tNow == null || !tNow.isHybridBlink.value || tNow.hybridController != null) break
+                                    kotlinx.coroutines.delay(150)
+                                    bw++
+                                }
+                            }
                             if (scopeName == "native") {
                                 val regions = withContext(Dispatchers.IO) { com.fable.browser.engine.NativeMemoryScanner.listRegions() }
                                 val regObj = runCatching { org.json.JSONObject(regions) }.getOrNull()

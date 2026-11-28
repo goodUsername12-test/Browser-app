@@ -1402,9 +1402,11 @@ fun GeckoViewHost(
     val hybridBlink = tab.isHybridBlink.value
     val mirrorInput = tab.mirrorInputToGecko.value
     val currentUrl = tab.url.value
-    // Reference collected states so Compose subscribes to updates on the current tab
-    @Suppress("UNUSED_EXPRESSION")
-    if (sessionState !== session && hybridBlinkState != hybridBlink && mirrorInputState != mirrorInput && currentUrlState != currentUrl) Unit
+    // Unconditionally read every collected state so Compose ALWAYS subscribes to engine toggle and URL changes
+    val stateSyncToken = sessionState.hashCode() xor
+        (if (hybridBlinkState) 0x101 else 0) xor
+        (if (mirrorInputState) 0x202 else 0) xor
+        currentUrlState.hashCode()
 
     LaunchedEffect(tab.id, session) {
         var attempts = 0
@@ -1424,6 +1426,7 @@ fun GeckoViewHost(
             }
         },
         update = { container ->
+            if (stateSyncToken == Int.MIN_VALUE && attachTick < 0) return@AndroidView
             container.showRecorderTouches = showRecorderTouches
             ScreenRecorderManager.attachActiveGameView(container)
             val gv = container.geckoView

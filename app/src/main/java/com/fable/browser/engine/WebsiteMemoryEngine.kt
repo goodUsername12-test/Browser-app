@@ -258,6 +258,7 @@ object WebsiteMemoryEngine {
         if (op == "liveAudit") {
             var anyOk = false
             var totalHits = 0
+            var iframeHits = 0
             var wasmHits = 0
             var jsHits = 0
             var html5Hits = 0
@@ -292,7 +293,9 @@ object WebsiteMemoryEngine {
                 bufCount += o.optInt("bufCount", 0)
                 workerCount += o.optInt("workerCount", 0)
                 sabCount += o.optInt("sabCount", 0)
-                totalHits += o.optInt("totalHits", 0)
+                val oHits = o.optInt("totalHits", 0)
+                totalHits += oHits
+                if (o.optString("frameId").let { it.isNotBlank() && it != "f0" }) iframeHits += oHits
                 wasmHits += o.optInt("wasmHits", 0)
                 jsHits += o.optInt("jsHits", 0)
                 html5Hits += o.optInt("html5Hits", 0)
@@ -339,6 +342,7 @@ object WebsiteMemoryEngine {
                 .put("sabCount", sabCount)
                 .put("queryUsed", queryUsed)
                 .put("totalHits", totalHits)
+                .put("iframeHits", iframeHits)
                 .put("wasmHits", wasmHits)
                 .put("jsHits", jsHits)
                 .put("html5Hits", html5Hits)
@@ -890,7 +894,7 @@ if (typeof JSON === "object" && typeof JSON.parse === "function") {
 var origJsonParse = JSON.parse;
 JSON.parse = mask(function parse() {
 var res = origJsonParse.apply(JSON, arguments);
-if (res && typeof res === "object") trackClosureObj(res);
+if (internalOpDepth === 0 && res && typeof res === "object") trackClosureObj(res);
 return res;
 }, origJsonParse, "parse");
 }
@@ -1121,11 +1125,18 @@ if (window.${'$'}gameParty || window.${'$'}gameActors || window.${'$'}gameVariab
 if (window.gdjs) add("GDevelop");
 if (window.kaboom || window.kaplay) add("Kaboom");
 if (liveWasmEntries().length > 0 && eng.length === 0) add("WASM");
-if (eng.length === 0) {
 try {
-if (window.document && window.document.querySelector && window.document.querySelector("canvas")) add("Canvas");
-} catch (_) {}
+if (window.document && window.document.querySelector) {
+var cvsD = window.document.querySelector("canvas");
+if (cvsD) add("Canvas");
+if (window.__NEXT_DATA__) add("Next.js");
+else if (window.React || window.__REACT_DEVTOOLS_GLOBAL_HOOK__) add("React");
+if (window.Vue || window.__VUE__) add("Vue");
+if (window.document.querySelector("svg")) add("SVG");
 }
+if (liveWasmEntries().length > 0) add("WASM");
+else if (abRegistry.length > 0 || taRegistry.length > 0) add("TypedArray");
+} catch (_) {}
 } catch (_) {}
 return eng;
 }
@@ -4852,7 +4863,9 @@ if (!stateFlags.timedOut) {
 scanStorage(dt, sc, v1, v2, s1, out, cap);
 scanDomUiState(dt, sc, v1, v2, s1, out, cap);
 }
-if (out.length === 0 && dt === "auto" && sc === "exact" && Number.isInteger(v1) && v1 !== 0 && !stateFlags.timedOut) {
+var hasBinaryExact = false;
+for (var fbi0 = 0; fbi0 < out.length; fbi0++) { if (out[fbi0].kind === "wasm" || out[fbi0].kind === "ab" || out[fbi0].kind === "ta") { hasBinaryExact = true; break; } }
+if (!hasBinaryExact && dt === "auto" && sc === "exact" && Number.isInteger(v1) && v1 !== 0 && !stateFlags.timedOut) {
 stateFlags.fallbackUsed = true;
 var fbCap = 20000;
 for (var fmi = 0; fmi < memsAfter.length && out.length < fbCap && !stateFlags.timedOut; fmi++) {
@@ -5281,7 +5294,7 @@ var d = ev && ev.detail;
 if (!d) return;
 if (typeof d === "string") {
 var parsed = null;
-try { parsed = JSON.parse(d); } catch (_) {}
+try { parsed = (origJsonParse || JSON.parse)(d); } catch (_) {}
 var resObj = parsed ? handleCmd(parsed) : { ok: false, error: "Bad cmd" };
 try { window.dispatchEvent(new CustomEvent(CH + "_ret", { detail: JSON.stringify(resObj) })); } catch (_) {}
 return;
@@ -5395,7 +5408,8 @@ vectors.push({ group: vecLabel, role: vecRole, display: valsStr.join("  "), addr
 }
 } catch (_) {}
 }
-for (var ki = 0; ki < Math.min(keys.length, 220) && items.length < maxRet * 2; ki++) {
+var maxPhKeys = cur.depth === 0 ? keys.length : Math.min(keys.length, 260);
+for (var ki = 0; ki < maxPhKeys && items.length < maxRet * 2; ki++) {
 var k = keys[ki];
 if (SKIP_KEYS.has(k) || INTERNAL_KEY_RE.test(k) || SENSITIVE_KEY_RE.test(k)) continue;
 if (k.length > 2 && k[0] === "o" && k[1] === "n" && k[2] >= "a" && k[2] <= "z") continue;
@@ -5687,17 +5701,18 @@ function extractVisibleNumericHints() {
 var found = [];
 var seen = new Set();
 try {
-var nodes = document.querySelectorAll("input,span,div,p,b,strong,td,button,label");
-var lim = Math.min(nodes.length, 400);
+var nodes = document.querySelectorAll("input,span,div,p,b,strong,td,button,label,svg text");
+var lim = Math.min(nodes.length, 450);
 for (var i = 0; i < lim && found.length < 3; i++) {
 var el = nodes[i];
 if (el.children && el.children.length > 0 && el.tagName !== "INPUT") continue;
+if (el.closest && el.closest("nav,header,footer")) continue;
 var txt = (el.tagName === "INPUT" ? String(el.value || "") : String(el.textContent || "")).trim();
 if (!txt || txt.length > 16) continue;
 var m = /^-?\d+(?:[.,]\d+)?${'$'}/.exec(txt.replace(/,/g, ""));
 if (!m) continue;
 var n = Number(m[0]);
-if (Number.isFinite(n) && n !== 0 && Math.abs(n) <= 1e9 && !seen.has(n)) {
+if (Number.isFinite(n) && Math.abs(n) >= 10 && Math.abs(n) <= 1e9 && !seen.has(n)) {
 seen.add(n);
 found.push(String(n));
 }
